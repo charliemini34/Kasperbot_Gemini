@@ -25,10 +25,10 @@ conservateur_suiveur_tendance:
   VOL_BRK: 0.10
   LONDON_BRK: 0.05
 
-# Ce profil sera mis ˆ jour lorsque vous modifiez manuellement les poids ou via l'auto-optimisation.
+# Ce profil sera mis ˆ jour lorsque vous modifiez manuellement les poids.
 custom:
-  TREND: 0.35
-  SMC: 0.30
-  MEAN_REV: 0.10
-  VOL_BRK: 0.15
-  LONDON_BRK: 0.10
+  TREND: 0.20
+  SMC: 0.20
+  MEAN_REV: 0.20
+  VOL_BRK: 0.20
+  LONDON_BRK: 0.20
