@@ -1,7 +1,7 @@
-# Ce fichier contient les profils de poids pour les stratégies.
+# Ce fichier contient les profils de poids pour les strat≈Ωgies.
 # Vous pouvez les modifier directement ici ou via l'interface web.
 
-# Profil par défaut, un bon équilibre pour commencer.
+# Profil par d≈Ωfaut, un bon ≈Ωquilibre pour commencer.
 equilibre_pro_tendance:
   TREND: 0.35
   SMC: 0.30
@@ -25,7 +25,7 @@ conservateur_suiveur_tendance:
   VOL_BRK: 0.10
   LONDON_BRK: 0.05
 
-# Ce profil sera mis à jour lorsque vous modifiez manuellement les poids.
+# Ce profil sera mis ÀÜ jour lorsque vous modifiez manuellement les poids.
 custom:
   TREND: 0.20
   SMC: 0.20
