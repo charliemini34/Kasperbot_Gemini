@@ -1,0 +1,34 @@
+# Ce fichier contient les profils de poids pour les stratégies.
+# Vous pouvez les modifier directement ici ou via l'interface web.
+
+# Profil par défaut, un bon équilibre pour commencer.
+equilibre_pro_tendance:
+  TREND: 0.35
+  SMC: 0.30
+  MEAN_REV: 0.10
+  VOL_BRK: 0.15
+  LONDON_BRK: 0.10
+
+# Profil agressif qui mise sur les mouvements rapides.
+agressif_chasseur_breakout:
+  TREND: 0.15
+  SMC: 0.20
+  MEAN_REV: 0.05
+  VOL_BRK: 0.40
+  LONDON_BRK: 0.20
+
+# Profil conservateur qui attend les grandes vagues directionnelles.
+conservateur_suiveur_tendance:
+  TREND: 0.50
+  SMC: 0.30
+  MEAN_REV: 0.05
+  VOL_BRK: 0.10
+  LONDON_BRK: 0.05
+
+# Ce profil sera mis à jour lorsque vous modifiez manuellement les poids ou via l'auto-optimisation.
+custom:
+  TREND: 0.35
+  SMC: 0.30
+  MEAN_REV: 0.10
+  VOL_BRK: 0.15
+  LONDON_BRK: 0.10

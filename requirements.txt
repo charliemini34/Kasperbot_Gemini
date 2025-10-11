@@ -1,0 +1,12 @@
+# Fichier listant les librairies Python nécessaires.
+# Installez-les avec la commande : pip install -r requirements.txt
+
+pandas
+numpy
+MetaTrader5
+pytz
+PyYAML
+Flask
+matplotlib
+google-generativeai
+
