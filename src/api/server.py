@@ -13,13 +13,14 @@ DEFAULT_PROFILES = {
     'custom': {'TREND': 0.20, 'SMC': 0.20, 'MEAN_REV': 0.20, 'VOL_BRK': 0.20, 'LONDON_BRK': 0.20}
 }
 
+# Le template HTML reste identique à la version précédente (v3.0)
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="fr">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Dashboard Bot Trading XAUUSD v3.0</title>
+    <title>Dashboard Bot Trading XAUUSD v3.1</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -38,7 +39,7 @@ HTML_TEMPLATE = """
 <body class="p-4 sm:p-6 lg:p-8">
     <div class="max-w-7xl mx-auto">
         <header class="flex justify-between items-center mb-6">
-            <h1 class="text-2xl sm:text-3xl font-bold text-white"><span class="text-amber-400">XAUUSD</span> Pro Trading Bot <span class="text-sm text-gray-400">v3.0</span></h1>
+            <h1 class="text-2xl sm:text-3xl font-bold text-white"><span class="text-amber-400">XAUUSD</span> Pro Trading Bot <span class="text-sm text-gray-400">v3.1</span></h1>
             <div id="status-indicator" class="flex items-center space-x-2">
                 <div id="status-dot" class="h-4 w-4 rounded-full bg-gray-500"></div><span id="status-text" class="font-medium">Chargement...</span>
             </div>
@@ -148,29 +149,44 @@ HTML_TEMPLATE = """
         }
 
         async function loadConfigAndProfiles() {
-            const [configRes, profilesRes] = await Promise.all([fetch('/api/config'), fetch('/api/profiles')]);
-            const config = await configRes.json();
-            const profiles = await profilesRes.json();
-            const profileSelector = document.getElementById('profile_selector');
-            profileSelector.innerHTML = '';
-            Object.keys(profiles).forEach(name => {
-                const option = document.createElement('option');
-                option.value = name;
-                option.textContent = name.replace(/_/g, ' ').replace(/\\b\\w/g, l => l.toUpperCase());
-                profileSelector.appendChild(option);
-            });
-            profileSelector.value = config.trading_logic.active_profile;
-            applyProfileToForm(config.trading_logic.active_profile, profiles);
-            document.getElementById('execution_threshold').value = config.trading_logic.execution_threshold;
-            document.getElementById('live_trading_enabled').value = config.trading_settings.live_trading_enabled.toString();
-            document.getElementById('auto_optimization_enabled').value = config.learning.auto_optimization_enabled.toString();
-            document.getElementById('ai_confirmation_enabled').value = config.learning.ai_confirmation_enabled.toString();
+            try {
+                const [configRes, profilesRes] = await Promise.all([fetch('/api/config'), fetch('/api/profiles')]);
+                if (!configRes.ok || !profilesRes.ok) {
+                    throw new Error('Failed to load initial config/profiles.');
+                }
+                const config = await configRes.json();
+                const profiles = await profilesRes.json();
+                
+                const profileSelector = document.getElementById('profile_selector');
+                profileSelector.innerHTML = '';
+                Object.keys(profiles).forEach(name => {
+                    const option = document.createElement('option');
+                    option.value = name;
+                    option.textContent = name.replace(/_/g, ' ').replace(/\\b\\w/g, l => l.toUpperCase());
+                    profileSelector.appendChild(option);
+                });
+                
+                profileSelector.value = config.trading_logic.active_profile;
+                applyProfileToForm(config.trading_logic.active_profile, profiles);
+                
+                document.getElementById('execution_threshold').value = config.trading_logic.execution_threshold;
+                document.getElementById('live_trading_enabled').value = config.trading_settings.live_trading_enabled.toString();
+                document.getElementById('auto_optimization_enabled').value = config.learning.auto_optimization_enabled.toString();
+                document.getElementById('ai_confirmation_enabled').value = config.learning.ai_confirmation_enabled.toString();
+            } catch (error) {
+                console.error("Error loading config:", error);
+                alert("Erreur: Impossible de charger la configuration. Vérifiez la console du bot.");
+            }
         }
 
         function applyProfileToForm(profileName, profiles) {
             const weights = profiles[profileName];
             const weightsContainer = document.getElementById('strategy-weights-container');
             weightsContainer.innerHTML = '';
+            if (!weights) {
+                console.error(`Profile '${profileName}' not found in profiles data.`);
+                return;
+            }
             Object.entries(weights).forEach(([name, value]) => {
                 weightsContainer.innerHTML += `<div><label for="weight_${name}" class="block text-sm font-medium">${name}</label><input type="number" id="weight_${name}" value="${value}" class="mt-1 block w-full" step="0.01" oninput="markProfileAsCustom()"></div>`;
             });
@@ -180,27 +196,52 @@ HTML_TEMPLATE = """
 
         async function saveConfig(event) {
             event.preventDefault();
-            const configRes = await fetch('/api/config');
-            const currentConfig = await configRes.json();
-            const activeProfile = document.getElementById('profile_selector').value;
-            currentConfig.trading_logic.active_profile = activeProfile;
-            currentConfig.trading_logic.execution_threshold = parseInt(document.getElementById('execution_threshold').value);
-            currentConfig.trading_settings.live_trading_enabled = document.getElementById('live_trading_enabled').value === 'true';
-            currentConfig.learning.auto_optimization_enabled = document.getElementById('auto_optimization_enabled').value === 'true';
-            currentConfig.learning.ai_confirmation_enabled = document.getElementById('ai_confirmation_enabled').value === 'true';
-            const newWeights = {};
-            Object.keys(DEFAULT_PROFILES.custom).forEach(name => {
-                const input = document.getElementById(`weight_${name}`);
-                if (input) newWeights[name] = parseFloat(input.value);
-            });
-            await fetch(`/api/profiles/${activeProfile}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(newWeights) });
-            await fetch('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(currentConfig) });
-            alert('Configuration sauvegardée !');
+            try {
+                // 1. Récupérer la configuration actuelle pour la modifier
+                const configRes = await fetch('/api/config');
+                const currentConfig = await configRes.json();
+                
+                // 2. Mettre à jour les poids du profil actif
+                const activeProfile = document.getElementById('profile_selector').value;
+                const newWeights = {};
+                
+                // === AMÉLIORATION DE LA COLLECTE ===
+                // On lit dynamiquement les champs présents dans le formulaire
+                const weightsContainer = document.getElementById('strategy-weights-container');
+                weightsContainer.querySelectorAll('input[type="number"]').forEach(input => {
+                    const strategyName = input.id.replace('weight_', '');
+                    newWeights[strategyName] = parseFloat(input.value);
+                });
+
+                await fetch(`/api/profiles/${activeProfile}`, { 
+                    method: 'POST', 
+                    headers: { 'Content-Type': 'application/json' }, 
+                    body: JSON.stringify(newWeights) 
+                });
+
+                // 3. Mettre à jour les autres paramètres dans config.yaml
+                currentConfig.trading_logic.active_profile = activeProfile;
+                currentConfig.trading_logic.execution_threshold = parseInt(document.getElementById('execution_threshold').value);
+                currentConfig.trading_settings.live_trading_enabled = document.getElementById('live_trading_enabled').value === 'true';
+                currentConfig.learning.auto_optimization_enabled = document.getElementById('auto_optimization_enabled').value === 'true';
+                currentConfig.learning.ai_confirmation_enabled = document.getElementById('ai_confirmation_enabled').value === 'true';
+                
+                await fetch('/api/config', { 
+                    method: 'POST', 
+                    headers: { 'Content-Type': 'application/json' }, 
+                    body: JSON.stringify(currentConfig) 
+                });
+                
+                alert('Configuration sauvegardée avec succès !');
+            } catch (error) {
+                console.error("Error saving config:", error);
+                alert("Erreur lors de la sauvegarde. Vérifiez la console du bot pour plus de détails.");
+            }
         }
         
         async function resetProfile() {
             const profileToReset = document.getElementById('profile_selector').value;
-            if (confirm(`Êtes-vous sûr de vouloir réinitialiser le profil "${profileToReset}" ?`)) {
+            if (confirm(`Êtes-vous sûr de vouloir réinitialiser le profil "${profileToReset}" à ses valeurs par défaut ?`)) {
                 await fetch(`/api/profiles/reset/${profileToReset}`, { method: 'POST' });
                 await loadConfigAndProfiles();
                 alert(`Profil "${profileToReset}" réinitialisé.`);
@@ -227,7 +268,7 @@ HTML_TEMPLATE = """
             document.getElementById('backtest-form').addEventListener('submit', runBacktest);
             document.getElementById('profile_selector').addEventListener('change', onProfileChange);
             document.getElementById('reset-profile-btn').addEventListener('click', resetProfile);
-            document.getElementById('kill-switch-btn').addEventListener('click', () => { if(confirm("Êtes-vous sûr ?")) fetch('/api/kill', { method: 'POST' }); });
+            document.getElementById('kill-switch-btn').addEventListener('click', () => { if(confirm("Êtes-vous sûr de vouloir activer l'arrêt d'urgence ?")) fetch('/api/kill', { method: 'POST' }); });
             const today = new Date().toISOString().split('T')[0];
             const lastYear = new Date(new Date().setFullYear(new Date().getFullYear() - 1)).toISOString().split('T')[0];
             document.getElementById('end_date').value = today;
@@ -240,15 +281,24 @@ HTML_TEMPLATE = """
 
 def start_api_server(shared_state):
     app = Flask(__name__)
+    log = logging.getLogger(__name__) # Utiliser un logger dédié
     
     def read_yaml(filepath):
         if not os.path.exists(filepath): return {}
-        with open(filepath, 'r') as f: return yaml.safe_load(f)
+        with open(filepath, 'r', encoding='utf-8') as f: return yaml.safe_load(f)
             
     def write_yaml(filepath, data):
-        with open(filepath, 'w') as f: yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+        # --- AMÉLIORATION DE LA GESTION D'ERREUR ---
+        try:
+            with open(filepath, 'w', encoding='utf-8') as f: 
+                yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+            return True
+        except Exception as e:
+            log.error(f"Impossible d'écrire dans le fichier '{filepath}': {e}")
+            return False
 
-    if not os.path.exists('profiles.yaml'): write_yaml('profiles.yaml', DEFAULT_PROFILES)
+    if not os.path.exists('profiles.yaml'): 
+        write_yaml('profiles.yaml', DEFAULT_PROFILES)
 
     @app.route('/')
     def index(): return render_template_string(HTML_TEMPLATE)
@@ -259,10 +309,12 @@ def start_api_server(shared_state):
     @app.route('/api/config', methods=['GET', 'POST'])
     def manage_config():
         if request.method == 'POST':
-            write_yaml('config.yaml', request.json)
-            shared_state.update_config(request.json)
-            shared_state.signal_config_changed()
-            return jsonify({"status": "success"})
+            if write_yaml('config.yaml', request.json):
+                shared_state.update_config(request.json)
+                shared_state.signal_config_changed()
+                return jsonify({"status": "success"})
+            else:
+                return jsonify({"status": "error", "message": "Failed to write config.yaml"}), 500
         return jsonify(shared_state.get_config())
 
     @app.route('/api/profiles', methods=['GET'])
@@ -272,31 +324,50 @@ def start_api_server(shared_state):
     def update_profile(profile_name):
         profiles = read_yaml('profiles.yaml')
         profiles[profile_name] = request.json
-        write_yaml('profiles.yaml', profiles)
-        return jsonify({"status": "success"})
+        if write_yaml('profiles.yaml', profiles):
+            return jsonify({"status": "success"})
+        else:
+            return jsonify({"status": "error", "message": "Failed to write profiles.yaml"}), 500
 
     @app.route('/api/profiles/reset/<profile_name>', methods=['POST'])
     def reset_profile(profile_name):
         if profile_name in DEFAULT_PROFILES:
             profiles = read_yaml('profiles.yaml')
             profiles[profile_name] = DEFAULT_PROFILES[profile_name]
-            write_yaml('profiles.yaml', profiles)
-            return jsonify({"status": "success"})
+            if write_yaml('profiles.yaml', profiles):
+                return jsonify({"status": "success"})
+            else:
+                return jsonify({"status": "error", "message": "Failed to write profiles.yaml"}), 500
         return jsonify({"error": "Profil par défaut non trouvé"}), 404
         
     @app.route('/api/kill', methods=['POST'])
-    def kill_switch(): shared_state.shutdown(); return jsonify({"message": "OK"})
+    def kill_switch(): 
+        shared_state.shutdown()
+        return jsonify({"message": "OK"})
 
     @app.route('/api/backtest', methods=['POST'])
     def handle_backtest():
-        if shared_state.get_backtest_status()['running']: return jsonify({"error": "Backtest déjà en cours."}), 400
+        if shared_state.get_backtest_status()['running']: 
+            return jsonify({"error": "Un backtest est déjà en cours."}), 400
         bt = Backtester(shared_state)
-        threading.Thread(target=bt.run, args=(request.json['start_date'], request.json['end_date'], request.json['initial_capital']), daemon=True).start()
+        params = request.json
+        threading.Thread(
+            target=bt.run, 
+            args=(params['start_date'], params['end_date'], params['initial_capital']), 
+            daemon=True
+        ).start()
         return jsonify({"status": "Backtest démarré."})
 
     @app.route('/api/backtest/status')
-    def get_backtest_status(): return jsonify(shared_state.get_backtest_status())
+    def get_backtest_status(): 
+        return jsonify(shared_state.get_backtest_status())
     
     config = shared_state.get_config()
-    if not config: config = read_yaml('config.yaml')
-    app.run(host=config['api']['host'], port=config['api']['port'], debug=False)
+    if not config: 
+        config = read_yaml('config.yaml')
+        
+    host = config.get('api', {}).get('host', '127.0.0.1')
+    port = config.get('api', {}).get('port', 5000)
+    
+    # On désactive le reloader de Flask qui peut causer des problèmes avec le threading
+    app.run(host=host, port=port, debug=False, use_reloader=False)

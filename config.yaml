@@ -1,48 +1,32 @@
-# Fichier de configuration principal du bot de trading pour XAUUSD (Version 3.0)
-
-# --- Connexion MetaTrader 5 ---
+api:
+  host: 127.0.0.2
+  port: 5000
+learning:
+  ai_confirmation_enabled: true
+  auto_optimization_enabled: true
 mt5_credentials:
-  login: 10004952       # << REMPLACEZ par votre numéro de compte MT5
-  password: "jsne80aX!"  # << REMPLACEZ par votre mot de passe
-  server: "Axi-US50-Demo" # << REMPLACEZ par le serveur de votre courtier
-
-# --- Paramètres de Trading ---
-trading_settings:
-  symbol: "XAUUSD"
-  timeframe: "M5"
-  live_trading_enabled: false
-  volume_per_trade: 0.01
-
-# --- Gestion du Risque ---
+  login: 10004952
+  password: jsne80aX!
+  server: Axi-US50-Demo
 risk_management:
-  dynamic_volume_sizing: true
-  risk_per_trade: 0.01
-  max_concurrent_positions: 3
-  daily_loss_limit_percent: 0.05
-  stop_loss_pips: 150
-  take_profit_pips: 400
   breakeven:
     enabled: true
     trigger_pips: 200
+  daily_loss_limit_percent: 0.05
+  dynamic_volume_sizing: true
+  max_concurrent_positions: 3
+  risk_per_trade: 0.01
+  stop_loss_pips: 150
+  take_profit_pips: 400
   trailing_stop:
+    activation_pips: 300
     enabled: true
     trailing_pips: 250
-    activation_pips: 300
-
-# --- Stratégies & Scoring ---
 trading_logic:
-  # 'active_profile' doit correspondre à un nom de profil dans profiles.yaml
-  active_profile: "equilibre_pro_tendance"
-  execution_threshold: 85
-
-# --- Apprentissage et IA ---
-learning:
-  # Active la capacité du bot à modifier lui-même les poids du profil 'custom'.
-  auto_optimization_enabled: false
-  # Active la consultation de l'IA pour un second avis avant de trader.
-  ai_confirmation_enabled: false
-
-# --- Interface Web & API ---
-api:
-  host: "127.0.0.1"
-  port: 5000
+  active_profile: conservateur_suiveur_tendance
+  execution_threshold: 40
+trading_settings:
+  live_trading_enabled: false
+  symbol: XAUUSD
+  timeframe: M5
+  volume_per_trade: 0.01
