@@ -1,102 +1,24 @@
-14:10:47 - root - INFO - Interface web démarrée sur http://127.0.0.1:5000
-14:10:47 - root - INFO - Démarrage de la boucle de trading...
-14:10:47 - MT5Connector - INFO - Attempting to connect to MetaTrader 5...
-14:11:06 - MT5Connector - INFO - Successfully connected to MT5. Version: (500, 5327, '3 Oct 2025')
-14:11:06 - AIAssistant - WARNING - Variable d'environnement GEMINI_API_KEY non trouvée. L'assistant IA sera désactivé.
-14:11:06 - AIAssistant - WARNING - Variable d'environnement GEMINI_API_KEY non trouvée. L'assistant IA sera désactivé.
-14:11:06 - root - INFO - Analyse: Score=85.00 | Dir=SELL
-14:11:06 - root - INFO - SEUIL ATTEINT: Score 85.00 >= 85.
-14:11:06 - root - INFO - SIGNAL (SIMULATION): SELL @ Score 85.00 [Validé]
-14:11:21 - root - INFO - Analyse: Score=85.00 | Dir=SELL
-14:11:21 - root - INFO - SEUIL ATTEINT: Score 85.00 >= 85.
-14:11:21 - root - INFO - SIGNAL (SIMULATION): SELL @ Score 85.00 [Validé]
-14:11:36 - root - INFO - Analyse: Score=85.00 | Dir=SELL
-14:11:36 - root - INFO - SEUIL ATTEINT: Score 85.00 >= 85.
-14:11:36 - root - INFO - SIGNAL (SIMULATION): SELL @ Score 85.00 [Validé]
-14:11:51 - root - INFO - Analyse: Score=85.00 | Dir=SELL
-14:11:51 - root - INFO - SEUIL ATTEINT: Score 85.00 >= 85.
-14:11:51 - root - INFO - SIGNAL (SIMULATION): SELL @ Score 85.00 [Validé]
-14:12:07 - root - INFO - Analyse: Score=85.00 | Dir=SELL
-14:12:07 - root - INFO - SEUIL ATTEINT: Score 85.00 >= 85.
-14:12:07 - root - INFO - SIGNAL (SIMULATION): SELL @ Score 85.00 [Validé]
-14:12:22 - root - INFO - Analyse: Score=85.00 | Dir=SELL
-14:12:22 - root - INFO - SEUIL ATTEINT: Score 85.00 >= 85.
-14:12:22 - root - INFO - SIGNAL (SIMULATION): SELL @ Score 85.00 [Validé]
-14:12:37 - root - INFO - Analyse: Score=85.00 | Dir=SELL
-14:12:37 - root - INFO - SEUIL ATTEINT: Score 85.00 >= 85.
-14:12:37 - root - INFO - SIGNAL (SIMULATION): SELL @ Score 85.00 [Validé]
-14:12:52 - root - INFO - Analyse: Score=85.00 | Dir=SELL
-14:12:52 - root - INFO - SEUIL ATTEINT: Score 85.00 >= 85.
-14:12:52 - root - INFO - SIGNAL (SIMULATION): SELL @ Score 85.00 [Validé]
-14:13:07 - root - INFO - Analyse: Score=85.00 | Dir=SELL
-14:13:07 - root - INFO - SEUIL ATTEINT: Score 85.00 >= 85.
-14:13:07 - root - INFO - SIGNAL (SIMULATION): SELL @ Score 85.00 [Validé]
-14:13:22 - root - INFO - Analyse: Score=85.00 | Dir=SELL
-14:13:22 - root - INFO - SEUIL ATTEINT: Score 85.00 >= 85.
-14:13:22 - root - INFO - SIGNAL (SIMULATION): SELL @ Score 85.00 [Validé]
-14:13:37 - root - INFO - Analyse: Score=85.00 | Dir=SELL
-14:13:37 - root - INFO - SEUIL ATTEINT: Score 85.00 >= 85.
-14:13:37 - root - INFO - SIGNAL (SIMULATION): SELL @ Score 85.00 [Validé]
-14:13:52 - root - INFO - Analyse: Score=85.00 | Dir=SELL
-14:13:52 - root - INFO - SEUIL ATTEINT: Score 85.00 >= 85.
-14:13:52 - root - INFO - SIGNAL (SIMULATION): SELL @ Score 85.00 [Validé]
-14:14:07 - root - INFO - Analyse: Score=85.00 | Dir=SELL
-14:14:07 - root - INFO - SEUIL ATTEINT: Score 85.00 >= 85.
-14:14:07 - root - INFO - SIGNAL (SIMULATION): SELL @ Score 85.00 [Validé]
-14:14:22 - root - INFO - Analyse: Score=85.00 | Dir=SELL
-14:14:22 - root - INFO - SEUIL ATTEINT: Score 85.00 >= 85.
-14:14:22 - root - INFO - SIGNAL (SIMULATION): SELL @ Score 85.00 [Validé]
-14:14:37 - root - INFO - Analyse: Score=85.00 | Dir=SELL
-14:14:37 - root - INFO - SEUIL ATTEINT: Score 85.00 >= 85.
-14:14:37 - root - INFO - SIGNAL (SIMULATION): SELL @ Score 85.00 [Validé]
-14:14:52 - root - INFO - Analyse: Score=85.00 | Dir=SELL
-14:14:52 - root - INFO - SEUIL ATTEINT: Score 85.00 >= 85.
-14:14:52 - root - INFO - SIGNAL (SIMULATION): SELL @ Score 85.00 [Validé]
-14:15:07 - root - INFO - Analyse: Score=85.00 | Dir=SELL
-14:15:07 - root - INFO - SEUIL ATTEINT: Score 85.00 >= 85.
-14:15:07 - root - INFO - SIGNAL (SIMULATION): SELL @ Score 85.00 [Validé]
-14:15:22 - root - INFO - Analyse: Score=85.00 | Dir=SELL
-14:15:22 - root - INFO - SEUIL ATTEINT: Score 85.00 >= 85.
-14:15:22 - root - INFO - SIGNAL (SIMULATION): SELL @ Score 85.00 [Validé]
-14:15:37 - root - INFO - Analyse: Score=85.00 | Dir=SELL
-14:15:37 - root - INFO - SEUIL ATTEINT: Score 85.00 >= 85.
-14:15:37 - root - INFO - SIGNAL (SIMULATION): SELL @ Score 85.00 [Validé]
-14:15:52 - root - INFO - Analyse: Score=85.00 | Dir=SELL
-14:15:52 - root - INFO - SEUIL ATTEINT: Score 85.00 >= 85.
-14:15:52 - root - INFO - SIGNAL (SIMULATION): SELL @ Score 85.00 [Validé]
-14:16:07 - root - INFO - Analyse: Score=85.00 | Dir=SELL
-14:16:07 - root - INFO - SEUIL ATTEINT: Score 85.00 >= 85.
-14:16:07 - root - INFO - SIGNAL (SIMULATION): SELL @ Score 85.00 [Validé]
-14:16:22 - root - INFO - Analyse: Score=85.00 | Dir=SELL
-14:16:22 - root - INFO - SEUIL ATTEINT: Score 85.00 >= 85.
-14:16:22 - root - INFO - SIGNAL (SIMULATION): SELL @ Score 85.00 [Validé]
-14:16:37 - root - INFO - Analyse: Score=85.00 | Dir=SELL
-14:16:37 - root - INFO - SEUIL ATTEINT: Score 85.00 >= 85.
-14:16:37 - root - INFO - SIGNAL (SIMULATION): SELL @ Score 85.00 [Validé]
-14:16:52 - root - INFO - Analyse: Score=85.00 | Dir=SELL
-14:16:52 - root - INFO - SEUIL ATTEINT: Score 85.00 >= 85.
-14:16:52 - root - INFO - SIGNAL (SIMULATION): SELL @ Score 85.00 [Validé]
-14:17:07 - root - INFO - Analyse: Score=85.00 | Dir=SELL
-14:17:07 - root - INFO - SEUIL ATTEINT: Score 85.00 >= 85.
-14:17:07 - root - INFO - SIGNAL (SIMULATION): SELL @ Score 85.00 [Validé]
-14:17:22 - root - INFO - Analyse: Score=85.00 | Dir=SELL
-14:17:22 - root - INFO - SEUIL ATTEINT: Score 85.00 >= 85.
-14:17:22 - root - INFO - SIGNAL (SIMULATION): SELL @ Score 85.00 [Validé]
-14:17:37 - root - INFO - Analyse: Score=85.00 | Dir=SELL
-14:17:37 - root - INFO - SEUIL ATTEINT: Score 85.00 >= 85.
-14:17:37 - root - INFO - SIGNAL (SIMULATION): SELL @ Score 85.00 [Validé]
-14:17:52 - root - INFO - Analyse: Score=85.00 | Dir=SELL
-14:17:52 - root - INFO - SEUIL ATTEINT: Score 85.00 >= 85.
-14:17:52 - root - INFO - SIGNAL (SIMULATION): SELL @ Score 85.00 [Validé]
-14:18:07 - root - INFO - Analyse: Score=85.00 | Dir=SELL
-14:18:07 - root - INFO - SEUIL ATTEINT: Score 85.00 >= 85.
-14:18:07 - root - INFO - SIGNAL (SIMULATION): SELL @ Score 85.00 [Validé]
-14:18:22 - root - INFO - Analyse: Score=85.00 | Dir=SELL
-14:18:22 - root - INFO - SEUIL ATTEINT: Score 85.00 >= 85.
-14:18:22 - root - INFO - SIGNAL (SIMULATION): SELL @ Score 85.00 [Validé]
-14:18:37 - root - INFO - Analyse: Score=85.00 | Dir=SELL
-14:18:37 - root - INFO - SEUIL ATTEINT: Score 85.00 >= 85.
-14:18:37 - root - INFO - SIGNAL (SIMULATION): SELL @ Score 85.00 [Validé]
-14:18:52 - root - INFO - Analyse: Score=85.00 | Dir=SELL
-14:18:52 - root - INFO - SEUIL ATTEINT: Score 85.00 >= 85.
-14:18:52 - root - INFO - SIGNAL (SIMULATION): SELL @ Score 85.00 [Validé]
+09:06:12 - root - INFO - Interface web démarrée sur http://127.0.0.1:5000
+09:06:12 - root - INFO - Démarrage de la boucle de trading...
+09:06:12 - MT5Connector - INFO - Attempting to connect to MetaTrader 5...
+09:06:20 - MT5Connector - INFO - Successfully connected to MT5. Version: (500, 5327, '3 Oct 2025')
+09:06:20 - AIAssistant - INFO - Assistant IA initialisé avec succès (Gemini-Pro).
+09:06:20 - AIAssistant - INFO - Assistant IA initialisé avec succès (Gemini-Pro).
+09:25:51 - root - INFO - Analyse: Score=11.69 | Dir=BUY
+09:26:06 - root - INFO - Analyse: Score=11.92 | Dir=BUY
+09:26:21 - root - INFO - Analyse: Score=11.91 | Dir=BUY
+09:26:36 - root - INFO - Analyse: Score=11.67 | Dir=BUY
+09:26:51 - root - INFO - Analyse: Score=12.07 | Dir=BUY
+09:27:06 - root - INFO - Analyse: Score=11.84 | Dir=BUY
+09:27:21 - root - INFO - Analyse: Score=11.62 | Dir=BUY
+09:27:36 - root - INFO - Analyse: Score=12.11 | Dir=BUY
+09:27:51 - root - INFO - Analyse: Score=12.08 | Dir=BUY
+09:28:06 - root - INFO - Analyse: Score=11.93 | Dir=BUY
+09:28:51 - root - INFO - Analyse: Score=11.64 | Dir=BUY
+09:29:21 - root - INFO - Analyse: Score=11.57 | Dir=BUY
+09:29:36 - root - INFO - Analyse: Score=11.57 | Dir=BUY
+09:46:07 - root - INFO - Analyse: Score=12.21 | Dir=BUY
+09:46:22 - root - INFO - Analyse: Score=12.11 | Dir=BUY
+09:48:52 - root - INFO - Analyse: Score=11.92 | Dir=BUY
+09:49:07 - root - INFO - Analyse: Score=11.81 | Dir=BUY
+09:49:22 - root - INFO - Analyse: Score=11.98 | Dir=BUY

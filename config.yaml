@@ -2,9 +2,9 @@
 
 # --- Connexion MetaTrader 5 ---
 mt5_credentials:
-  login: 12345678       # << REMPLACEZ par votre numéro de compte MT5
-  password: "PASSWORD"  # << REMPLACEZ par votre mot de passe
-  server: "MetaQuotes-Demo" # << REMPLACEZ par le serveur de votre courtier
+  login: 10004952       # << REMPLACEZ par votre numéro de compte MT5
+  password: "jsne80aX!"  # << REMPLACEZ par votre mot de passe
+  server: "Axi-US50-Demo" # << REMPLACEZ par le serveur de votre courtier
 
 # --- Paramètres de Trading ---
 trading_settings:
