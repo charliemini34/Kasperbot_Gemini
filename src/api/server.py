@@ -1,9 +1,10 @@
 # Fichier: src/api/server.py
 
-from flask import Flask, jsonify, render_template_string
+from flask import Flask, jsonify, render_template_string, request
+import yaml
 import threading
 import logging
-# Le backtester n'est plus importé ici pour éviter les dépendances circulaires au démarrage
+import os
 
 HTML_TEMPLATE = """
 <!DOCTYPE html>
@@ -11,66 +12,211 @@ HTML_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Dashboard KasperBot v7.1</title>
+    <title>Dashboard KasperBot v7.8</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         body { background-color: #111827; color: #d1d5db; font-family: 'Inter', sans-serif; }
         .card { background-color: #1f2937; border: 1px solid #374151; border-radius: 0.75rem; }
+        .tab-button { background-color: transparent; color: #9ca3af; border-color: transparent; }
+        .tab-button.active { color: #4f46e5; border-color: #4f46e5; }
+        input, select, textarea { background-color: #374151; border: 1px solid #4b5563; border-radius: 0.375rem; padding: 0.5rem 0.75rem; }
+        .btn { padding: 0.5rem 1rem; border-radius: 0.375rem; font-weight: 600; transition: background-color 0.2s; cursor: pointer; }
+        .btn-primary { background-color: #4f46e5; color: white; } .btn-primary:hover { background-color: #4338ca; }
+        .form-checkbox { accent-color: #4f46e5; }
     </style>
 </head>
 <body class="p-4 sm:p-6 lg:p-8">
     <div class="max-w-7xl mx-auto">
         <header class="flex justify-between items-center mb-6">
-            <h1 class="text-2xl sm:text-3xl font-bold text-white">KasperBot <span class="text-sm text-gray-400">v7.1 (SMC Engine)</span></h1>
+            <h1 class="text-2xl sm:text-3xl font-bold text-white">KasperBot <span class="text-sm text-gray-400">v7.8 (SMC)</span></h1>
             <div id="status-indicator" class="flex items-center space-x-2">
                 <div id="status-dot" class="h-4 w-4 rounded-full bg-gray-500"></div><span id="status-text" class="font-medium">Chargement...</span>
             </div>
         </header>
-        <main class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            <div class="lg:col-span-1 space-y-6">
-                <div class="card p-5"><h2 class="text-xl font-semibold text-white mb-4">État du Bot</h2><div id="bot-status-container" class="space-y-3"></div></div>
-                <div class="card p-5"><h2 class="text-xl font-semibold text-white mb-4">Analyse SMC</h2><div id="patterns-container" class="space-y-2"></div></div>
+        <div class="mb-6"><div class="border-b border-gray-700"><nav class="-mb-px flex space-x-8">
+            <button onclick="showTab('dashboard')" class="tab-button active whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm" id="tab-dashboard">Dashboard</button>
+            <button onclick="showTab('config')" class="tab-button whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm" id="tab-config">Configuration</button>
+            <button onclick="showTab('backtest')" class="tab-button whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm" id="tab-backtest">Backtesting</button>
+        </nav></div></div>
+        <main>
+            <div id="content-dashboard" class="tab-content grid grid-cols-1 lg:grid-cols-3 gap-6">
+                <div class="lg:col-span-1 space-y-6">
+                    <div class="card p-5"><h2 class="text-xl font-semibold text-white mb-4">État du Bot</h2><div id="bot-status-container" class="space-y-3"></div></div>
+                    <div id="patterns-main-container" class="space-y-6"></div>
+                </div>
+                <div class="lg:col-span-2 space-y-6">
+                    <div class="card p-5"><h2 class="text-xl font-semibold text-white mb-4">Positions Ouvertes</h2><div id="positions-container"></div></div>
+                    <div class="card p-5"><h2 class="text-xl font-semibold text-white mb-4">Journal d'Événements</h2><div id="logs-container" class="h-96 bg-gray-900 rounded-md p-3 overflow-y-auto text-xs font-mono"></div></div>
+                </div>
             </div>
-            <div class="lg:col-span-2 space-y-6">
-                <div class="card p-5"><h2 class="text-xl font-semibold text-white mb-4">Positions Ouvertes</h2><div id="positions-container"></div></div>
-                <div class="card p-5"><h2 class="text-xl font-semibold text-white mb-4">Journal d'Événements</h2><div id="logs-container" class="h-96 bg-gray-900 rounded-md p-3 overflow-y-auto text-xs font-mono"></div></div>
-            </div>
+            <div id="content-config" class="tab-content hidden"><div class="card p-6"><form id="config-form" class="space-y-8">
+                <div><h3 class="text-lg font-medium text-white">Connexion & Identifiants</h3><div class="mt-4 grid grid-cols-1 gap-y-6 sm:grid-cols-3 sm:gap-x-8">
+                    <div><label for="mt5_login">Login MT5</label><input type="text" id="mt5_login" class="mt-1 block w-full"></div>
+                    <div><label for="mt5_password">Mot de passe MT5</label><input type="password" id="mt5_password" class="mt-1 block w-full"></div>
+                    <div><label for="mt5_server">Serveur MT5</label><input type="text" id="mt5_server" class="mt-1 block w-full"></div>
+                </div></div>
+                <div><h3 class="text-lg font-medium text-white">Paramètres de Trading</h3>
+                    <div class="mt-4 grid grid-cols-1 gap-y-6 sm:grid-cols-2 sm:gap-x-8">
+                        <div><label for="symbols">Symboles (séparés par une virgule)</label><textarea id="symbols" rows="2" class="mt-1 block w-full"></textarea></div>
+                        <div><label for="magic_number">Code MAGIC</label><input type="number" id="magic_number" class="mt-1 block w-full"></div>
+                        <div><label for="live_trading_enabled">Mode de Trading</label><select id="live_trading_enabled" class="mt-1 block w-full"><option value="true">Activé (Réel)</option><option value="false">Désactivé (Simulation)</option></select></div>
+                    </div>
+                </div>
+                <div><h3 class="text-lg font-medium text-white">Détection de Patterns SMC</h3><div id="patterns-config-container" class="mt-4 grid grid-cols-2 sm:grid-cols-3 gap-4"></div></div>
+                <div class="pt-5"><div class="flex justify-end"><button type="submit" class="btn btn-primary">Sauvegarder et Appliquer</button></div></div>
+            </form></div></div>
+            <div id="content-backtest" class="tab-content hidden"><div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                <div class="lg:col-span-1"><div class="card p-6"><h2 class="text-xl font-semibold text-white mb-4">Paramètres du Backtest</h2><form id="backtest-form" class="space-y-4">
+                    <div><label for="start_date">Date de début</label><input type="date" id="start_date" class="mt-1 block w-full"></div>
+                    <div><label for="end_date">Date de fin</label><input type="date" id="end_date" class="mt-1 block w-full"></div>
+                    <div><label for="initial_capital">Capital Initial</label><input type="number" id="initial_capital" value="10000" class="mt-1 block w-full"></div>
+                    <button type="submit" id="run-backtest-btn" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 rounded-md mt-4">Lancer le Backtest</button>
+                </form></div></div>
+                <div class="lg:col-span-2">
+                    <div id="backtest-results-card" class="card p-6 hidden"><h2 class="text-xl font-semibold text-white mb-4">Résultats du Backtest</h2>
+                        <div id="backtest-summary" class="grid grid-cols-2 gap-4 text-center mb-4"></div><div id="backtest-chart-container"><canvas id="equity-chart"></canvas></div></div>
+                     <div id="backtest-progress-card" class="card p-6 hidden"><h2 class="text-xl font-semibold text-white mb-4">Backtest en cours...</h2>
+                        <div class="w-full bg-gray-600 rounded-full h-4"><div id="backtest-progress-bar" class="bg-blue-500 h-4 rounded-full w-0"></div></div><p id="backtest-progress-text" class="text-center mt-2">0%</p></div>
+                </div>
+            </div></div>
         </main>
     </div>
     <script>
+        let equityChart = null;
+        function showTab(tabName) {
+            document.querySelectorAll('.tab-content').forEach(el => el.classList.add('hidden'));
+            document.querySelectorAll('.tab-button').forEach(el => el.classList.remove('active'));
+            document.getElementById(`content-${tabName}`).classList.remove('hidden');
+            document.getElementById(`tab-${tabName}`).classList.add('active');
+        }
         function formatProfit(profit) { return `<span class="${parseFloat(profit) >= 0 ? 'text-green-400' : 'text-red-400'}">${parseFloat(profit).toFixed(2)}</span>`; }
         async function fetchAllData() {
             try {
                 const res = await fetch('/api/data');
                 const data = await res.json();
-                
                 const statusDot = document.getElementById('status-dot');
                 statusDot.className = `h-4 w-4 rounded-full ${data.status.is_emergency ? 'bg-red-500 animate-pulse' : 'bg-green-500'}`;
                 document.getElementById('status-text').textContent = data.status.status;
                 document.getElementById('bot-status-container').innerHTML = `<div class="flex justify-between"><span>Status:</span> <strong>${data.status.status}</strong></div><div class="flex justify-between"><span>Message:</span> <em class="text-gray-400 text-right truncate">${data.status.message}</em></div>`;
-
-                const patternsContainer = document.getElementById('patterns-container');
-                patternsContainer.innerHTML = '';
-                if (data.status.patterns && Object.keys(data.status.patterns).length > 0) {
-                    Object.entries(data.status.patterns).forEach(([name, d]) => {
-                        const statusColor = d.status.includes('BUY') ? 'text-green-400' : d.status.includes('SELL') ? 'text-red-400' : 'text-gray-400';
-                        patternsContainer.innerHTML += `<div class="flex justify-between text-sm"><span class="font-medium">${name}</span><strong class="${statusColor}">${d.status}</strong></div>`;
+                
+                const patternsMainContainer = document.getElementById('patterns-main-container');
+                patternsMainContainer.innerHTML = '';
+                if (data.status.symbol_data && Object.keys(data.status.symbol_data).length > 0) {
+                    Object.entries(data.status.symbol_data).forEach(([symbol, symbolData]) => {
+                        let patternsHTML = '';
+                        if(symbolData.patterns && Object.keys(symbolData.patterns).length > 0){
+                            Object.entries(symbolData.patterns).forEach(([name, d]) => {
+                                const statusColor = d.status.includes('BUY') ? 'text-green-400' : d.status.includes('SELL') ? 'text-red-400' : 'text-gray-400';
+                                patternsHTML += `<div class="flex justify-between text-sm"><span class="font-medium">${name}</span><strong class="${statusColor}">${d.status}</strong></div>`;
+                            });
+                        } else { patternsHTML = '<p class="text-gray-400 text-sm">En attente...</p>'; }
+                        patternsMainContainer.innerHTML += `<div class="card p-5"><h2 class="text-xl font-semibold text-white mb-4">Analyse SMC: <span class="text-indigo-400">${symbol}</span></h2><div class="space-y-2">${patternsHTML}</div></div>`;
                     });
-                } else { patternsContainer.innerHTML = '<p class="text-gray-400 text-sm">En attente...</p>'; }
-
+                }
                 const positionsContainer = document.getElementById('positions-container');
-                positionsContainer.innerHTML = data.positions.length > 0 ? `<div class="overflow-x-auto"><table class="w-full text-left"><thead><tr class="border-b border-gray-600 text-sm"><th class="p-2">Ticket</th><th>Type</th><th>Volume</th><th>Profit</th><th>Magic</th></tr></thead><tbody class="text-sm">${data.positions.map(p => `<tr class="border-b border-gray-700"><td class="p-2">${p.ticket}</td><td class="p-2 font-bold ${p.type === 0 ? 'text-blue-400' : 'text-orange-400'}">${p.type === 0 ? 'BUY' : 'SELL'}</td><td class="p-2">${p.volume}</td><td class="p-2 font-semibold">${formatProfit(p.profit)}</td><td class="p-2">${p.magic}</td></tr>`).join('')}</tbody></table></div>` : '<p class="text-gray-400">Aucune position.</p>';
-
+                positionsContainer.innerHTML = data.positions.length > 0 ? `<div class="overflow-x-auto"><table class="w-full text-left"><thead><tr class="border-b border-gray-600 text-sm"><th class="p-2">Symbol</th><th class="p-2">Type</th><th class="p-2">Volume</th><th>Profit</th><th>Magic</th></tr></thead><tbody class="text-sm">${data.positions.map(p => `<tr class="border-b border-gray-700"><td class="p-2 font-bold">${p.symbol}</td><td class="p-2 font-bold ${p.type === 0 ? 'text-blue-400' : 'text-orange-400'}">${p.type === 0 ? 'BUY' : 'SELL'}</td><td class="p-2">${p.volume}</td><td class="p-2 font-semibold">${formatProfit(p.profit)}</td><td class="p-2">${p.magic}</td></tr>`).join('')}</tbody></table></div>` : '<p class="text-gray-400">Aucune position.</p>';
                 const logsContainer = document.getElementById('logs-container');
                 const newLogsHtml = data.logs.map(log => `<p>${log}</p>`).join('');
-                if (logsContainer.innerHTML !== newLogsHtml) {
-                    logsContainer.innerHTML = newLogsHtml;
-                    logsContainer.scrollTop = logsContainer.scrollHeight;
-                }
+                if (logsContainer.innerHTML !== newLogsHtml) { logsContainer.innerHTML = newLogsHtml; logsContainer.scrollTop = logsContainer.scrollHeight; }
             } catch (error) { console.error("Erreur de mise à jour:", error); }
         }
-        window.onload = () => { setInterval(fetchAllData, 2000); fetchAllData(); };
+        async function loadConfig() {
+            try {
+                const res = await fetch('/api/config');
+                const config = await res.json();
+                document.getElementById('mt5_login').value = config.mt5_credentials.login;
+                document.getElementById('mt5_password').value = config.mt5_credentials.password;
+                document.getElementById('mt5_server').value = config.mt5_credentials.server;
+                document.getElementById('symbols').value = config.trading_settings.symbols.join(', ');
+                document.getElementById('magic_number').value = config.trading_settings.magic_number;
+                document.getElementById('live_trading_enabled').value = config.trading_settings.live_trading_enabled.toString();
+                
+                const patternsContainer = document.getElementById('patterns-config-container');
+                patternsContainer.innerHTML = '';
+                Object.keys(config.pattern_detection).forEach(name => {
+                    patternsContainer.innerHTML += `<div class="flex items-center"><input id="pattern_${name}" type="checkbox" class="form-checkbox h-4 w-4 rounded" ${config.pattern_detection[name] ? 'checked' : ''}><label for="pattern_${name}" class="ml-2">${name}</label></div>`;
+                });
+            } catch (error) { console.error("Erreur de chargement de la config:", error); }
+        }
+        async function saveConfig(event) {
+            event.preventDefault();
+            try {
+                const res = await fetch('/api/config');
+                let config = await res.json();
+                
+                config.mt5_credentials.login = parseInt(document.getElementById('mt5_login').value);
+                config.mt5_credentials.password = document.getElementById('mt5_password').value;
+                config.mt5_credentials.server = document.getElementById('mt5_server').value;
+                config.trading_settings.symbols = document.getElementById('symbols').value.split(',').map(s => s.trim()).filter(s => s);
+                config.trading_settings.magic_number = parseInt(document.getElementById('magic_number').value);
+                config.trading_settings.live_trading_enabled = document.getElementById('live_trading_enabled').value === 'true';
+
+                Object.keys(config.pattern_detection).forEach(name => {
+                    const checkbox = document.getElementById(`pattern_${name}`);
+                    if(checkbox) config.pattern_detection[name] = checkbox.checked;
+                });
+
+                await fetch('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(config) });
+                alert('Configuration sauvegardée ! Certains changements (identifiants, symboles) nécessitent un redémarrage du bot.');
+            } catch (error) { console.error("Erreur de sauvegarde:", error); alert("Erreur lors de la sauvegarde."); }
+        }
+        async function runBacktest(event) {
+            event.preventDefault();
+            document.getElementById('backtest-progress-card').classList.remove('hidden');
+            document.getElementById('backtest-results-card').classList.add('hidden');
+            const btn = document.getElementById('run-backtest-btn');
+            btn.disabled = true; btn.textContent = 'En cours...';
+            
+            const params = { start_date: document.getElementById('start_date').value, end_date: document.getElementById('end_date').value, initial_capital: document.getElementById('initial_capital').value };
+            await fetch('/api/backtest', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(params) });
+            checkBacktestStatus();
+        }
+        async function checkBacktestStatus() {
+            const res = await fetch('/api/backtest/status');
+            const data = await res.json();
+            
+            document.getElementById('backtest-progress-bar').style.width = data.progress + '%';
+            document.getElementById('backtest-progress-text').textContent = Math.round(data.progress) + '%';
+            
+            if (data.running) {
+                setTimeout(checkBacktestStatus, 1500);
+            } else {
+                displayBacktestResults(data.results);
+                const btn = document.getElementById('run-backtest-btn');
+                btn.disabled = false; btn.textContent = 'Lancer le Backtest';
+            }
+        }
+        function displayBacktestResults(results) {
+            document.getElementById('backtest-progress-card').classList.add('hidden');
+            document.getElementById('backtest-results-card').classList.remove('hidden');
+            if (!results || results.error) {
+                document.getElementById('backtest-summary').innerHTML = `<p class="col-span-2 text-red-400">${results ? results.error : 'Erreur inconnue.'}</p>`;
+                return;
+            }
+            document.getElementById('backtest-summary').innerHTML = `
+                <div><p class="text-sm text-gray-400">Profit Final</p><p class="text-2xl font-bold ${results.pnl > 0 ? 'text-green-400' : 'text-red-400'}">${results.pnl.toFixed(2)}</p></div>
+                <div><p class="text-sm text-gray-400">Drawdown Max</p><p class="text-2xl font-bold">${results.max_drawdown_percent.toFixed(2)}%</p></div>
+                <div><p class="text-sm text-gray-400">Taux de Réussite</p><p class="text-2xl font-bold">${results.win_rate.toFixed(2)}%</p></div>
+                <div><p class="text-sm text-gray-400">Nb. Trades</p><p class="text-2xl font-bold">${results.total_trades}</p></div>`;
+            
+            const ctx = document.getElementById('equity-chart').getContext('2d');
+            if(equityChart) equityChart.destroy();
+            equityChart = new Chart(ctx, { type: 'line', data: { labels: Array.from(Array(results.equity_curve.length).keys()), datasets: [{ label: 'Évolution du Capital', data: results.equity_curve, borderColor: '#4f46e5', tension: 0.1, pointRadius: 0 }] }, options: { scales: { x: { display: false } } } });
+        }
+        window.onload = () => {
+            setInterval(fetchAllData, 3000);
+            fetchAllData();
+            loadConfig();
+            document.getElementById('config-form').addEventListener('submit', saveConfig);
+            document.getElementById('backtest-form').addEventListener('submit', runBacktest);
+            
+            const today = new Date().toISOString().split('T')[0];
+            const lastYear = new Date(new Date().setFullYear(new Date().getFullYear() - 1)).toISOString().split('T')[0];
+            document.getElementById('end_date').value = today;
+            document.getElementById('start_date').value = lastYear;
+        };
     </script>
 </body>
 </html>
@@ -80,6 +226,14 @@ def start_api_server(shared_state):
     app = Flask(__name__)
     logging.getLogger('werkzeug').setLevel(logging.ERROR)
 
+    def load_yaml(filepath):
+        with open(filepath, 'r', encoding='utf-8') as f:
+            return yaml.safe_load(f)
+
+    def write_yaml(filepath, data):
+        with open(filepath, 'w', encoding='utf-8') as f:
+            yaml.dump(data, f, sort_keys=False)
+
     @app.route('/')
     def index():
         return render_template_string(HTML_TEMPLATE)
@@ -87,6 +241,35 @@ def start_api_server(shared_state):
     @app.route('/api/data')
     def get_all_data():
         return jsonify(shared_state.get_all_data())
+    
+    @app.route('/api/config', methods=['GET', 'POST'])
+    def manage_config():
+        if request.method == 'POST':
+            new_config = request.json
+            write_yaml('config.yaml', new_config)
+            shared_state.update_config(new_config)
+            shared_state.signal_config_changed()
+            return jsonify({"status": "success"})
+        return jsonify(shared_state.get_config())
+
+    @app.route('/api/backtest', methods=['POST'])
+    def handle_backtest():
+        from src.backtest.backtester import Backtester # Importation locale
+        if shared_state.get_backtest_status()['running']: 
+            return jsonify({"error": "Un backtest est déjà en cours."}), 400
+        
+        bt = Backtester(shared_state)
+        params = request.json
+        threading.Thread(
+            target=bt.run, 
+            args=(params['start_date'], params['end_date'], params['initial_capital']), 
+            daemon=True
+        ).start()
+        return jsonify({"status": "Backtest démarré."})
+
+    @app.route('/api/backtest/status')
+    def get_backtest_status(): 
+        return jsonify(shared_state.get_backtest_status())
     
     config = shared_state.get_config()
     host = config.get('api', {}).get('host', '127.0.0.1')

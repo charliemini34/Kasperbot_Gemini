@@ -12,12 +12,14 @@ from src.risk.risk_manager import RiskManager
 from src.execution.mt5_executor import MT5Executor
 
 class Backtester:
+    """Module de backtesting v7.6 : Ne ferme plus la connexion MT5 principale."""
     def __init__(self, shared_state):
         self.state = shared_state
         self.log = logging.getLogger(self.__class__.__name__)
-        if not mt5.initialize():
-            self.log.error("Le Backtester n'a pas pu initialiser MT5.")
-            raise ConnectionError("MT5 n'est pas lancé.")
+        # On vérifie que MT5 est bien initialisé, mais on ne le gère pas ici.
+        if not mt5.terminal_info():
+            self.log.error("Le Backtester ne peut pas démarrer car MT5 n'est pas connecté.")
+            raise ConnectionError("MT5 n'est pas initialisé.")
             
     def run(self, start_date_str, end_date_str, initial_capital):
         self.log.info(f"Démarrage du backtest de {start_date_str} à {end_date_str}...")
@@ -29,11 +31,12 @@ class Backtester:
             end_date = datetime.strptime(end_date_str, '%Y-%m-%d')
             
             symbol = config['trading_settings']['symbol']
-            timeframe = getattr(mt5, f"TIMEFRAME_{config['trading_settings']['timeframe'].upper()}")
+            timeframe_str = config['trading_settings']['timeframe']
+            timeframe = getattr(mt5, f"TIMEFRAME_{timeframe_str.upper()}")
             
             all_data = mt5.copy_rates_range(symbol, timeframe, start_date, end_date)
             if all_data is None or len(all_data) < 200:
-                raise ValueError("Pas assez de données pour cette période.")
+                raise ValueError("Pas assez de données historiques pour cette période.")
             
             df = pd.DataFrame(all_data)
             df['time'] = pd.to_datetime(df['time'], unit='s')
@@ -47,8 +50,9 @@ class Backtester:
 
             total_bars = len(df)
             for i in range(200, total_bars):
+                progress = ((i - 200) / (total_bars - 200)) * 100
                 if i % (total_bars // 100 or 1) == 0:
-                    self.state.update_backtest_progress((i-200)/(total_bars-200)*100)
+                    self.state.update_backtest_progress(progress)
 
                 current_data = df.iloc[:i+1]
                 current_candle = df.iloc[i]
@@ -58,7 +62,7 @@ class Backtester:
                     if open_position['direction'] == 'BUY':
                         if current_candle['low'] <= open_position['sl']: closed, pnl = True, (open_position['sl'] - open_position['entry_price'])
                         elif current_candle['high'] >= open_position['tp']: closed, pnl = True, (open_position['tp'] - open_position['entry_price'])
-                    else: # SELL
+                    else:
                         if current_candle['high'] >= open_position['sl']: closed, pnl = True, (open_position['entry_price'] - open_position['sl'])
                         elif current_candle['low'] <= open_position['tp']: closed, pnl = True, (open_position['entry_price'] - open_position['tp'])
                     
@@ -77,7 +81,6 @@ class Backtester:
                         volume = risk_manager.calculate_volume(equity, entry_price, sl)
                         if volume > 0:
                             open_position = {'direction': trade_signal['direction'], 'entry_price': entry_price, 'sl': sl, 'tp': tp, 'volume': volume}
-                            self.log.info(f"Backtest: Ouvre {trade_signal['direction']} @ {entry_price:.2f}")
 
             final_pnl = equity - float(initial_capital)
             wins = [t for t in trades if t.get('pnl', 0) > 0]
@@ -94,8 +97,6 @@ class Backtester:
         except Exception as e:
             self.log.error(f"Erreur durant le backtest: {e}", exc_info=True)
             self.state.finish_backtest({"error": str(e)})
-        finally:
-            mt5.shutdown()
 
 def load_yaml(filepath: str) -> dict:
     with open(filepath, 'r', encoding='utf-8') as f:

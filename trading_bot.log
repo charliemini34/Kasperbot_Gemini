@@ -1,159 +1,26 @@
-12:44:42 - root - INFO - Interface web démarrée sur http://127.0.0.1:5000
-12:44:42 - root - INFO - Démarrage de la boucle de trading v7.0 (SMC Engine)...
-12:44:42 - MT5Connector - INFO - Attempting to connect to MetaTrader 5...
-12:44:42 - MT5Connector - INFO - Successfully connected to MT5. Version: (500, 5327, '3 Oct 2025')
-12:44:42 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
-12:44:42 - PatternDetector - INFO - Pattern ORDER_BLOCK ignoré (direction SELL vs tendance BUY).
-12:45:42 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
-12:46:02 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
-12:46:02 - root - INFO - PATTERN DÉTECTÉ: [Order_Block_Buy] - Direction: BUY
-12:46:02 - root - INFO - ACTION (SIMULATION): Ouverture d'un trade BUY sur le pattern [Order_Block_Buy]
-12:46:22 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
-12:46:22 - root - INFO - PATTERN DÉTECTÉ: [Order_Block_Buy] - Direction: BUY
-12:46:22 - root - INFO - ACTION (SIMULATION): Ouverture d'un trade BUY sur le pattern [Order_Block_Buy]
-12:46:42 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
-12:46:42 - root - INFO - PATTERN DÉTECTÉ: [Order_Block_Buy] - Direction: BUY
-12:46:42 - root - INFO - ACTION (SIMULATION): Ouverture d'un trade BUY sur le pattern [Order_Block_Buy]
-12:47:02 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
-12:47:02 - root - INFO - PATTERN DÉTECTÉ: [Order_Block_Buy] - Direction: BUY
-12:47:02 - root - INFO - ACTION (SIMULATION): Ouverture d'un trade BUY sur le pattern [Order_Block_Buy]
-12:47:22 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
-12:47:22 - root - INFO - PATTERN DÉTECTÉ: [Order_Block_Buy] - Direction: BUY
-12:47:22 - root - INFO - ACTION (SIMULATION): Ouverture d'un trade BUY sur le pattern [Order_Block_Buy]
-12:47:42 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
-12:47:42 - root - INFO - PATTERN DÉTECTÉ: [Order_Block_Buy] - Direction: BUY
-12:47:42 - root - INFO - ACTION (SIMULATION): Ouverture d'un trade BUY sur le pattern [Order_Block_Buy]
-12:48:02 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
-12:48:02 - root - INFO - PATTERN DÉTECTÉ: [Order_Block_Buy] - Direction: BUY
-12:48:02 - root - INFO - ACTION (SIMULATION): Ouverture d'un trade BUY sur le pattern [Order_Block_Buy]
-12:48:22 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
-12:48:22 - root - INFO - PATTERN DÉTECTÉ: [Order_Block_Buy] - Direction: BUY
-12:48:22 - root - INFO - ACTION (SIMULATION): Ouverture d'un trade BUY sur le pattern [Order_Block_Buy]
-12:48:42 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
-12:48:42 - root - INFO - PATTERN DÉTECTÉ: [Order_Block_Buy] - Direction: BUY
-12:48:42 - root - INFO - ACTION (SIMULATION): Ouverture d'un trade BUY sur le pattern [Order_Block_Buy]
-12:49:02 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
-12:49:02 - root - INFO - PATTERN DÉTECTÉ: [Order_Block_Buy] - Direction: BUY
-12:49:02 - root - INFO - ACTION (SIMULATION): Ouverture d'un trade BUY sur le pattern [Order_Block_Buy]
-12:49:22 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
-12:49:22 - root - INFO - PATTERN DÉTECTÉ: [Order_Block_Buy] - Direction: BUY
-12:49:22 - root - INFO - ACTION (SIMULATION): Ouverture d'un trade BUY sur le pattern [Order_Block_Buy]
-12:49:42 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
-12:49:42 - root - INFO - PATTERN DÉTECTÉ: [Order_Block_Buy] - Direction: BUY
-12:49:42 - root - INFO - ACTION (SIMULATION): Ouverture d'un trade BUY sur le pattern [Order_Block_Buy]
-12:50:02 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
-12:50:02 - root - INFO - PATTERN DÉTECTÉ: [Order_Block_Buy] - Direction: BUY
-12:50:02 - root - INFO - ACTION (SIMULATION): Ouverture d'un trade BUY sur le pattern [Order_Block_Buy]
-12:50:22 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
-12:50:22 - root - INFO - PATTERN DÉTECTÉ: [Order_Block_Buy] - Direction: BUY
-12:50:22 - root - INFO - ACTION (SIMULATION): Ouverture d'un trade BUY sur le pattern [Order_Block_Buy]
-12:50:42 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
-12:50:42 - root - INFO - PATTERN DÉTECTÉ: [Order_Block_Buy] - Direction: BUY
-12:50:42 - root - INFO - ACTION (SIMULATION): Ouverture d'un trade BUY sur le pattern [Order_Block_Buy]
-12:51:02 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
-12:51:02 - root - INFO - PATTERN DÉTECTÉ: [Order_Block_Buy] - Direction: BUY
-12:51:02 - root - INFO - ACTION (SIMULATION): Ouverture d'un trade BUY sur le pattern [Order_Block_Buy]
-12:51:23 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
-12:51:23 - root - INFO - PATTERN DÉTECTÉ: [Order_Block_Buy] - Direction: BUY
-12:51:23 - root - INFO - ACTION (SIMULATION): Ouverture d'un trade BUY sur le pattern [Order_Block_Buy]
-12:51:43 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
-12:51:43 - root - INFO - PATTERN DÉTECTÉ: [Order_Block_Buy] - Direction: BUY
-12:51:43 - root - INFO - ACTION (SIMULATION): Ouverture d'un trade BUY sur le pattern [Order_Block_Buy]
-12:52:03 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
-12:52:03 - root - INFO - PATTERN DÉTECTÉ: [Order_Block_Buy] - Direction: BUY
-12:52:03 - root - INFO - ACTION (SIMULATION): Ouverture d'un trade BUY sur le pattern [Order_Block_Buy]
-12:52:23 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
-12:52:23 - root - INFO - PATTERN DÉTECTÉ: [Order_Block_Buy] - Direction: BUY
-12:52:23 - root - INFO - ACTION (SIMULATION): Ouverture d'un trade BUY sur le pattern [Order_Block_Buy]
-12:52:43 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
-12:52:43 - root - INFO - PATTERN DÉTECTÉ: [Order_Block_Buy] - Direction: BUY
-12:52:43 - root - INFO - ACTION (SIMULATION): Ouverture d'un trade BUY sur le pattern [Order_Block_Buy]
-12:53:03 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
-12:53:03 - root - INFO - PATTERN DÉTECTÉ: [Order_Block_Buy] - Direction: BUY
-12:53:03 - root - INFO - ACTION (SIMULATION): Ouverture d'un trade BUY sur le pattern [Order_Block_Buy]
-12:53:23 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
-12:53:23 - root - INFO - PATTERN DÉTECTÉ: [Order_Block_Buy] - Direction: BUY
-12:53:23 - root - INFO - ACTION (SIMULATION): Ouverture d'un trade BUY sur le pattern [Order_Block_Buy]
-12:53:43 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
-12:53:43 - root - INFO - PATTERN DÉTECTÉ: [Order_Block_Buy] - Direction: BUY
-12:53:43 - root - INFO - ACTION (SIMULATION): Ouverture d'un trade BUY sur le pattern [Order_Block_Buy]
-12:54:03 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
-12:54:03 - root - INFO - PATTERN DÉTECTÉ: [Order_Block_Buy] - Direction: BUY
-12:54:03 - root - INFO - ACTION (SIMULATION): Ouverture d'un trade BUY sur le pattern [Order_Block_Buy]
-12:54:23 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
-12:54:23 - root - INFO - PATTERN DÉTECTÉ: [Order_Block_Buy] - Direction: BUY
-12:54:23 - root - INFO - ACTION (SIMULATION): Ouverture d'un trade BUY sur le pattern [Order_Block_Buy]
-12:54:43 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
-12:54:43 - root - INFO - PATTERN DÉTECTÉ: [Order_Block_Buy] - Direction: BUY
-12:54:43 - root - INFO - ACTION (SIMULATION): Ouverture d'un trade BUY sur le pattern [Order_Block_Buy]
-12:55:03 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
-12:55:03 - root - INFO - PATTERN DÉTECTÉ: [Order_Block_Buy] - Direction: BUY
-12:55:03 - root - INFO - ACTION (SIMULATION): Ouverture d'un trade BUY sur le pattern [Order_Block_Buy]
-12:55:23 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
-12:55:23 - root - INFO - PATTERN DÉTECTÉ: [Order_Block_Buy] - Direction: BUY
-12:55:23 - root - INFO - ACTION (SIMULATION): Ouverture d'un trade BUY sur le pattern [Order_Block_Buy]
-12:55:43 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
-12:55:43 - root - INFO - PATTERN DÉTECTÉ: [Order_Block_Buy] - Direction: BUY
-12:55:43 - root - INFO - ACTION (SIMULATION): Ouverture d'un trade BUY sur le pattern [Order_Block_Buy]
-12:56:03 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
-12:56:03 - root - INFO - PATTERN DÉTECTÉ: [Order_Block_Buy] - Direction: BUY
-12:56:03 - root - INFO - ACTION (SIMULATION): Ouverture d'un trade BUY sur le pattern [Order_Block_Buy]
-12:56:23 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
-12:56:23 - root - INFO - PATTERN DÉTECTÉ: [Order_Block_Buy] - Direction: BUY
-12:56:23 - root - INFO - ACTION (SIMULATION): Ouverture d'un trade BUY sur le pattern [Order_Block_Buy]
-12:56:43 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
-12:56:43 - root - INFO - PATTERN DÉTECTÉ: [Order_Block_Buy] - Direction: BUY
-12:56:43 - root - INFO - ACTION (SIMULATION): Ouverture d'un trade BUY sur le pattern [Order_Block_Buy]
-12:57:03 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
-12:57:03 - root - INFO - PATTERN DÉTECTÉ: [Order_Block_Buy] - Direction: BUY
-12:57:03 - root - INFO - ACTION (SIMULATION): Ouverture d'un trade BUY sur le pattern [Order_Block_Buy]
-12:57:23 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
-12:57:23 - root - INFO - PATTERN DÉTECTÉ: [Order_Block_Buy] - Direction: BUY
-12:57:23 - root - INFO - ACTION (SIMULATION): Ouverture d'un trade BUY sur le pattern [Order_Block_Buy]
-12:57:43 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
-12:57:43 - root - INFO - PATTERN DÉTECTÉ: [Order_Block_Buy] - Direction: BUY
-12:57:43 - root - INFO - ACTION (SIMULATION): Ouverture d'un trade BUY sur le pattern [Order_Block_Buy]
-12:58:03 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
-12:58:03 - root - INFO - PATTERN DÉTECTÉ: [Order_Block_Buy] - Direction: BUY
-12:58:03 - root - INFO - ACTION (SIMULATION): Ouverture d'un trade BUY sur le pattern [Order_Block_Buy]
-12:58:23 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
-12:58:23 - root - INFO - PATTERN DÉTECTÉ: [Order_Block_Buy] - Direction: BUY
-12:58:23 - root - INFO - ACTION (SIMULATION): Ouverture d'un trade BUY sur le pattern [Order_Block_Buy]
-12:58:43 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
-12:58:43 - root - INFO - PATTERN DÉTECTÉ: [Order_Block_Buy] - Direction: BUY
-12:58:43 - root - INFO - ACTION (SIMULATION): Ouverture d'un trade BUY sur le pattern [Order_Block_Buy]
-12:59:03 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
-12:59:03 - root - INFO - PATTERN DÉTECTÉ: [Order_Block_Buy] - Direction: BUY
-12:59:03 - root - INFO - ACTION (SIMULATION): Ouverture d'un trade BUY sur le pattern [Order_Block_Buy]
-12:59:23 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
-12:59:23 - root - INFO - PATTERN DÉTECTÉ: [Order_Block_Buy] - Direction: BUY
-12:59:23 - root - INFO - ACTION (SIMULATION): Ouverture d'un trade BUY sur le pattern [Order_Block_Buy]
-12:59:43 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
-12:59:43 - root - INFO - PATTERN DÉTECTÉ: [Order_Block_Buy] - Direction: BUY
-12:59:43 - root - INFO - ACTION (SIMULATION): Ouverture d'un trade BUY sur le pattern [Order_Block_Buy]
-13:25:04 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
-13:25:24 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
-13:25:44 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
-13:26:04 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
-13:26:24 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
-13:26:44 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
-13:27:04 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
-13:27:24 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
-13:27:45 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
-13:28:05 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
-13:28:25 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
-13:28:45 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
-13:29:05 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
-13:29:25 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
-13:29:45 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
-13:37:05 - PatternDetector - INFO - Pattern SMC_AMD_SESSION ignoré (direction SELL vs tendance BUY).
-13:38:05 - PatternDetector - INFO - Pattern SMC_AMD_SESSION ignoré (direction SELL vs tendance BUY).
-13:40:05 - PatternDetector - INFO - Pattern SMC_AMD_SESSION ignoré (direction SELL vs tendance BUY).
-13:40:45 - PatternDetector - INFO - Pattern SMC_AMD_SESSION ignoré (direction SELL vs tendance BUY).
-13:41:05 - PatternDetector - INFO - Pattern SMC_AMD_SESSION ignoré (direction SELL vs tendance BUY).
-13:41:25 - PatternDetector - INFO - Pattern SMC_AMD_SESSION ignoré (direction SELL vs tendance BUY).
-13:41:45 - PatternDetector - INFO - Pattern SMC_AMD_SESSION ignoré (direction SELL vs tendance BUY).
-13:42:05 - PatternDetector - INFO - Pattern SMC_AMD_SESSION ignoré (direction SELL vs tendance BUY).
-13:42:25 - PatternDetector - INFO - Pattern SMC_AMD_SESSION ignoré (direction SELL vs tendance BUY).
-13:45:06 - PatternDetector - INFO - Pattern ORDER_BLOCK ignoré (direction SELL vs tendance BUY).
-13:45:26 - PatternDetector - INFO - Pattern ORDER_BLOCK ignoré (direction SELL vs tendance BUY).
+16:36:54 - root - INFO - Interface web démarrée sur http://127.0.0.1:5000
+16:36:54 - root - INFO - Démarrage de la boucle de trading v8.1 (SMC Multi-Asset)...
+16:36:54 - MT5Connector - INFO - Attempting to connect to MetaTrader 5...
+16:36:54 - MT5Connector - INFO - Successfully connected to MT5. Version: (500, 5327, '3 Oct 2025')
+16:36:54 - root - INFO - --- Analyse de XAUUSD ---
+16:36:54 - root - INFO - --- Analyse de EURUSD ---
+16:36:54 - root - INFO - PATTERN DÉTECTÉ sur EURUSD: [SMC_AMD_Buy] - Direction: BUY
+16:36:54 - MT5Executor - INFO - Préparation de l'ordre BUY 0.14 lot(s) de EURUSD @ 1.159
+16:36:54 - MT5Executor - INFO - Ordre placé avec succès: Ticket #9760152
+16:36:54 - root - INFO - --- Analyse de GBPUSD ---
+16:36:54 - PatternDetector - INFO - Pattern SMC_AMD_SESSION ignoré (direction BUY vs tendance SELL).
+16:36:54 - root - INFO - --- Analyse de BTCUSD ---
+16:36:54 - root - INFO - --- Analyse de ETHUSD ---
+16:36:54 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction BUY vs tendance SELL).
+16:36:54 - PatternDetector - INFO - Pattern ORDER_BLOCK ignoré (direction BUY vs tendance SELL).
+16:37:14 - root - INFO - --- Analyse de XAUUSD ---
+16:37:14 - root - INFO - --- Analyse de EURUSD ---
+16:37:14 - root - INFO - PATTERN DÉTECTÉ sur EURUSD: [SMC_AMD_Buy] - Direction: BUY
+16:37:14 - MT5Executor - INFO - Préparation de l'ordre BUY 0.14 lot(s) de EURUSD @ 1.159
+16:37:14 - MT5Executor - INFO - Ordre placé avec succès: Ticket #9760265
+16:37:14 - root - INFO - --- Analyse de GBPUSD ---
+16:37:14 - PatternDetector - INFO - Pattern SMC_AMD_SESSION ignoré (direction BUY vs tendance SELL).
+16:37:14 - root - INFO - --- Analyse de BTCUSD ---
+16:37:14 - root - INFO - --- Analyse de ETHUSD ---
+16:37:14 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction BUY vs tendance SELL).
+16:37:14 - PatternDetector - INFO - Pattern ORDER_BLOCK ignoré (direction BUY vs tendance SELL).

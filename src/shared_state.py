@@ -5,10 +5,11 @@ import logging
 from collections import deque
 
 class SharedState:
-    """Classe thread-safe pour partager l'état du bot entre la boucle principale et l'API."""
-    def __init__(self, max_logs=100):
+    """Classe thread-safe pour le partage d'état, adaptée pour le multi-actifs."""
+    def __init__(self, max_logs=200):
         self.lock = threading.Lock()
-        self.status = {"status": "Initialisation", "message": "Démarrage du bot...", "is_emergency": False, "patterns": {}}
+        # La structure de statut contient maintenant un dictionnaire pour les données par symbole
+        self.status = {"status": "Initialisation", "message": "Démarrage...", "is_emergency": False, "symbol_data": {}}
         self.positions = []
         self.logs = deque(maxlen=max_logs)
         self.config = {}
@@ -25,14 +26,16 @@ class SharedState:
     def update_positions(self, new_positions):
         with self.lock:
             self.positions = [
-                {"ticket": p.ticket, "type": p.type, "volume": p.volume, "profit": p.profit, "magic": p.magic}
+                {"ticket": p.ticket, "symbol": p.symbol, "type": p.type, "volume": p.volume, "profit": p.profit, "magic": p.magic}
                 for p in new_positions
             ]
     
-    def update_patterns(self, new_patterns):
-        """Met à jour le dictionnaire de l'état des patterns détectés."""
+    def update_symbol_patterns(self, symbol: str, new_patterns: dict):
+        """Met à jour les informations de pattern pour un symbole spécifique."""
         with self.lock:
-            self.status['patterns'] = new_patterns
+            if symbol not in self.status['symbol_data']:
+                self.status['symbol_data'][symbol] = {}
+            self.status['symbol_data'][symbol]['patterns'] = new_patterns
 
     def add_log(self, record):
         with self.lock:
@@ -50,42 +53,30 @@ class SharedState:
                 "logs": list(self.logs),
             }
 
+    # ... (Le reste des fonctions reste identique) ...
     def get_config(self):
-        with self.lock:
-            return self.config.copy()
-            
+        with self.lock: return self.config.copy()
+    def signal_config_changed(self):
+        with self.lock: self.config_changed_flag = True
+    def clear_config_changed_flag(self):
+        with self.lock: self.config_changed_flag = False
     def shutdown(self):
-        with self.lock:
-            self._shutdown = True
-
+        with self.lock: self._shutdown = True
     def is_shutdown(self):
-        with self.lock:
-            return self._shutdown
-
+        with self.lock: return self._shutdown
     def start_backtest(self):
-        with self.lock:
-            self.backtest_status = {'running': True, 'progress': 0, 'results': None}
-    
+        with self.lock: self.backtest_status = {'running': True, 'progress': 0, 'results': None}
     def update_backtest_progress(self, progress):
         with self.lock:
-            if self.backtest_status['running']:
-                self.backtest_status['progress'] = progress
-
+            if self.backtest_status['running']: self.backtest_status['progress'] = progress
     def finish_backtest(self, results):
-        with self.lock:
-            self.backtest_status['running'] = False
-            self.backtest_status['results'] = results
-
+        with self.lock: self.backtest_status['running'] = False; self.backtest_status['results'] = results
     def get_backtest_status(self):
-        with self.lock:
-            return self.backtest_status.copy()
+        with self.lock: return self.backtest_status.copy()
 
 class LogHandler(logging.Handler):
-    """Handler de logging qui envoie les logs vers le SharedState."""
     def __init__(self, shared_state):
         super().__init__()
         self.shared_state = shared_state
-
     def emit(self, record):
-        log_entry = self.format(record)
-        self.shared_state.add_log(log_entry)
+        self.shared_state.add_log(self.format(record))

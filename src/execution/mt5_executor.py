@@ -2,11 +2,13 @@
 
 import MetaTrader5 as mt5
 import logging
-import pandas as pd
 from datetime import datetime
 
 class MT5Executor:
-    """Gère l'exécution des ordres et la communication avec l'API MT5."""
+    """
+    Gère l'exécution des ordres et la communication avec l'API MT5.
+    v8.0 : Correction du format du commentaire pour compatibilité maximale.
+    """
     def __init__(self, mt5_connection):
         self._mt5 = mt5_connection
         self.log = logging.getLogger(self.__class__.__name__)
@@ -14,10 +16,16 @@ class MT5Executor:
 
     def get_open_positions(self, symbol: str = None, magic: int = 0) -> list:
         """Récupère les positions ouvertes, filtrées par symbole et/ou code MAGIC."""
-        positions = self._mt5.positions_get(symbol=symbol)
+        if symbol:
+            positions = self._mt5.positions_get(symbol=symbol)
+        else:
+            positions = self._mt5.positions_get()
+            
         if positions is None: return []
+        
         if magic > 0:
             return [pos for pos in positions if pos.magic == magic]
+        
         return list(positions)
 
     def execute_trade(self, account_info, risk_manager, symbol, direction, ohlc_data, pattern_name):
@@ -44,51 +52,36 @@ class MT5Executor:
             self.log.warning("Le volume calculé est de 0.0. L'ordre n'est pas placé.")
 
     def place_order(self, symbol, order_type, volume, price, sl, tp, magic_number, pattern_name):
-        """Envoie la requête de placement d'ordre à MT5."""
+        """Envoie la requête de placement d'ordre à MT5 de manière sécurisée."""
+        # --- CORRECTION : Commentaire raccourci pour éviter les erreurs d'argument invalide ---
+        comment = f"KB8-{pattern_name}"
+        
         request = {
             "action": mt5.TRADE_ACTION_DEAL, "symbol": symbol, "volume": volume,
             "type": order_type, "price": price, "sl": sl, "tp": tp, "deviation": 20,
-            "magic": magic_number, "comment": f"KasperBot v6.0 | {pattern_name}",
+            "magic": magic_number, "comment": comment[:31], # Tronqué à 31 caractères par sécurité
             "type_time": mt5.ORDER_TIME_GTC, "type_filling": mt5.ORDER_FILLING_IOC,
         }
         
         result = self._mt5.order_send(request)
-        if result.retcode != mt5.TRADE_RETCODE_DONE:
-            self.log.error(f"Échec de l'envoi de l'ordre: retcode={result.retcode}, comment={result.comment}")
+        
+        if result is None:
+            self.log.error(f"Échec critique de l'envoi de l'ordre. Erreur MT5: {self._mt5.last_error()}")
             return None
+        
+        if result.retcode != mt5.TRADE_RETCODE_DONE:
+            self.log.error(f"Échec de l'envoi de l'ordre: retcode={result.retcode}, commentaire={result.comment}")
+            return None
+        
         self.log.info(f"Ordre placé avec succès: Ticket #{result.order}")
         return result
-
-    def check_for_closed_trades(self, magic_number: int) -> int:
-        """Vérifie si des trades gérés par le bot ont été fermés."""
-        currently_open_tickets = {pos.ticket for pos in self.get_open_positions(magic=magic_number)}
-        closed_tickets = self.open_trade_tickets - currently_open_tickets
-        
-        if closed_tickets:
-            self.log.info(f"{len(closed_tickets)} trade(s) fermé(s) détecté(s).")
-            # Ici, on pourrait logger les trades fermés dans l'historique si nécessaire
-            
-        self.open_trade_tickets = currently_open_tickets
-        return len(closed_tickets)
 
     def get_account_info(self): return self._mt5.account_info()
     
     def modify_position(self, ticket, sl, tp):
         request = {"action": mt5.TRADE_ACTION_SLTP, "position": ticket, "sl": sl, "tp": tp}
         result = self._mt5.order_send(request)
-        if result.retcode != mt5.TRADE_RETCODE_DONE:
+        if result and result.retcode != mt5.TRADE_RETCODE_DONE:
             self.log.error(f"Échec modification position #{ticket}: {result.comment}")
-        else:
+        elif result:
             self.log.info(f"Position #{ticket} modifiée avec succès.")
-
-    def get_daily_pnl(self):
-        try:
-            today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-            history = self._mt5.history_deals_get(today, datetime.now())
-            if history:
-                df = pd.DataFrame(list(history), columns=history[0]._asdict().keys())
-                return df[df['entry'] == 1]['profit'].sum()
-            return 0.0
-        except Exception as e:
-            self.log.error(f"Erreur calcul PnL: {e}")
-            return 0.0

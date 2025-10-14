@@ -1,5 +1,5 @@
 # ==============================================================================
-#                 FICHIER DE CONFIGURATION PRINCIPAL - KASPERBOT v6.0
+#                 FICHIER DE CONFIGURATION PRINCIPAL - KASPERBOT v7.7
 # ==============================================================================
 
 # -- Identifiants de connexion à MetaTrader 5 --
@@ -8,7 +8,6 @@ mt5_credentials:
   password: "jsne80aX!"
   server: "Axi-US50-Demo"
 
-
 # -- Paramètres de l'interface web (API) --
 api:
   host: "127.0.0.1"
@@ -16,9 +15,15 @@ api:
 
 # -- Paramètres de trading --
 trading_settings:
-  symbol: "XAUUSD"
+  # NOUVEAU : Le bot peut maintenant surveiller plusieurs symboles.
+  symbols: 
+    - "XAUUSD"
+    - "EURUSD"
+    - "GBPUSD"
+    - "BTCUSD"
+    - "ETHUSD"
   timeframe: "M15"
-  live_trading_enabled: false
+  live_trading_enabled: True
   magic_number: 13579
 
 # -- Gestion du risque --
@@ -51,4 +56,4 @@ pattern_detection:
 # -- Filtre de Tendance (Order Flow) --
 trend_filter:
   enabled: true
-  ema_period: 200 # Le bot n'achètera que si le prix est > EMA 200 et ne vendra que s'il est < EMA 200
+  ema_period: 200
