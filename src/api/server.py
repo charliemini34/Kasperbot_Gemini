@@ -1,11 +1,9 @@
 # Fichier: src/api/server.py
 
-from flask import Flask, jsonify, render_template_string, request
-import yaml
+from flask import Flask, jsonify, render_template_string
 import threading
 import logging
-import os
-from src.backtest.backtester import Backtester
+# Le backtester n'est plus importé ici pour éviter les dépendances circulaires au démarrage
 
 HTML_TEMPLATE = """
 <!DOCTYPE html>
@@ -13,65 +11,34 @@ HTML_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Dashboard KasperBot v6.2</title>
+    <title>Dashboard KasperBot v7.1</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         body { background-color: #111827; color: #d1d5db; font-family: 'Inter', sans-serif; }
         .card { background-color: #1f2937; border: 1px solid #374151; border-radius: 0.75rem; }
-        .tab-button.active { color: #4f46e5; border-color: #4f46e5; }
-        input, select { background-color: #374151; border: 1px solid #4b5563; border-radius: 0.375rem; padding: 0.5rem 0.75rem; }
     </style>
 </head>
 <body class="p-4 sm:p-6 lg:p-8">
     <div class="max-w-7xl mx-auto">
         <header class="flex justify-between items-center mb-6">
-            <h1 class="text-2xl sm:text-3xl font-bold text-white">KasperBot <span class="text-sm text-gray-400">v6.2 (SMC Engine)</span></h1>
+            <h1 class="text-2xl sm:text-3xl font-bold text-white">KasperBot <span class="text-sm text-gray-400">v7.1 (SMC Engine)</span></h1>
             <div id="status-indicator" class="flex items-center space-x-2">
                 <div id="status-dot" class="h-4 w-4 rounded-full bg-gray-500"></div><span id="status-text" class="font-medium">Chargement...</span>
             </div>
         </header>
-        <div class="mb-6"><div class="border-b border-gray-700"><nav class="-mb-px flex space-x-8">
-            <button onclick="showTab('dashboard')" class="tab-button active whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm" id="tab-dashboard">Dashboard</button>
-            <button onclick="showTab('backtest')" class="tab-button whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm" id="tab-backtest">Backtesting</button>
-        </nav></div></div>
-        <main>
-            <div id="content-dashboard" class="tab-content grid grid-cols-1 lg:grid-cols-3 gap-6">
-                <div class="lg:col-span-1 space-y-6">
-                    <div class="card p-5"><h2 class="text-xl font-semibold text-white mb-4">État du Bot</h2><div id="bot-status-container" class="space-y-3"></div></div>
-                    <div class="card p-5"><h2 class="text-xl font-semibold text-white mb-4">Analyse des Patterns</h2><div id="patterns-container" class="space-y-2"></div></div>
-                </div>
-                <div class="lg:col-span-2 space-y-6">
-                    <div class="card p-5"><h2 class="text-xl font-semibold text-white mb-4">Positions Ouvertes</h2><div id="positions-container"></div></div>
-                    <div class="card p-5"><h2 class="text-xl font-semibold text-white mb-4">Journal d'Événements</h2><div id="logs-container" class="h-96 bg-gray-900 rounded-md p-3 overflow-y-auto text-xs font-mono"></div></div>
-                </div>
+        <main class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <div class="lg:col-span-1 space-y-6">
+                <div class="card p-5"><h2 class="text-xl font-semibold text-white mb-4">État du Bot</h2><div id="bot-status-container" class="space-y-3"></div></div>
+                <div class="card p-5"><h2 class="text-xl font-semibold text-white mb-4">Analyse SMC</h2><div id="patterns-container" class="space-y-2"></div></div>
             </div>
-            <div id="content-backtest" class="tab-content hidden">
-                 <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                    <div class="lg:col-span-1"><div class="card p-6"><h2 class="text-xl font-semibold text-white mb-4">Paramètres du Backtest</h2><form id="backtest-form" class="space-y-4">
-                        <div><label for="start_date">Date de début</label><input type="date" id="start_date" class="mt-1 block w-full"></div>
-                        <div><label for="end_date">Date de fin</label><input type="date" id="end_date" class="mt-1 block w-full"></div>
-                        <div><label for="initial_capital">Capital Initial</label><input type="number" id="initial_capital" value="10000" class="mt-1 block w-full"></div>
-                        <button type="submit" id="run-backtest-btn" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 rounded-md mt-4">Lancer le Backtest</button>
-                    </form></div></div>
-                    <div class="lg:col-span-2">
-                        <div id="backtest-results-card" class="card p-6 hidden"><h2 class="text-xl font-semibold text-white mb-4">Résultats du Backtest</h2>
-                            <div id="backtest-summary" class="grid grid-cols-2 gap-4 text-center mb-4"></div><div id="backtest-chart-container"><canvas id="equity-chart"></canvas></div></div>
-                         <div id="backtest-progress-card" class="card p-6 hidden"><h2 class="text-xl font-semibold text-white mb-4">Backtest en cours...</h2>
-                            <div class="w-full bg-gray-600 rounded-full h-4"><div id="backtest-progress-bar" class="bg-blue-500 h-4 rounded-full w-0"></div></div><p id="backtest-progress-text" class="text-center mt-2">0%</p></div>
-                    </div>
-                </div>
+            <div class="lg:col-span-2 space-y-6">
+                <div class="card p-5"><h2 class="text-xl font-semibold text-white mb-4">Positions Ouvertes</h2><div id="positions-container"></div></div>
+                <div class="card p-5"><h2 class="text-xl font-semibold text-white mb-4">Journal d'Événements</h2><div id="logs-container" class="h-96 bg-gray-900 rounded-md p-3 overflow-y-auto text-xs font-mono"></div></div>
             </div>
         </main>
     </div>
     <script>
-        let equityChart = null;
-        function showTab(tabName) {
-            document.querySelectorAll('.tab-content').forEach(el => el.classList.add('hidden'));
-            document.querySelectorAll('.tab-button').forEach(el => el.classList.remove('active'));
-            document.getElementById(`content-${tabName}`).classList.remove('hidden');
-            document.getElementById(`tab-${tabName}`).classList.add('active');
-        }
         function formatProfit(profit) { return `<span class="${parseFloat(profit) >= 0 ? 'text-green-400' : 'text-red-400'}">${parseFloat(profit).toFixed(2)}</span>`; }
         async function fetchAllData() {
             try {
@@ -93,7 +60,7 @@ HTML_TEMPLATE = """
                 } else { patternsContainer.innerHTML = '<p class="text-gray-400 text-sm">En attente...</p>'; }
 
                 const positionsContainer = document.getElementById('positions-container');
-                positionsContainer.innerHTML = data.positions.length > 0 ? `<div class="overflow-x-auto"><table class="w-full text-left"><thead><tr class="border-b border-gray-600 text-sm"><th class="p-2">Ticket</th><th>Type</th><th>Volume</th><th>Profit</th></tr></thead><tbody class="text-sm">${data.positions.map(p => `<tr class="border-b border-gray-700"><td class="p-2">${p.ticket}</td><td class="p-2 font-bold ${p.type === 0 ? 'text-blue-400' : 'text-orange-400'}">${p.type === 0 ? 'BUY' : 'SELL'}</td><td class="p-2">${p.volume}</td><td class="p-2 font-semibold">${formatProfit(p.profit)}</td></tr>`).join('')}</tbody></table></div>` : '<p class="text-gray-400">Aucune position.</p>';
+                positionsContainer.innerHTML = data.positions.length > 0 ? `<div class="overflow-x-auto"><table class="w-full text-left"><thead><tr class="border-b border-gray-600 text-sm"><th class="p-2">Ticket</th><th>Type</th><th>Volume</th><th>Profit</th><th>Magic</th></tr></thead><tbody class="text-sm">${data.positions.map(p => `<tr class="border-b border-gray-700"><td class="p-2">${p.ticket}</td><td class="p-2 font-bold ${p.type === 0 ? 'text-blue-400' : 'text-orange-400'}">${p.type === 0 ? 'BUY' : 'SELL'}</td><td class="p-2">${p.volume}</td><td class="p-2 font-semibold">${formatProfit(p.profit)}</td><td class="p-2">${p.magic}</td></tr>`).join('')}</tbody></table></div>` : '<p class="text-gray-400">Aucune position.</p>';
 
                 const logsContainer = document.getElementById('logs-container');
                 const newLogsHtml = data.logs.map(log => `<p>${log}</p>`).join('');
@@ -108,3 +75,21 @@ HTML_TEMPLATE = """
 </body>
 </html>
 """
+
+def start_api_server(shared_state):
+    app = Flask(__name__)
+    logging.getLogger('werkzeug').setLevel(logging.ERROR)
+
+    @app.route('/')
+    def index():
+        return render_template_string(HTML_TEMPLATE)
+
+    @app.route('/api/data')
+    def get_all_data():
+        return jsonify(shared_state.get_all_data())
+    
+    config = shared_state.get_config()
+    host = config.get('api', {}).get('host', '127.0.0.1')
+    port = config.get('api', {}).get('port', 5000)
+    
+    app.run(host=host, port=port, debug=False, use_reloader=False)

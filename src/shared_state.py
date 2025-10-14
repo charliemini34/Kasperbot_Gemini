@@ -29,7 +29,6 @@ class SharedState:
                 for p in new_positions
             ]
     
-    # --- MÉTHODE AJOUTÉE ---
     def update_patterns(self, new_patterns):
         """Met à jour le dictionnaire de l'état des patterns détectés."""
         with self.lock:
@@ -42,14 +41,6 @@ class SharedState:
     def update_config(self, new_config):
         with self.lock:
             self.config = new_config
-
-    def signal_config_changed(self):
-        with self.lock:
-            self.config_changed_flag = True
-
-    def clear_config_changed_flag(self):
-        with self.lock:
-            self.config_changed_flag = False
 
     def get_all_data(self):
         with self.lock:
@@ -90,7 +81,7 @@ class SharedState:
             return self.backtest_status.copy()
 
 class LogHandler(logging.Handler):
-    """Un handler de logging qui envoie les logs vers le SharedState."""
+    """Handler de logging qui envoie les logs vers le SharedState."""
     def __init__(self, shared_state):
         super().__init__()
         self.shared_state = shared_state

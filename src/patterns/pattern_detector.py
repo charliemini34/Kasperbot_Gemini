@@ -8,7 +8,7 @@ from datetime import time
 class PatternDetector:
     """
     Module de reconnaissance de patterns Smart Money Concepts (SMC).
-    v6.0 : Implémentation du cycle AMD (Accumulation, Manipulation, Distribution).
+    v7.3 : Correction du bug AttributeError dans la détection d'Order Block.
     """
     def __init__(self, config):
         self.config = config
@@ -18,95 +18,138 @@ class PatternDetector:
     def get_detected_patterns_info(self):
         return self.detected_patterns_info
 
+    def _get_trend_filter_direction(self, df: pd.DataFrame) -> str:
+        """Détermine la tendance de fond avec une EMA pour filtrer les trades."""
+        filter_cfg = self.config.get('trend_filter', {})
+        if not filter_cfg.get('enabled', False):
+            self.detected_patterns_info['TREND_FILTER'] = {'status': 'Disabled'}
+            return "ANY"
+
+        period = filter_cfg.get('ema_period', 200)
+        ema = df['close'].ewm(span=period, adjust=False).mean()
+
+        if df['close'].iloc[-1] > ema.iloc[-1]:
+            self.detected_patterns_info['TREND_FILTER'] = {'status': 'Bullish'}
+            return "BUY"
+        else:
+            self.detected_patterns_info['TREND_FILTER'] = {'status': 'Bearish'}
+            return "SELL"
+
     def detect_patterns(self, ohlc_data: pd.DataFrame):
-        """Passe en revue les stratégies de détection SMC activées."""
+        """Passe en revue toutes les stratégies de détection et les filtre par tendance."""
         self.detected_patterns_info = {}
         
         df = ohlc_data.copy()
-        if not isinstance(df.index, pd.DatetimeIndex):
-            df['time'] = pd.to_datetime(df['time'])
-            df.set_index('time', inplace=True)
+        if 'time' in df.columns and not isinstance(df.index, pd.DatetimeIndex):
+            df.set_index(pd.to_datetime(df['time'], unit='s'), inplace=True)
         if df.index.tz is None:
             df.index = df.index.tz_localize('UTC')
-        else:
-            df.index = df.index.tz_convert('UTC')
 
-        if self.config.get('SMC_AMD_SESSION', False):
-            trade_signal = self._detect_smc_amd_session(df)
-            if trade_signal:
-                return trade_signal
+        allowed_direction = self._get_trend_filter_direction(df)
+
+        detection_functions = {
+            "SMC_AMD_SESSION": self._detect_amd_session,
+            "INBALANCE": self._detect_inbalance,
+            "ORDER_BLOCK": self._detect_order_block,
+        }
+
+        for name, func in detection_functions.items():
+            if self.config['pattern_detection'].get(name, False):
+                trade_signal = func(df)
+                if trade_signal:
+                    if allowed_direction == "ANY" or trade_signal['direction'] == allowed_direction:
+                        return trade_signal
+                    else:
+                        self.log.info(f"Pattern {name} ignoré (direction {trade_signal['direction']} vs tendance {allowed_direction}).")
         
         return None
 
-    def _find_swing_points(self, series, n=5):
+    def _find_swing_points(self, series: pd.Series, n=3):
         """Trouve les points de swing (hauts/bas) dans une série de prix."""
-        lows = (series.shift(n) > series) & (series.shift(-n) > series)
-        highs = (series.shift(n) < series) & (series.shift(-n) < series)
-        return series[lows], series[highs]
+        lows = series[(series.shift(1) > series) & (series.shift(-1) > series)]
+        highs = series[(series.shift(1) < series) & (series.shift(-1) < series)]
+        return lows, highs
 
-    def _detect_smc_amd_session(self, df: pd.DataFrame):
-        """
-        Détecte le pattern Accumulation-Manipulation-Distribution (AMD) basé sur le range asiatique.
-        """
+    def _detect_amd_session(self, df: pd.DataFrame):
+        """Détecte le pattern Accumulation-Manipulation-Distribution (AMD)."""
         self.detected_patterns_info['SMC_AMD_SESSION'] = {'status': 'Analyzing...'}
         last_candle_time = df.index[-1]
 
-        # --- Phase 1: Accumulation (le range asiatique) ---
-        # On ne procède à l'analyse que pendant les sessions de Londres/New York
-        if not (time(7, 0) <= last_candle_time.time() <= time(20, 0)):
-            return None
+        if not (time(7, 0) <= last_candle_time.time() <= time(20, 0)): return None
 
         asian_session = df.between_time('00:00', '06:59').loc[last_candle_time.date().strftime('%Y-%m-%d')]
-        if len(asian_session) < 10:
-            self.detected_patterns_info['SMC_AMD_SESSION'] = {'status': 'Waiting for Asian Range'}
-            return None
+        if len(asian_session) < 5: return None
 
-        asian_high = asian_session['high'].max()
-        asian_low = asian_session['low'].min()
-        self.detected_patterns_info['SMC_AMD_SESSION'] = {'status': f'Asian Range: {asian_low:.2f}-{asian_high:.2f}'}
+        asian_high, asian_low = asian_session['high'].max(), asian_session['low'].min()
+        self.detected_patterns_info['SMC_AMD_SESSION']['status'] = f'Range: {asian_low:.2f}-{asian_high:.2f}'
 
-        # --- Phase 2: Manipulation (Prise de liquidité) ---
-        recent_candles = df.loc[last_candle_time - pd.Timedelta(hours=6):]
-        
-        # --- Scénario de VENTE (Manipulation haussière) ---
+        recent_candles = df.loc[df.index > asian_session.index[-1]]
+        if recent_candles.empty: return None
+
         if recent_candles['high'].max() > asian_high:
-            # On a bien pris la liquidité au-dessus de l'Asie.
-            # Cherchons maintenant la confirmation : un Changement de Caractère (CHoCH) baissier.
-            
-            # 1. Trouver le dernier swing low avant le prix actuel
-            _, swing_highs = self._find_swing_points(recent_candles['high'])
             swing_lows, _ = self._find_swing_points(recent_candles['low'])
-            
-            if swing_lows.empty or swing_highs.empty: return None
-
-            # On prend le dernier swing low qui s'est formé APRES le dernier swing high
-            # C'est la structure qui doit être cassée pour un CHoCH
-            if swing_lows.index[-1] < swing_highs.index[-1]: return None
+            if swing_lows.empty: return None
             choch_level = swing_lows.iloc[-1]
-
-            # 2. Vérifier la cassure de structure (CHoCH)
-            # La bougie actuelle doit clôturer sous le CHoCH, et la précédente devait être au-dessus.
             if df['close'].iloc[-1] < choch_level and df['close'].iloc[-2] >= choch_level:
-                self.log.info(f"SMC AMD (SELL) Signal: Manipulation above {asian_high:.2f} confirmed by CHoCH below {choch_level:.2f}")
-                self.detected_patterns_info['SMC_AMD_SESSION'] = {'status': 'SELL SIGNAL'}
                 return {'pattern': 'SMC_AMD_Sell', 'direction': 'SELL'}
 
-        # --- Scénario d'ACHAT (Manipulation baissière) ---
         if recent_candles['low'].min() < asian_low:
-            # On a pris la liquidité sous l'Asie. Cherchons un CHoCH haussier.
-            
-            # 1. Trouver le dernier swing high
-            swing_lows, swing_highs = self._find_swing_points(recent_candles['low']), self._find_swing_points(recent_candles['high'])[1]
-            if swing_highs.empty or swing_lows[0].empty: return None
-            
-            # On cherche le dernier swing high qui a précédé le nouveau plus bas
-            if swing_highs.index[-1] < swing_lows[0].index[-1]: return None
+            _, swing_highs = self._find_swing_points(recent_candles['high'])
+            if swing_highs.empty: return None
             choch_level = swing_highs.iloc[-1]
-
-            # 2. Vérifier la cassure de structure (CHoCH)
             if df['close'].iloc[-1] > choch_level and df['close'].iloc[-2] <= choch_level:
-                self.log.info(f"SMC AMD (BUY) Signal: Manipulation below {asian_low:.2f} confirmed by CHoCH above {choch_level:.2f}")
-                self.detected_patterns_info['SMC_AMD_SESSION'] = {'status': 'BUY SIGNAL'}
                 return {'pattern': 'SMC_AMD_Buy', 'direction': 'BUY'}
+        return None
 
+    def _detect_inbalance(self, df: pd.DataFrame):
+        """Détecte un Fair Value Gap (Inbalance) dans la zone de Discount/Premium."""
+        self.detected_patterns_info['INBALANCE'] = {'status': 'No Signal'}
+        if len(df) < 50: return None
+        
+        recent_high, recent_low = df['high'].iloc[-50:].max(), df['low'].iloc[-50:].min()
+        equilibrium_mid = (recent_high + recent_low) / 2
+
+        for i in range(len(df) - 3, len(df) - 20, -1):
+            c1, c3 = df.iloc[i-2], df.iloc[i]
+            if c1['high'] < c3['low']:
+                fvg_top, fvg_bottom = c3['low'], c1['high']
+                if fvg_top < equilibrium_mid and df['low'].iloc[-1] <= fvg_top and df['high'].iloc[-1] >= fvg_bottom:
+                    return {'pattern': 'Inbalance_Buy', 'direction': 'BUY'}
+            
+            if c1['low'] > c3['high']:
+                fvg_top, fvg_bottom = c1['low'], c3['high']
+                if fvg_bottom > equilibrium_mid and df['high'].iloc[-1] >= fvg_bottom and df['low'].iloc[-1] <= fvg_top:
+                    return {'pattern': 'Inbalance_Sell', 'direction': 'SELL'}
+        return None
+
+    def _detect_order_block(self, df: pd.DataFrame):
+        """Détecte un retour sur un Order Block après une cassure de structure."""
+        self.detected_patterns_info['ORDER_BLOCK'] = {'status': 'No Signal'}
+        if len(df) < 20: return None
+
+        # --- CORRECTION ICI ---
+        # On appelle _find_swing_points séparément pour 'low' et 'high'
+        swing_lows, _ = self._find_swing_points(df['low'].iloc[-20:])
+        _, swing_highs = self._find_swing_points(df['high'].iloc[-20:])
+        
+        if len(swing_highs) > 1 and len(swing_lows) > 0:
+            if swing_highs.index[-1] > swing_lows.index[-1] and swing_highs.iloc[-1] > swing_highs.iloc[-2]:
+                bos_candle_idx = df.index.get_loc(swing_highs.index[-1])
+                candles_before_bos = df.iloc[:bos_candle_idx]
+                down_candles = candles_before_bos[candles_before_bos['close'] < candles_before_bos['open']]
+                if not down_candles.empty:
+                    ob = down_candles.iloc[-1]
+                    if df['low'].iloc[-1] <= ob['high'] and df['high'].iloc[-1] >= ob['low']:
+                        return {'pattern': 'Order_Block_Buy', 'direction': 'BUY'}
+
+        if len(swing_lows) > 1 and len(swing_highs) > 0:
+            if swing_lows.index[-1] > swing_highs.index[-1] and swing_lows.iloc[-1] < swing_lows.iloc[-2]:
+                bos_candle_idx = df.index.get_loc(swing_lows.index[-1])
+                candles_before_bos = df.iloc[:bos_candle_idx]
+                up_candles = candles_before_bos[candles_before_bos['close'] > candles_before_bos['open']]
+                if not up_candles.empty:
+                    ob = up_candles.iloc[-1]
+                    if df['high'].iloc[-1] >= ob['low'] and df['low'].iloc[-1] <= ob['high']:
+                        return {'pattern': 'Order_Block_Sell', 'direction': 'SELL'}
+        
         return None
