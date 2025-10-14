@@ -1,15 +1,12 @@
-
 # ==============================================================================
-#                 FICHIER DE CONFIGURATION PRINCIPAL - KASPERBOT v4.0
+#                 FICHIER DE CONFIGURATION PRINCIPAL - KASPERBOT v6.0
 # ==============================================================================
 
 # -- Identifiants de connexion à MetaTrader 5 --
-
 mt5_credentials:
   login: 10004952
-  password: jsne80aX!
-  server: Axi-US50-Demo
-
+  password: "jsne80aX!"
+  server: "Axi-US50-Demo"
 
 # -- Paramètres de l'interface web (API) --
 api:
@@ -19,45 +16,33 @@ api:
 # -- Paramètres de trading --
 trading_settings:
   symbol: "XAUUSD"
-  timeframe: "M30"
+  timeframe: "M15"  # Recommandé pour le SMC Day Trading
   live_trading_enabled: false
   magic_number: 13579
-
-# -- Logique de décision --
-trading_logic:
-  active_profile: "equilibre_pro_tendance"
-  execution_threshold: 75
 
 # -- Gestion du risque --
 risk_management:
   risk_per_trade: 0.01
   daily_loss_limit_percent: 0.05
   
-  sl_tp_strategy: "ATR_MULTIPLE"  # Options: "FIXED_PIPS", "ATR_MULTIPLE"
+  sl_tp_strategy: "ATR_MULTIPLE"
   
   atr_settings:
     period: 14
-    sl_multiple: 2.0
-    tp_multiple: 4.0
-
-  fixed_pips_settings:
-    stop_loss_pips: 200
-    take_profit_pips: 400
+    sl_multiple: 1.5  # SL plus serré pour les entrées précises SMC
+    tp_multiple: 3.0  # Viser un R:R de 1:2 ou 1:3 est commun en SMC
 
   breakeven:
     enabled: true
-    trigger_pips: 150
+    trigger_pips: 100
     pips_plus: 10
 
   trailing_stop:
     enabled: true
-    trailing_pips: 200
-    activation_pips: 250
+    trailing_pips: 150
+    activation_pips: 200
 
-# -- Apprentissage Automatique (Machine Learning) --
-learning:
-  # Si 'true', le bot analysera son historique et ajustera automatiquement les poids
-  # du profil 'custom' pour favoriser les stratégies les plus performantes.
-  auto_optimization_enabled: false
-  # Rythme d'ajustement : un faible 'learning_rate' (ex: 0.05) favorise des changements lents et stables.
-  learning_rate: 0.05
+# -- Détection de Patterns Smart Money Concepts (SMC) --
+# Le bot va maintenant rechercher des setups SMC complets (ex: AMD).
+pattern_detection:
+  SMC_AMD_SESSION: true
