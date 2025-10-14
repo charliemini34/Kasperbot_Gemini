@@ -1,34 +1,36 @@
+# Fichier: src/backtest/backtester.py
+
 import MetaTrader5 as mt5
 import pandas as pd
 from datetime import datetime
 import logging
 import yaml
+import numpy as np
 
 from src.scorer.strategy_scorer import StrategyScorer
 from src.scorer.aggregator import Aggregator
+from src.risk.risk_manager import RiskManager
+from src.execution.mt5_executor import MT5Executor # Nécessaire pour initialiser le RiskManager
 
 class Backtester:
     def __init__(self, shared_state):
         self.state = shared_state
         self.log = logging.getLogger(self.__class__.__name__)
-        
+        # On a besoin d'une connexion MT5 active pour les infos de symboles
+        if not mt5.initialize():
+            self.log.error("Impossible d'initialiser MT5 pour le backtester.")
+            raise ConnectionError("MT5 n'est pas lancé ou la connexion a échoué.")
+            
     def run(self, start_date_str, end_date_str, initial_capital):
         self.log.info(f"Démarrage du backtest de {start_date_str} à {end_date_str}...")
         self.state.start_backtest()
 
         try:
-            # --- CORRECTION : Charger les deux fichiers de configuration ---
-            with open('config.yaml', 'r', encoding='utf-8') as f:
-                config = yaml.safe_load(f)
-            with open('profiles.yaml', 'r', encoding='utf-8') as f:
-                profiles = yaml.safe_load(f)
+            config = load_yaml('config.yaml')
+            profiles = load_yaml('profiles.yaml')
             
-            # --- CORRECTION : Sélectionner les poids de la stratégie en fonction du profil actif ---
-            active_profile_name = config.get('trading_logic', {}).get('active_profile', 'custom')
-            strategy_weights = profiles.get(active_profile_name)
-            if not strategy_weights:
-                self.log.error(f"Profil '{active_profile_name}' non trouvé. Utilisation du profil 'custom'.")
-                strategy_weights = profiles.get('custom', {})
+            active_profile_name = config['trading_logic']['active_profile']
+            strategy_weights = profiles.get(active_profile_name, profiles['custom'])
 
             start_date = datetime.strptime(start_date_str, '%Y-%m-%d')
             end_date = datetime.strptime(end_date_str, '%Y-%m-%d')
@@ -44,67 +46,75 @@ class Backtester:
             df = pd.DataFrame(all_data)
             df['time'] = pd.to_datetime(df['time'], unit='s')
             
+            # --- Initialisation pour une simulation réaliste ---
             capital = float(initial_capital)
-            equity_curve = [capital]
+            equity = capital
+            equity_curve = [equity]
             trades = []
             open_position = None
             
+            # On simule un Executor et un RiskManager pour des calculs précis
+            fake_executor = MT5Executor(mt5, None) 
+            risk_manager = RiskManager(config['risk_management'], fake_executor, symbol)
             scorer = StrategyScorer()
-            # Utilise les poids corrects
             aggregator = Aggregator(strategy_weights)
             
             total_bars = len(df)
             for i in range(200, total_bars):
+                progress = (i - 200) / (total_bars - 200) * 100
                 if i % (total_bars // 100 or 1) == 0:
-                    self.state.update_backtest_progress((i / total_bars) * 100)
+                    self.state.update_backtest_progress(progress)
 
                 current_data = df.iloc[:i]
-                current_price_info = df.iloc[i]
+                current_price = df.iloc[i]
                 
+                # --- Gestion de la position ouverte ---
                 if open_position:
-                    pnl = 0
                     closed = False
+                    pnl = 0
                     if open_position['direction'] == 'BUY':
-                        if current_price_info['low'] <= open_position['sl']:
-                            pnl = (open_position['sl'] - open_position['entry_price']) * open_position['volume'] * 100 # Simplification, ne reflète pas la taille de lot réelle
+                        pnl = (current_price['close'] - open_position['entry_price']) * open_position['volume'] * risk_manager.symbol_info.trade_contract_size
+                        if current_price['low'] <= open_position['sl']:
+                            pnl = (open_position['sl'] - open_position['entry_price']) * open_position['volume'] * risk_manager.symbol_info.trade_contract_size
                             closed = True
-                        elif current_price_info['high'] >= open_position['tp']:
-                            pnl = (open_position['tp'] - open_position['entry_price']) * open_position['volume'] * 100
+                        elif current_price['high'] >= open_position['tp']:
+                            pnl = (open_position['tp'] - open_position['entry_price']) * open_position['volume'] * risk_manager.symbol_info.trade_contract_size
                             closed = True
                     else: # SELL
-                        if current_price_info['high'] >= open_position['sl']:
-                            pnl = (open_position['entry_price'] - open_position['sl']) * open_position['volume'] * 100
+                        pnl = (open_position['entry_price'] - current_price['close']) * open_position['volume'] * risk_manager.symbol_info.trade_contract_size
+                        if current_price['high'] >= open_position['sl']:
+                            pnl = (open_position['entry_price'] - open_position['sl']) * open_position['volume'] * risk_manager.symbol_info.trade_contract_size
                             closed = True
-                        elif current_price_info['low'] <= open_position['tp']:
-                            pnl = (open_position['entry_price'] - open_position['tp']) * open_position['volume'] * 100
+                        elif current_price['low'] <= open_position['tp']:
+                            pnl = (open_position['entry_price'] - open_position['tp']) * open_position['volume'] * risk_manager.symbol_info.trade_contract_size
                             closed = True
                     
                     if closed:
-                        capital += pnl
+                        equity += pnl
                         open_position['pnl'] = pnl
                         trades.append(open_position)
                         open_position = None
-                        equity_curve.append(capital)
+                        equity_curve.append(equity)
                 
+                # --- Recherche d'une nouvelle opportunité ---
                 if not open_position:
                     raw_scores = scorer.calculate_all(current_data)
                     final_score, trade_direction = aggregator.calculate_final_score(raw_scores)
                     
                     if final_score >= config['trading_logic']['execution_threshold'] and trade_direction != "NEUTRAL":
-                        entry_price = current_price_info['close']
-                        sl_pips = config['risk_management']['stop_loss_pips']
-                        tp_pips = config['risk_management']['take_profit_pips']
-                        point = mt5.symbol_info(symbol).point if mt5.symbol_info(symbol) else 0.001
+                        entry_price = current_price['close']
                         
-                        sl = entry_price - sl_pips * 10 * point if trade_direction == "BUY" else entry_price + sl_pips * 10 * point
-                        tp = entry_price + tp_pips * 10 * point if trade_direction == "BUY" else entry_price - tp_pips * 10 * point
+                        sl, tp = risk_manager.calculate_sl_tp(entry_price, trade_direction, current_data)
+                        volume = risk_manager.calculate_volume(equity, entry_price, sl)
                         
-                        open_position = {
-                            'direction': trade_direction, 'entry_price': entry_price, 'sl': sl, 'tp': tp,
-                            'volume': config['trading_settings'].get('volume_per_trade', 0.01), # Utilisation de .get pour plus de sécurité
-                        }
+                        if volume > 0:
+                            open_position = {
+                                'direction': trade_direction, 'entry_price': entry_price, 
+                                'sl': sl, 'tp': tp, 'volume': volume,
+                            }
 
-            pnl = equity_curve[-1] - float(initial_capital)
+            # --- Calcul des résultats finaux ---
+            final_pnl = equity - capital
             wins = [t for t in trades if t.get('pnl', 0) > 0]
             win_rate = (len(wins) / len(trades)) * 100 if trades else 0
             
@@ -113,13 +123,16 @@ class Backtester:
             drawdown = ((equity_series - peak) / peak).min() if not peak.empty else 0
 
             results = {
-                "pnl": pnl, "total_trades": len(trades), "win_rate": win_rate,
+                "pnl": final_pnl, "total_trades": len(trades), "win_rate": win_rate,
                 "max_drawdown_percent": abs(drawdown * 100), "equity_curve": equity_curve,
             }
-
             self.state.finish_backtest(results)
-            self.log.info(f"Backtest terminé. PnL final: {pnl:.2f}$")
+            self.log.info(f"Backtest terminé. PnL final: {final_pnl:.2f}$")
 
         except Exception as e:
             self.log.error(f"Erreur durant le backtest: {e}", exc_info=True)
             self.state.finish_backtest({"error": str(e)})
+
+def load_yaml(filepath: str) -> dict:
+    with open(filepath, 'r', encoding='utf-8') as f:
+        return yaml.safe_load(f)
