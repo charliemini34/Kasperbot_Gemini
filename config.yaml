@@ -1,32 +1,34 @@
 api:
-  host: 127.0.0.2
+  host: 127.0.0.1
   port: 5000
 learning:
-  ai_confirmation_enabled: true
-  auto_optimization_enabled: true
+  ai_confirmation_enabled: false
+  auto_optimization_enabled: false
 mt5_credentials:
   login: 10004952
   password: jsne80aX!
   server: Axi-US50-Demo
 risk_management:
+  # -- Mise à l'équilibre automatique --
   breakeven:
     enabled: true
-    trigger_pips: 200
+    trigger_pips: 150
+    pips_plus: 10      # <-- AJOUT : Pips à ajouter au BE pour couvrir le spread/commission
+
   daily_loss_limit_percent: 0.05
-  dynamic_volume_sizing: true
-  max_concurrent_positions: 3
+  magic_number: 13579
   risk_per_trade: 0.01
-  stop_loss_pips: 150
+  stop_loss_pips: 200
   take_profit_pips: 400
   trailing_stop:
-    activation_pips: 300
+    activation_pips: 250
     enabled: true
-    trailing_pips: 250
+    trailing_pips: 200
 trading_logic:
-  active_profile: conservateur_suiveur_tendance
-  execution_threshold: 40
+  active_profile: equilibre_pro_tendance
+  execution_threshold: 20
 trading_settings:
-  live_trading_enabled: false
+  live_trading_enabled: true
+  magic_number: 13579
   symbol: XAUUSD
-  timeframe: M5
-  volume_per_trade: 0.01
+  timeframe: M30

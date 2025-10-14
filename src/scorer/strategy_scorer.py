@@ -1,3 +1,5 @@
+# Fichier: src/scorer/strategy_scorer.py
+
 import pandas as pd
 import numpy as np
 from datetime import time
@@ -21,10 +23,8 @@ class StrategyScorer:
         if ohlc_data is None or len(ohlc_data) < 50:
             return {}
         
-        # --- CORRECTION : Créer une copie explicite pour éviter le SettingWithCopyWarning ---
         df = ohlc_data.copy()
             
-        # S'assurer que l'index est bien un DatetimeIndex pour les opérations temporelles
         if not isinstance(df.index, pd.DatetimeIndex):
             df['time'] = pd.to_datetime(df['time'])
             df.set_index('time', inplace=True)
@@ -35,6 +35,7 @@ class StrategyScorer:
             "SMC": self._score_smc(df),
             "VOL_BRK": self._score_volatility_breakout(df),
             "LONDON_BRK": self._score_london_breakout(df),
+            "INBALANCE": self._score_inbalance(df), # <-- NOUVELLE STRATÉGIE
         }
         return scores
 
@@ -184,4 +185,78 @@ class StrategyScorer:
                 if df['close'].iloc[-1] < asian_low:
                     return {"score": 80, "direction": "SELL"}
                     
+        return {"score": 0, "direction": "NEUTRAL"}
+
+    def _score_inbalance(self, df: pd.DataFrame) -> dict:
+        """
+        Détecte les inbalances (Fair Value Gaps) et score leur pertinence.
+        Combine la détection graphique, la non-mitigation et le concept d'equilibrium.
+        """
+        if len(df) < 3:
+            return {"score": 0, "direction": "NEUTRAL"}
+
+        score = 0
+        direction = "NEUTRAL"
+        last_candle_idx = len(df) - 1
+
+        # Calculer le swing high/low pour l'equilibrium (similaire au Fibonacci)
+        # Pour le day trading sur 30min, un swing sur 20-30 bougies est pertinent
+        swing_window = 30
+        if len(df) < swing_window:
+            return {"score": 0, "direction": "NEUTRAL"}
+            
+        recent_high = df['high'].iloc[-swing_window:].max()
+        recent_low = df['low'].iloc[-swing_window:].min()
+        equilibrium_mid = (recent_high + recent_low) / 2
+
+        # Itérer sur les bougies récentes pour trouver une inbalance non-mitigée
+        # On cherche à partir de la dernière bougie en remontant
+        for i in range(last_candle_idx, 1, -1): # i est l'index de la 3ème bougie dans la séquence 1-2-3
+            candle1 = df.iloc[i - 2]
+            candle2 = df.iloc[i - 1]
+            candle3 = df.iloc[i]
+
+            # Détection d'inbalance haussière (Bullish FVG)
+            if candle1['high'] < candle3['low'] and candle3.name == df.index[last_candle_idx]:
+                # Zone de l'inbalance
+                fvg_low = candle1['high']
+                fvg_high = candle3['low']
+
+                # Vérifier la non-mitigation: aucune bougie entre l'inbalance et la bougie actuelle ne doit avoir touché la FVG
+                # Pour simplifier, on vérifie que le prix n'est pas déjà revenu dans la zone de l'inbalance.
+                # Une vraie mitigation serait plus complexe (test des low/high dans la zone)
+                is_mitigated = False
+                if i < last_candle_idx: # Si ce n'est pas l'inbalance de la bougie actuelle
+                    if (df['low'].iloc[i+1:last_candle_idx+1] <= fvg_high).any() and \
+                       (df['high'].iloc[i+1:last_candle_idx+1] >= fvg_low).any():
+                        is_mitigated = True
+                
+                # S'assurer que le prix actuel est au-dessus de l'inbalance ou en train de la re-tester
+                if not is_mitigated and df['close'].iloc[last_candle_idx] > fvg_high:
+                    # Vérifier l'equilibrium: l'inbalance doit être en discount pour un achat
+                    if fvg_low < equilibrium_mid:
+                        score = 90  # Score élevé pour une inbalance haussière non-mitigée en discount
+                        direction = "BUY"
+                        # Une fois trouvée, on prend la plus récente et la plus pertinente
+                        return {"score": score, "direction": direction, "fvg_low": fvg_low, "fvg_high": fvg_high}
+
+            # Détection d'inbalance baissière (Bearish FVG)
+            if candle1['low'] > candle3['high'] and candle3.name == df.index[last_candle_idx]:
+                # Zone de l'inbalance
+                fvg_low = candle3['high']
+                fvg_high = candle1['low']
+
+                is_mitigated = False
+                if i < last_candle_idx:
+                    if (df['high'].iloc[i+1:last_candle_idx+1] >= fvg_low).any() and \
+                       (df['low'].iloc[i+1:last_candle_idx+1] <= fvg_high).any():
+                        is_mitigated = True
+
+                if not is_mitigated and df['close'].iloc[last_candle_idx] < fvg_low:
+                    # Vérifier l'equilibrium: l'inbalance doit être en premium pour une vente
+                    if fvg_high > equilibrium_mid:
+                        score = 90  # Score élevé pour une inbalance baissière non-mitigée en premium
+                        direction = "SELL"
+                        return {"score": score, "direction": direction, "fvg_low": fvg_low, "fvg_high": fvg_high}
+        
         return {"score": 0, "direction": "NEUTRAL"}
