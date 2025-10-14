@@ -3,12 +3,12 @@
 import MetaTrader5 as mt5
 import logging
 import math
+import numpy as np
 
 class RiskManager:
     """
-    Gère le risque des trades avec calcul de lot, SL/TP,
-    et une logique de breakeven et trailing stop robuste.
-    Version 3.4 : Le Breakeven prend en compte le spread.
+    Gère le risque des trades.
+    Version 3.5 : Intègre un SL/TP dynamique basé sur l'ATR.
     """
     def __init__(self, config: dict, executor, symbol: str):
         self._config = config
@@ -25,6 +25,61 @@ class RiskManager:
             
         self.point = self.symbol_info.point
 
+    def calculate_sl_tp(self, price: float, direction: str, ohlc_data) -> tuple[float, float]:
+        """Calcule les prix SL et TP en se basant sur la stratégie définie dans la config."""
+        strategy = self._config.get('sl_tp_strategy', 'FIXED_PIPS')
+
+        if strategy == "ATR_MULTIPLE":
+            return self._calculate_sl_tp_atr(price, direction, ohlc_data)
+        else: # Par défaut ou si "FIXED_PIPS"
+            return self._calculate_sl_tp_fixed(price, direction)
+
+    def _calculate_sl_tp_fixed(self, price: float, direction: str) -> tuple[float, float]:
+        """Calcule SL/TP avec un nombre de pips fixe."""
+        settings = self._config.get('fixed_pips_settings', {})
+        sl_pips = settings.get('stop_loss_pips', 150)
+        tp_pips = settings.get('take_profit_pips', 400)
+        
+        sl_distance = sl_pips * 10 * self.point
+        tp_distance = tp_pips * 10 * self.point
+
+        if direction == "BUY":
+            sl = price - sl_distance
+            tp = price + tp_distance
+        else: # SELL
+            sl = price + sl_distance
+            tp = price - tp_distance
+            
+        return round(sl, self.symbol_info.digits), round(tp, self.symbol_info.digits)
+
+    def _calculate_sl_tp_atr(self, price: float, direction: str, ohlc_data) -> tuple[float, float]:
+        """Calcule SL/TP en utilisant un multiple de l'ATR."""
+        settings = self._config.get('atr_settings', {})
+        period = settings.get('period', 14)
+        sl_multiple = settings.get('sl_multiple', 2.0)
+        tp_multiple = settings.get('tp_multiple', 4.0)
+
+        # Calcul de l'ATR
+        high_low = ohlc_data['high'] - ohlc_data['low']
+        high_close = np.abs(ohlc_data['high'] - ohlc_data['close'].shift())
+        low_close = np.abs(ohlc_data['low'] - ohlc_data['close'].shift())
+        ranges = pd.concat([high_low, high_close, low_close], axis=1)
+        true_range = np.max(ranges, axis=1)
+        atr = true_range.ewm(alpha=1/period, adjust=False).mean().iloc[-1]
+        
+        self.log.info(f"ATR({period}) calculé : {atr:.4f}")
+
+        if direction == "BUY":
+            sl = price - (atr * sl_multiple)
+            tp = price + (atr * tp_multiple)
+        else: # SELL
+            sl = price + (atr * sl_multiple)
+            tp = price - (atr * tp_multiple)
+
+        return round(sl, self.symbol_info.digits), round(tp, self.symbol_info.digits)
+
+
+    # ... Le reste des fonctions (calculate_volume, manage_open_positions, etc.) reste inchangé ...
     def calculate_volume(self, equity: float, entry_price: float, sl_price: float) -> float:
         """
         Calcule la taille de la position avec une conversion de devise explicite.
@@ -78,7 +133,6 @@ class RiskManager:
         return final_volume
 
     def get_conversion_rate(self, from_currency: str, to_currency: str) -> float | None:
-        """Trouve le taux de change pour convertir une devise en une autre."""
         pair1 = f"{to_currency}{from_currency}"
         info1 = self._executor._mt5.symbol_info_tick(pair1)
         if info1 and info1.bid > 0:
@@ -92,51 +146,27 @@ class RiskManager:
         self.log.error(f"Impossible de trouver un taux de change pour {from_currency} -> {to_currency}")
         return None
 
-    def calculate_sl_tp(self, price: float, direction: str) -> tuple[float, float]:
-        """Calcule les prix SL et TP en se basant sur les pips définis dans la config."""
-        sl_pips = self._config.get('stop_loss_pips', 150)
-        tp_pips = self._config.get('take_profit_pips', 400)
-        
-        sl_distance = sl_pips * 10 * self.point
-        tp_distance = tp_pips * 10 * self.point
-
-        if direction == "BUY":
-            sl = price - sl_distance
-            tp = price + tp_distance
-        else: # SELL
-            sl = price + sl_distance
-            tp = price - tp_distance
-            
-        return round(sl, self.symbol_info.digits), round(tp, self.symbol_info.digits)
-
     def is_daily_loss_limit_reached(self, equity: float, daily_pnl: float) -> bool:
-        """Vérifie si la limite de perte journalière est atteinte."""
         loss_limit_percent = self._config.get('daily_loss_limit_percent', 0.05)
         loss_limit_amount = equity * loss_limit_percent
         return daily_pnl < 0 and abs(daily_pnl) >= loss_limit_amount
 
     def manage_open_positions(self, positions: list, current_tick):
-        """Orchestre la gestion des positions ouvertes (BE, Trailing)."""
         if not positions or not current_tick: return
         self._apply_breakeven(positions, current_tick)
         self._apply_trailing_stop(positions, current_tick)
 
     def _apply_breakeven(self, positions, tick):
-        """Met le stop loss à l'équilibre en couvrant le spread."""
         cfg = self._config.get('breakeven', {})
         if not cfg.get('enabled', False): return
         
         trigger_distance = cfg.get('trigger_pips', 150) * 10 * self.point
-        # Pips de sécurité pour couvrir spread/commission
         pips_plus = cfg.get('pips_plus', 10) * 10 * self.point
 
         for pos in positions:
-            # Calcule le niveau de SL cible pour le breakeven
             if pos.type == mt5.ORDER_TYPE_BUY:
                 breakeven_sl = pos.price_open + pips_plus
-                # Ne rien faire si le SL est déjà au-dessus du prix d'entrée
                 if pos.sl >= pos.price_open: continue
-                # Vérifier si le prix actuel déclenche le BE
                 if (tick.bid - pos.price_open) >= trigger_distance:
                     self.log.info(f"BREAK-EVEN+ SÉCURISÉ: Déplacement du SL à {breakeven_sl:.5f} pour #{pos.ticket}")
                     self._executor.modify_position(pos.ticket, breakeven_sl, pos.tp)
@@ -149,7 +179,6 @@ class RiskManager:
                     self._executor.modify_position(pos.ticket, breakeven_sl, pos.tp)
 
     def _apply_trailing_stop(self, positions, tick):
-        """Ajuste le stop loss pour suivre le prix lorsque le trade est en gain."""
         cfg = self._config.get('trailing_stop', {})
         if not cfg.get('enabled', False): return
         
@@ -158,7 +187,6 @@ class RiskManager:
         
         for pos in positions:
             new_sl = pos.sl
-            
             if pos.type == mt5.ORDER_TYPE_BUY:
                 if (tick.bid - pos.price_open) < activation_distance: continue
                 potential_new_sl = tick.bid - trailing_distance
