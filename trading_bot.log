@@ -1,8 +1,16 @@
-11:44:02 - root - INFO - Interface web démarrée sur http://127.0.0.1:5000
-11:44:02 - root - INFO - Démarrage de la boucle de trading...
-11:44:02 - MT5Connector - INFO - Attempting to connect to MetaTrader 5...
-11:44:02 - MT5Connector - INFO - Successfully connected to MT5. Version: (500, 5327, '3 Oct 2025')
-11:44:02 - AIAssistant - INFO - Assistant IA initialisé avec succès (Gemini-Pro).
-11:44:02 - AIAssistant - INFO - Assistant IA initialisé avec succès (Gemini-Pro).
-11:44:33 - root - INFO - Configuration rechargée dynamiquement.
-11:48:34 - root - INFO - Configuration rechargée dynamiquement.
+12:30:26 - root - INFO - Interface web d�marr�e sur http://127.0.0.1:5000
+12:30:26 - root - INFO - D�marrage de la boucle de trading v6.0 (SMC Engine)...
+12:30:26 - MT5Connector - INFO - Attempting to connect to MetaTrader 5...
+12:30:26 - MT5Connector - INFO - Successfully connected to MT5. Version: (500, 5327, '3 Oct 2025')
+12:30:26 - root - ERROR - Erreur majeure dans la boucle principale: 'SharedState' object has no attribute 'update_patterns'
+Traceback (most recent call last):
+  File "C:\Users\Yannick\Documents\GitHub\Kasperbot\main.py", line 78, in main_trading_loop
+    state.update_patterns(detector.get_detected_patterns_info())
+    ^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'SharedState' object has no attribute 'update_patterns'. Did you mean: 'update_positions'?
+12:30:56 - root - ERROR - Erreur majeure dans la boucle principale: 'SharedState' object has no attribute 'update_patterns'
+Traceback (most recent call last):
+  File "C:\Users\Yannick\Documents\GitHub\Kasperbot\main.py", line 78, in main_trading_loop
+    state.update_patterns(detector.get_detected_patterns_info())
+    ^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'SharedState' object has no attribute 'update_patterns'. Did you mean: 'update_positions'?

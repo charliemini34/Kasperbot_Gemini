@@ -16,10 +16,9 @@ from src.shared_state import SharedState, LogHandler
 
 def setup_logging(state: SharedState):
     log_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s', datefmt='%H:%M:%S')
-    ui_handler, file_handler, console_handler = LogHandler(state), logging.FileHandler("trading_bot.log", mode='w'), logging.StreamHandler()
+    ui_handler, file_handler, console_handler = LogHandler(state), logging.FileHandler("trading_bot.log", mode='w', encoding='utf-8'), logging.StreamHandler()
     for handler in [ui_handler, file_handler, console_handler]:
         handler.setFormatter(log_formatter)
-    
     root_logger = logging.getLogger()
     root_logger.setLevel(logging.INFO)
     if not root_logger.handlers:
@@ -38,7 +37,7 @@ def load_yaml(filepath: str) -> dict:
     return {}
 
 def main_trading_loop(state: SharedState):
-    logging.info("Démarrage de la boucle de trading v6.0 (SMC Engine)...")
+    logging.info("Démarrage de la boucle de trading v6.2 (SMC Engine)...")
     
     initial_config = load_yaml('config.yaml')
     state.update_config(initial_config)
@@ -93,7 +92,7 @@ def main_trading_loop(state: SharedState):
                 else:
                     logging.info(f"ACTION IGNORÉE: Un trade (MAGIC: {magic_number}) est déjà ouvert.")
             
-            time.sleep(20) # Temps d'attente légèrement augmenté
+            time.sleep(20)
 
         except Exception as e:
             logging.error(f"Erreur majeure dans la boucle principale: {e}", exc_info=True)
