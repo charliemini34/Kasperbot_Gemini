@@ -5,12 +5,12 @@ import logging
 import math
 import pandas as pd
 import numpy as np
-from src.constants import BUY # Importation de la constante
+from src.constants import BUY
 
 class RiskManager:
     """
     Gère le risque des trades.
-    v9.1 : Gestion des paramètres ATR spécifiques au symbole.
+    v9.2 : Implémentation d'un Trailing Stop dynamique basé sur l'ATR.
     """
     def __init__(self, config: dict, executor, symbol: str):
         self._config = config
@@ -26,8 +26,18 @@ class RiskManager:
             
         self.point = self.symbol_info.point
 
+    def _calculate_atr(self, ohlc_data: pd.DataFrame, period: int) -> float:
+        """Calcule la valeur de l'Average True Range (ATR)."""
+        high_low = ohlc_data['high'] - ohlc_data['low']
+        high_close = np.abs(ohlc_data['high'] - ohlc_data['close'].shift())
+        low_close = np.abs(ohlc_data['low'] - ohlc_data['close'].shift())
+        ranges = pd.concat([high_low, high_close, low_close], axis=1)
+        true_range = np.max(ranges, axis=1)
+        return true_range.ewm(alpha=1/period, adjust=False).mean().iloc[-1]
+
     def calculate_volume(self, equity: float, entry_price: float, sl_price: float) -> float:
         """Calcule la taille de la position en lots avec un logging détaillé."""
+        # ... (cette fonction ne change pas)
         self.log.info("--- Début du Calcul de Volume ---")
         risk_settings = self._config.get('risk_management', {})
         risk_percent = risk_settings.get('risk_per_trade', 0.01)
@@ -66,81 +76,66 @@ class RiskManager:
         self.log.info(f"6. Volume final ajusté: {final_volume:.2f} lots")
         self.log.info("--- Fin du Calcul de Volume ---")
         return final_volume
-
+        
     def calculate_sl_tp(self, price: float, direction: str, ohlc_data, symbol: str):
         rm_settings = self._config.get('risk_management', {})
         strategy = rm_settings.get('sl_tp_strategy', 'FIXED_PIPS')
         
         if strategy == "ATR_MULTIPLE":
-            return self._calculate_sl_tp_atr(price, direction, ohlc_data, rm_settings.get('atr_settings', {}), symbol)
-        else: # Stratégie par défaut "FIXED_PIPS"
-            fixed_settings = rm_settings.get('fixed_pips_settings', {})
-            sl_pips = fixed_settings.get('stop_loss_pips', 150)
-            tp_pips = fixed_settings.get('take_profit_pips', 400)
-            sl_distance = sl_pips * 10 * self.point
-            tp_distance = tp_pips * 10 * self.point
+            symbol_settings = rm_settings.get('atr_settings', {}).get(symbol, rm_settings.get('atr_settings', {}).get('default', {}))
+            period = symbol_settings.get('period', 14)
+            atr = self._calculate_atr(ohlc_data, period)
+            sl_multiple = symbol_settings.get('sl_multiple', 1.5)
+            tp_multiple = symbol_settings.get('tp_multiple', 3.0)
             
             if direction == BUY:
-                sl, tp = price - sl_distance, price + tp_distance
+                sl, tp = price - (atr * sl_multiple), price + (atr * tp_multiple)
             else:
-                sl, tp = price + sl_distance, price - tp_distance
-                
+                sl, tp = price + (atr * sl_multiple), price - (atr * tp_multiple)
             return round(sl, self.symbol_info.digits), round(tp, self.symbol_info.digits)
 
-    def _calculate_sl_tp_atr(self, price: float, direction: str, ohlc_data, settings: dict, symbol: str):
-        # Cherche une configuration spécifique au symbole, sinon utilise le défaut
-        symbol_settings = settings.get(symbol, settings.get('default', {}))
-        
-        period = symbol_settings.get('period', 14)
-        sl_multiple = symbol_settings.get('sl_multiple', 2.0)
-        tp_multiple = symbol_settings.get('tp_multiple', 4.0)
-
-        high_low = ohlc_data['high'] - ohlc_data['low']
-        high_close = np.abs(ohlc_data['high'] - ohlc_data['close'].shift())
-        low_close = np.abs(ohlc_data['low'] - ohlc_data['close'].shift())
-        ranges = pd.concat([high_low, high_close, low_close], axis=1)
-        true_range = np.max(ranges, axis=1)
-        atr = true_range.ewm(alpha=1/period, adjust=False).mean().iloc[-1]
-        
-        if direction == BUY:
-            sl, tp = price - (atr * sl_multiple), price + (atr * tp_multiple)
-        else:
-            sl, tp = price + (atr * sl_multiple), price - (atr * tp_multiple)
-            
-        return round(sl, self.symbol_info.digits), round(tp, self.symbol_info.digits)
+        else: # Stratégie par défaut "FIXED_PIPS"
+            # ... (cette partie ne change pas)
+            fixed_settings = rm_settings.get('fixed_pips_settings', {})
+            sl_pips, tp_pips = fixed_settings.get('stop_loss_pips', 150), fixed_settings.get('take_profit_pips', 400)
+            sl_distance, tp_distance = sl_pips * 10 * self.point, tp_pips * 10 * self.point
+            if direction == BUY: sl, tp = price - sl_distance, price + tp_distance
+            else: sl, tp = price + sl_distance, price - tp_distance
+            return round(sl, self.symbol_info.digits), round(tp, self.symbol_info.digits)
 
     def get_conversion_rate(self, from_currency: str, to_currency: str) -> float | None:
-        if from_currency == to_currency:
-            return 1.0
-            
+        # ... (cette fonction ne change pas)
+        if from_currency == to_currency: return 1.0
         pair1 = f"{to_currency}{from_currency}"
         info1 = self._executor._mt5.symbol_info_tick(pair1)
-        if info1 and info1.bid > 0:
-            return info1.bid
-            
+        if info1 and info1.bid > 0: return info1.bid
         pair2 = f"{from_currency}{to_currency}"
         info2 = self._executor._mt5.symbol_info_tick(pair2)
-        if info2 and info2.ask > 0:
-            return 1.0 / info2.ask
-            
+        if info2 and info2.ask > 0: return 1.0 / info2.ask
         self.log.error(f"Impossible de trouver un taux de conversion pour {from_currency}->{to_currency}")
         return None
 
     def is_daily_loss_limit_reached(self, equity: float, daily_pnl: float) -> bool:
+        # ... (cette fonction ne change pas)
         loss_limit_percent = self._config.get('risk_management', {}).get('daily_loss_limit_percent', 0.05)
         loss_limit_amount = equity * loss_limit_percent
         return daily_pnl < 0 and abs(daily_pnl) >= loss_limit_amount
 
-    def manage_open_positions(self, positions: list, current_tick):
-        if not positions or not current_tick:
+    def manage_open_positions(self, positions: list, current_tick, ohlc_data: pd.DataFrame):
+        if not positions or not current_tick or ohlc_data is None or ohlc_data.empty:
             return
         self._apply_breakeven(positions, current_tick)
-        self._apply_trailing_stop(positions, current_tick)
+        
+        # Décide quelle logique de trailing stop utiliser
+        if self._config.get('trailing_stop_atr', {}).get('enabled', False):
+            self._apply_trailing_stop_atr(positions, current_tick, ohlc_data)
+        elif self._config.get('trailing_stop', {}).get('enabled', False):
+            self._apply_trailing_stop_pips(positions, current_tick)
 
     def _apply_breakeven(self, positions, tick):
+        # ... (cette fonction ne change pas)
         cfg = self._config.get('breakeven', {})
-        if not cfg.get('enabled', False):
-            return
+        if not cfg.get('enabled', False): return
         trigger_distance = cfg.get('trigger_pips', 150) * 10 * self.point
         pips_plus = cfg.get('pips_plus', 10) * 10 * self.point
         for pos in positions:
@@ -152,13 +147,22 @@ class RiskManager:
                 breakeven_sl = pos.price_open - pips_plus
                 if (pos.sl == 0 or pos.sl > pos.price_open) and (pos.price_open - tick.ask) >= trigger_distance:
                     self._executor.modify_position(pos.ticket, breakeven_sl, pos.tp)
+    
+    def _apply_trailing_stop_atr(self, positions, tick, ohlc_data):
+        """NOUVELLE METHODE : Gère le trailing stop basé sur l'ATR."""
+        cfg = self._config.get('trailing_stop_atr', {})
+        atr_settings = self._config.get('risk_management', {}).get('atr_settings', {})
+        
+        # Utilise la période ATR des réglages principaux pour la cohérence
+        period = atr_settings.get('default', {}).get('period', 14)
+        atr = self._calculate_atr(ohlc_data, period)
+        
+        activation_multiple = cfg.get('activation_multiple', 2.0)
+        trailing_multiple = cfg.get('trailing_multiple', 1.8)
+        
+        activation_distance = atr * activation_multiple
+        trailing_distance = atr * trailing_multiple
 
-    def _apply_trailing_stop(self, positions, tick):
-        cfg = self._config.get('trailing_stop', {})
-        if not cfg.get('enabled', False):
-            return
-        activation_distance = cfg.get('activation_pips', 250) * 10 * self.point
-        trailing_distance = cfg.get('trailing_pips', 200) * 10 * self.point
         for pos in positions:
             new_sl = pos.sl
             if pos.type == mt5.ORDER_TYPE_BUY:
@@ -171,5 +175,25 @@ class RiskManager:
                     potential_new_sl = tick.ask + trailing_distance
                     if new_sl == 0 or potential_new_sl < new_sl:
                         new_sl = potential_new_sl
+            
+            if new_sl != pos.sl:
+                self._executor.modify_position(pos.ticket, new_sl, pos.tp)
+
+    def _apply_trailing_stop_pips(self, positions, tick):
+        """Ancienne méthode renommée, basée sur les pips fixes."""
+        cfg = self._config.get('trailing_stop', {})
+        if not cfg.get('enabled', False): return
+        activation_distance = cfg.get('activation_pips', 250) * 10 * self.point
+        trailing_distance = cfg.get('trailing_pips', 200) * 10 * self.point
+        for pos in positions:
+            new_sl = pos.sl
+            if pos.type == mt5.ORDER_TYPE_BUY:
+                if (tick.bid - pos.price_open) >= activation_distance:
+                    potential_new_sl = tick.bid - trailing_distance
+                    if potential_new_sl > pos.sl: new_sl = potential_new_sl
+            elif pos.type == mt5.ORDER_TYPE_SELL:
+                if (pos.price_open - tick.ask) >= activation_distance:
+                    potential_new_sl = tick.ask + trailing_distance
+                    if new_sl == 0 or potential_new_sl < new_sl: new_sl = potential_new_sl
             if new_sl != pos.sl:
                 self._executor.modify_position(pos.ticket, new_sl, pos.tp)

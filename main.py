@@ -16,15 +16,13 @@ from src.shared_state import SharedState, LogHandler
 
 def setup_logging(state: SharedState):
     """Configure le système de logging."""
+    # ... (cette fonction ne change pas)
     log_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s', datefmt='%H:%M:%S')
-    
     ui_handler = LogHandler(state)
     file_handler = logging.FileHandler("trading_bot.log", mode='w', encoding='utf-8')
     console_handler = logging.StreamHandler()
-    
     for handler in [ui_handler, file_handler, console_handler]:
         handler.setFormatter(log_formatter)
-    
     root_logger = logging.getLogger()
     root_logger.setLevel(logging.INFO)
     if not root_logger.handlers:
@@ -33,6 +31,7 @@ def setup_logging(state: SharedState):
 
 def load_yaml(filepath: str) -> dict:
     """Charge un fichier YAML de manière sécurisée."""
+    # ... (cette fonction ne change pas)
     try:
         with open(filepath, 'r', encoding='utf-8') as f:
             return yaml.safe_load(f)
@@ -42,8 +41,8 @@ def load_yaml(filepath: str) -> dict:
     return {}
 
 def main_trading_loop(state: SharedState):
-    """Boucle principale du bot v9.1, avec gestion de la reconnexion."""
-    logging.info("Démarrage de la boucle de trading v9.1 (SMC Stable)...")
+    """Boucle principale du bot v9.2, avec Trailing SL dynamique."""
+    logging.info("Démarrage de la boucle de trading v9.2 (SMC Stable)...")
     
     initial_config = load_yaml('config.yaml')
     state.update_config(initial_config)
@@ -54,19 +53,19 @@ def main_trading_loop(state: SharedState):
 
     while not state.is_shutdown():
         try:
-            # --- GESTION DE LA CONNEXION ---
             if not connector.check_connection():
                 state.update_status("Déconnecté", "Connexion MT5 perdue. Tentative de reconnexion...", is_emergency=True)
                 if not connector.connect():
                     logging.warning("Échec de la reconnexion, nouvelle tentative dans 30 secondes.")
                     time.sleep(30)
-                    continue  # Réessaye au prochain cycle
+                    continue
                 else:
                     state.update_status("Connecté", "Reconnexion à MT5 réussie.", is_emergency=False)
 
             config = state.get_config()
             magic_number = config['trading_settings'].get('magic_number', 0)
             symbols_to_trade = config['trading_settings'].get('symbols', [])
+            timeframe = config['trading_settings'].get('timeframe', 'M15')
             
             executor = MT5Executor(connector.get_connection())
             account_info = executor.get_account_info()
@@ -80,18 +79,28 @@ def main_trading_loop(state: SharedState):
             all_bot_positions = executor.get_open_positions(magic=magic_number)
             state.update_positions(all_bot_positions)
             
-            # Gestion des positions ouvertes (Trailing Stop, Breakeven)
             if all_bot_positions:
+                # On regroupe les positions par symbole pour optimiser les appels de données
+                positions_by_symbol = {}
                 for pos in all_bot_positions:
-                    try:
-                        rm_pos = RiskManager(config, executor, pos.symbol)
-                        tick = connector.get_tick(pos.symbol)
-                        if tick:
-                            rm_pos.manage_open_positions([pos], tick)
-                    except ValueError as e:
-                        logging.warning(f"Impossible de gérer la position {pos.ticket} sur {pos.symbol}: {e}")
+                    if pos.symbol not in positions_by_symbol:
+                        positions_by_symbol[pos.symbol] = []
+                    positions_by_symbol[pos.symbol].append(pos)
 
-            # Boucle d'analyse pour chaque symbole
+                for symbol, positions in positions_by_symbol.items():
+                    try:
+                        # On récupère les données OHLC une seule fois par symbole
+                        ohlc_data_for_pos = connector.get_ohlc(symbol, timeframe, 200)
+                        tick = connector.get_tick(symbol)
+                        
+                        if tick and ohlc_data_for_pos is not None:
+                            rm_pos = RiskManager(config, executor, symbol)
+                            # On passe les données OHLC pour le calcul de l'ATR
+                            rm_pos.manage_open_positions(positions, tick, ohlc_data_for_pos)
+
+                    except ValueError as e:
+                        logging.warning(f"Impossible de gérer les positions sur {symbol}: {e}")
+
             for symbol in symbols_to_trade:
                 logging.info(f"--- Analyse de {symbol} ---")
                 
@@ -107,7 +116,7 @@ def main_trading_loop(state: SharedState):
                     logging.error(f"Impossible d'initialiser le RiskManager pour {symbol}: {e}. Symbole invalide ?")
                     continue
                 
-                ohlc_data = connector.get_ohlc(symbol, config['trading_settings']['timeframe'], 200)
+                ohlc_data = connector.get_ohlc(symbol, timeframe, 200)
                 if ohlc_data is None or ohlc_data.empty:
                     logging.warning(f"Aucune donnée OHLC reçue pour {symbol}.")
                     continue
@@ -135,18 +144,16 @@ def main_trading_loop(state: SharedState):
     logging.info("Boucle de trading terminée.")
 
 if __name__ == "__main__":
+    # ... (cette partie ne change pas)
     shared_state = SharedState()
     setup_logging(shared_state)
     config = load_yaml('config.yaml')
     url = f"http://{config.get('api', {}).get('host', '127.0.0.1')}:{config.get('api', {}).get('port', 5000)}"
-    
     api_thread = threading.Thread(target=start_api_server, args=(shared_state,), daemon=True)
     api_thread.start()
     logging.info(f"Interface web démarrée sur {url}")
-    
     try:
         webbrowser.open(url)
     except Exception:
         logging.warning("Impossible d'ouvrir le navigateur automatiquement.")
-    
     main_trading_loop(shared_state)
