@@ -92,6 +92,7 @@ HTML_TEMPLATE = """
             document.getElementById(`tab-${tabName}`).classList.add('active');
         }
         function formatProfit(profit) { return `<span class="${parseFloat(profit) >= 0 ? 'text-green-400' : 'text-red-400'}">${parseFloat(profit).toFixed(2)}</span>`; }
+        
         async function fetchAllData() {
             try {
                 const res = await fetch('/api/data');
@@ -108,8 +109,19 @@ HTML_TEMPLATE = """
                         let patternsHTML = '';
                         if(symbolData.patterns && Object.keys(symbolData.patterns).length > 0){
                             Object.entries(symbolData.patterns).forEach(([name, d]) => {
-                                const statusColor = d.status.includes('BUY') ? 'text-green-400' : d.status.includes('SELL') ? 'text-red-400' : 'text-gray-400';
-                                patternsHTML += `<div class="flex justify-between text-sm"><span class="font-medium">${name}</span><strong class="${statusColor}">${d.status}</strong></div>`;
+                                // --- MODIFICATION ESTHÉTIQUE ICI ---
+                                let statusColor = 'text-gray-400'; // Gris par défaut
+                                const statusText = d.status || 'En attente...';
+                                if (statusText.includes('CONFIRMÉ')) {
+                                    statusColor = 'text-green-400'; // Vert pour confirmé
+                                } else if (statusText.includes('INVALIDÉ')) {
+                                    statusColor = 'text-red-400'; // Rouge pour invalidé
+                                } else if (statusText.includes('Signal BUY')) {
+                                    statusColor = 'text-blue-400'; // Bleu pour signal d'achat potentiel
+                                } else if (statusText.includes('Signal SELL')) {
+                                    statusColor = 'text-orange-400'; // Orange pour signal de vente potentiel
+                                }
+                                patternsHTML += `<div class="flex justify-between text-sm"><span class="font-medium">${name}</span><strong class="${statusColor}">${statusText}</strong></div>`;
                             });
                         } else { patternsHTML = '<p class="text-gray-400 text-sm">En attente...</p>'; }
                         patternsMainContainer.innerHTML += `<div class="card p-5"><h2 class="text-xl font-semibold text-white mb-4">Analyse SMC: <span class="text-indigo-400">${symbol}</span></h2><div class="space-y-2">${patternsHTML}</div></div>`;
@@ -122,6 +134,7 @@ HTML_TEMPLATE = """
                 if (logsContainer.innerHTML !== newLogsHtml) { logsContainer.innerHTML = newLogsHtml; logsContainer.scrollTop = logsContainer.scrollHeight; }
             } catch (error) { console.error("Erreur de mise à jour:", error); }
         }
+        
         async function loadConfig() {
             try {
                 const res = await fetch('/api/config');
@@ -272,6 +285,7 @@ def start_api_server(shared_state):
         return jsonify(shared_state.get_backtest_status())
     
     config = shared_state.get_config()
+    # --- CORRECTION DE L'ERREUR DE SYNTAXE ICI ---
     host = config.get('api', {}).get('host', '127.0.0.1')
     port = config.get('api', {}).get('port', 5000)
     
