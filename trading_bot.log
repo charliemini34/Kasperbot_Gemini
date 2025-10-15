@@ -260,3 +260,261 @@
 09:29:14 - root - INFO - --- Analyse de BTCUSD ---
 09:29:14 - root - INFO - --- Analyse de ETHUSD ---
 09:29:14 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
+09:29:34 - root - INFO - --- Analyse de XAUUSD ---
+09:29:34 - root - INFO - --- Analyse de EURUSD ---
+09:29:34 - root - INFO - Analyse suspendue pour EURUSD : un trade géré par ce bot est déjà en cours.
+09:29:34 - root - INFO - --- Analyse de GBPUSD ---
+09:29:34 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
+09:29:34 - root - INFO - --- Analyse de BTCUSD ---
+09:29:34 - root - INFO - --- Analyse de ETHUSD ---
+09:29:34 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
+09:29:54 - root - INFO - --- Analyse de XAUUSD ---
+09:29:54 - root - INFO - --- Analyse de EURUSD ---
+09:29:54 - root - INFO - Analyse suspendue pour EURUSD : un trade géré par ce bot est déjà en cours.
+09:29:54 - root - INFO - --- Analyse de GBPUSD ---
+09:29:54 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
+09:29:54 - root - INFO - --- Analyse de BTCUSD ---
+09:29:54 - root - INFO - --- Analyse de ETHUSD ---
+09:29:54 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
+09:30:14 - root - INFO - --- Analyse de XAUUSD ---
+09:30:14 - root - INFO - --- Analyse de EURUSD ---
+09:30:14 - root - INFO - Analyse suspendue pour EURUSD : un trade géré par ce bot est déjà en cours.
+09:30:14 - root - INFO - --- Analyse de GBPUSD ---
+09:30:14 - root - INFO - --- Analyse de BTCUSD ---
+09:30:14 - root - INFO - --- Analyse de ETHUSD ---
+09:30:14 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
+09:30:34 - root - INFO - --- Analyse de XAUUSD ---
+09:30:34 - root - INFO - --- Analyse de EURUSD ---
+09:30:34 - root - INFO - Analyse suspendue pour EURUSD : un trade géré par ce bot est déjà en cours.
+09:30:34 - root - INFO - --- Analyse de GBPUSD ---
+09:30:34 - root - INFO - --- Analyse de BTCUSD ---
+09:30:34 - root - INFO - --- Analyse de ETHUSD ---
+09:30:34 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
+09:30:54 - root - INFO - --- Analyse de XAUUSD ---
+09:30:54 - root - INFO - --- Analyse de EURUSD ---
+09:30:54 - root - INFO - Analyse suspendue pour EURUSD : un trade géré par ce bot est déjà en cours.
+09:30:54 - root - INFO - --- Analyse de GBPUSD ---
+09:30:54 - root - INFO - --- Analyse de BTCUSD ---
+09:30:54 - root - INFO - --- Analyse de ETHUSD ---
+09:30:54 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
+09:31:14 - root - INFO - --- Analyse de XAUUSD ---
+09:31:14 - root - INFO - --- Analyse de EURUSD ---
+09:31:14 - root - INFO - Analyse suspendue pour EURUSD : un trade géré par ce bot est déjà en cours.
+09:31:14 - root - INFO - --- Analyse de GBPUSD ---
+09:31:14 - root - INFO - --- Analyse de BTCUSD ---
+09:31:14 - root - INFO - --- Analyse de ETHUSD ---
+09:31:14 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
+09:31:34 - root - INFO - --- Analyse de XAUUSD ---
+09:31:34 - root - INFO - --- Analyse de EURUSD ---
+09:31:34 - root - INFO - Analyse suspendue pour EURUSD : un trade géré par ce bot est déjà en cours.
+09:31:34 - root - INFO - --- Analyse de GBPUSD ---
+09:31:34 - root - INFO - --- Analyse de BTCUSD ---
+09:31:34 - root - INFO - --- Analyse de ETHUSD ---
+09:31:34 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
+09:31:54 - root - INFO - --- Analyse de XAUUSD ---
+09:31:55 - root - INFO - --- Analyse de EURUSD ---
+09:31:55 - root - INFO - Analyse suspendue pour EURUSD : un trade géré par ce bot est déjà en cours.
+09:31:55 - root - INFO - --- Analyse de GBPUSD ---
+09:31:55 - root - INFO - --- Analyse de BTCUSD ---
+09:31:55 - root - INFO - --- Analyse de ETHUSD ---
+09:31:55 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
+09:32:15 - root - INFO - --- Analyse de XAUUSD ---
+09:32:15 - root - INFO - --- Analyse de EURUSD ---
+09:32:15 - root - INFO - Analyse suspendue pour EURUSD : un trade géré par ce bot est déjà en cours.
+09:32:15 - root - INFO - --- Analyse de GBPUSD ---
+09:32:15 - root - INFO - --- Analyse de BTCUSD ---
+09:32:15 - root - INFO - --- Analyse de ETHUSD ---
+09:32:15 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
+09:32:35 - root - INFO - --- Analyse de XAUUSD ---
+09:32:35 - root - INFO - --- Analyse de EURUSD ---
+09:32:35 - root - INFO - Analyse suspendue pour EURUSD : un trade géré par ce bot est déjà en cours.
+09:32:35 - root - INFO - --- Analyse de GBPUSD ---
+09:32:35 - root - INFO - --- Analyse de BTCUSD ---
+09:32:35 - root - INFO - --- Analyse de ETHUSD ---
+09:32:35 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
+09:32:55 - root - INFO - --- Analyse de XAUUSD ---
+09:32:55 - root - INFO - --- Analyse de EURUSD ---
+09:32:55 - root - INFO - Analyse suspendue pour EURUSD : un trade géré par ce bot est déjà en cours.
+09:32:55 - root - INFO - --- Analyse de GBPUSD ---
+09:32:55 - root - INFO - --- Analyse de BTCUSD ---
+09:32:55 - root - INFO - --- Analyse de ETHUSD ---
+09:32:55 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
+09:33:15 - root - INFO - --- Analyse de XAUUSD ---
+09:33:15 - root - INFO - --- Analyse de EURUSD ---
+09:33:15 - root - INFO - Analyse suspendue pour EURUSD : un trade géré par ce bot est déjà en cours.
+09:33:15 - root - INFO - --- Analyse de GBPUSD ---
+09:33:15 - root - INFO - --- Analyse de BTCUSD ---
+09:33:15 - root - INFO - --- Analyse de ETHUSD ---
+09:33:15 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
+09:33:35 - root - INFO - --- Analyse de XAUUSD ---
+09:33:35 - root - INFO - --- Analyse de EURUSD ---
+09:33:35 - root - INFO - Analyse suspendue pour EURUSD : un trade géré par ce bot est déjà en cours.
+09:33:35 - root - INFO - --- Analyse de GBPUSD ---
+09:33:35 - root - INFO - --- Analyse de BTCUSD ---
+09:33:35 - root - INFO - --- Analyse de ETHUSD ---
+09:33:35 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
+09:33:55 - root - INFO - --- Analyse de XAUUSD ---
+09:33:55 - root - INFO - --- Analyse de EURUSD ---
+09:33:55 - root - INFO - Analyse suspendue pour EURUSD : un trade géré par ce bot est déjà en cours.
+09:33:55 - root - INFO - --- Analyse de GBPUSD ---
+09:33:55 - root - INFO - --- Analyse de BTCUSD ---
+09:33:55 - root - INFO - --- Analyse de ETHUSD ---
+09:33:55 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
+09:34:15 - root - INFO - --- Analyse de XAUUSD ---
+09:34:15 - root - INFO - --- Analyse de EURUSD ---
+09:34:15 - root - INFO - Analyse suspendue pour EURUSD : un trade géré par ce bot est déjà en cours.
+09:34:15 - root - INFO - --- Analyse de GBPUSD ---
+09:34:15 - root - INFO - --- Analyse de BTCUSD ---
+09:34:15 - root - INFO - --- Analyse de ETHUSD ---
+09:34:15 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
+09:34:35 - root - INFO - --- Analyse de XAUUSD ---
+09:34:35 - root - INFO - --- Analyse de EURUSD ---
+09:34:35 - root - INFO - Analyse suspendue pour EURUSD : un trade géré par ce bot est déjà en cours.
+09:34:35 - root - INFO - --- Analyse de GBPUSD ---
+09:34:35 - root - INFO - --- Analyse de BTCUSD ---
+09:34:35 - root - INFO - --- Analyse de ETHUSD ---
+09:34:35 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
+09:34:55 - root - INFO - --- Analyse de XAUUSD ---
+09:34:55 - root - INFO - --- Analyse de EURUSD ---
+09:34:55 - root - INFO - Analyse suspendue pour EURUSD : un trade géré par ce bot est déjà en cours.
+09:34:55 - root - INFO - --- Analyse de GBPUSD ---
+09:34:55 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
+09:34:55 - root - INFO - --- Analyse de BTCUSD ---
+09:34:55 - root - INFO - --- Analyse de ETHUSD ---
+09:34:55 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
+09:35:15 - root - INFO - --- Analyse de XAUUSD ---
+09:35:15 - root - INFO - --- Analyse de EURUSD ---
+09:35:15 - root - INFO - Analyse suspendue pour EURUSD : un trade géré par ce bot est déjà en cours.
+09:35:15 - root - INFO - --- Analyse de GBPUSD ---
+09:35:15 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
+09:35:15 - root - INFO - --- Analyse de BTCUSD ---
+09:35:15 - root - INFO - --- Analyse de ETHUSD ---
+09:35:15 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
+09:35:35 - root - INFO - --- Analyse de XAUUSD ---
+09:35:35 - root - INFO - --- Analyse de EURUSD ---
+09:35:35 - root - INFO - Analyse suspendue pour EURUSD : un trade géré par ce bot est déjà en cours.
+09:35:35 - root - INFO - --- Analyse de GBPUSD ---
+09:35:35 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
+09:35:35 - root - INFO - --- Analyse de BTCUSD ---
+09:35:35 - root - INFO - --- Analyse de ETHUSD ---
+09:35:35 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
+09:35:55 - root - INFO - --- Analyse de XAUUSD ---
+09:35:55 - root - INFO - --- Analyse de EURUSD ---
+09:35:55 - root - INFO - Analyse suspendue pour EURUSD : un trade géré par ce bot est déjà en cours.
+09:35:55 - root - INFO - --- Analyse de GBPUSD ---
+09:35:55 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
+09:35:55 - root - INFO - --- Analyse de BTCUSD ---
+09:35:55 - root - INFO - --- Analyse de ETHUSD ---
+09:35:55 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
+09:36:15 - root - INFO - --- Analyse de XAUUSD ---
+09:36:15 - root - INFO - --- Analyse de EURUSD ---
+09:36:15 - root - INFO - Analyse suspendue pour EURUSD : un trade géré par ce bot est déjà en cours.
+09:36:15 - root - INFO - --- Analyse de GBPUSD ---
+09:36:15 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
+09:36:15 - root - INFO - --- Analyse de BTCUSD ---
+09:36:15 - root - INFO - --- Analyse de ETHUSD ---
+09:36:15 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
+09:36:35 - root - INFO - --- Analyse de XAUUSD ---
+09:36:35 - root - INFO - --- Analyse de EURUSD ---
+09:36:35 - root - INFO - Analyse suspendue pour EURUSD : un trade géré par ce bot est déjà en cours.
+09:36:35 - root - INFO - --- Analyse de GBPUSD ---
+09:36:36 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
+09:36:36 - root - INFO - --- Analyse de BTCUSD ---
+09:36:36 - root - INFO - --- Analyse de ETHUSD ---
+09:36:36 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
+09:36:56 - root - INFO - --- Analyse de XAUUSD ---
+09:36:56 - root - INFO - --- Analyse de EURUSD ---
+09:36:56 - root - INFO - Analyse suspendue pour EURUSD : un trade géré par ce bot est déjà en cours.
+09:36:56 - root - INFO - --- Analyse de GBPUSD ---
+09:36:56 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
+09:36:56 - root - INFO - --- Analyse de BTCUSD ---
+09:36:56 - root - INFO - --- Analyse de ETHUSD ---
+09:36:56 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
+09:37:16 - root - INFO - --- Analyse de XAUUSD ---
+09:37:16 - root - INFO - --- Analyse de EURUSD ---
+09:37:16 - root - INFO - Analyse suspendue pour EURUSD : un trade géré par ce bot est déjà en cours.
+09:37:16 - root - INFO - --- Analyse de GBPUSD ---
+09:37:16 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
+09:37:16 - root - INFO - --- Analyse de BTCUSD ---
+09:37:16 - root - INFO - --- Analyse de ETHUSD ---
+09:37:16 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
+09:37:36 - root - INFO - --- Analyse de XAUUSD ---
+09:37:36 - root - INFO - --- Analyse de EURUSD ---
+09:37:36 - root - INFO - Analyse suspendue pour EURUSD : un trade géré par ce bot est déjà en cours.
+09:37:36 - root - INFO - --- Analyse de GBPUSD ---
+09:37:36 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
+09:37:36 - root - INFO - --- Analyse de BTCUSD ---
+09:37:36 - root - INFO - --- Analyse de ETHUSD ---
+09:37:36 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
+09:37:56 - root - INFO - --- Analyse de XAUUSD ---
+09:37:56 - root - INFO - --- Analyse de EURUSD ---
+09:37:56 - root - INFO - Analyse suspendue pour EURUSD : un trade géré par ce bot est déjà en cours.
+09:37:56 - root - INFO - --- Analyse de GBPUSD ---
+09:37:56 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
+09:37:56 - root - INFO - --- Analyse de BTCUSD ---
+09:37:56 - root - INFO - --- Analyse de ETHUSD ---
+09:37:56 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
+09:38:16 - root - INFO - --- Analyse de XAUUSD ---
+09:38:16 - root - INFO - --- Analyse de EURUSD ---
+09:38:16 - root - INFO - Analyse suspendue pour EURUSD : un trade géré par ce bot est déjà en cours.
+09:38:16 - root - INFO - --- Analyse de GBPUSD ---
+09:38:16 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
+09:38:16 - root - INFO - --- Analyse de BTCUSD ---
+09:38:16 - root - INFO - --- Analyse de ETHUSD ---
+09:38:16 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
+09:38:36 - root - INFO - --- Analyse de XAUUSD ---
+09:38:36 - root - INFO - --- Analyse de EURUSD ---
+09:38:36 - root - INFO - Analyse suspendue pour EURUSD : un trade géré par ce bot est déjà en cours.
+09:38:36 - root - INFO - --- Analyse de GBPUSD ---
+09:38:36 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
+09:38:36 - root - INFO - --- Analyse de BTCUSD ---
+09:38:36 - root - INFO - --- Analyse de ETHUSD ---
+09:38:36 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
+09:38:56 - root - INFO - --- Analyse de XAUUSD ---
+09:38:56 - root - INFO - --- Analyse de EURUSD ---
+09:38:56 - root - INFO - Analyse suspendue pour EURUSD : un trade géré par ce bot est déjà en cours.
+09:38:56 - root - INFO - --- Analyse de GBPUSD ---
+09:38:56 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
+09:38:56 - root - INFO - --- Analyse de BTCUSD ---
+09:38:56 - root - INFO - --- Analyse de ETHUSD ---
+09:38:56 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
+09:39:16 - root - INFO - --- Analyse de XAUUSD ---
+09:39:16 - root - INFO - --- Analyse de EURUSD ---
+09:39:16 - root - INFO - Analyse suspendue pour EURUSD : un trade géré par ce bot est déjà en cours.
+09:39:16 - root - INFO - --- Analyse de GBPUSD ---
+09:39:16 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
+09:39:16 - root - INFO - --- Analyse de BTCUSD ---
+09:39:16 - root - INFO - --- Analyse de ETHUSD ---
+09:39:16 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
+09:39:36 - root - INFO - --- Analyse de XAUUSD ---
+09:39:36 - root - INFO - --- Analyse de EURUSD ---
+09:39:36 - root - INFO - Analyse suspendue pour EURUSD : un trade géré par ce bot est déjà en cours.
+09:39:36 - root - INFO - --- Analyse de GBPUSD ---
+09:39:36 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
+09:39:36 - root - INFO - --- Analyse de BTCUSD ---
+09:39:36 - root - INFO - --- Analyse de ETHUSD ---
+09:39:36 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
+09:39:56 - root - INFO - --- Analyse de XAUUSD ---
+09:39:56 - root - INFO - --- Analyse de EURUSD ---
+09:39:56 - root - INFO - Analyse suspendue pour EURUSD : un trade géré par ce bot est déjà en cours.
+09:39:56 - root - INFO - --- Analyse de GBPUSD ---
+09:39:56 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
+09:39:56 - root - INFO - --- Analyse de BTCUSD ---
+09:39:56 - root - INFO - --- Analyse de ETHUSD ---
+09:39:56 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
+09:40:16 - root - INFO - --- Analyse de XAUUSD ---
+09:40:16 - root - INFO - --- Analyse de EURUSD ---
+09:40:16 - root - INFO - Analyse suspendue pour EURUSD : un trade géré par ce bot est déjà en cours.
+09:40:16 - root - INFO - --- Analyse de GBPUSD ---
+09:40:16 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
+09:40:16 - root - INFO - --- Analyse de BTCUSD ---
+09:40:16 - root - INFO - --- Analyse de ETHUSD ---
+09:40:16 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
+09:40:36 - root - INFO - --- Analyse de XAUUSD ---
+09:40:36 - root - INFO - --- Analyse de EURUSD ---
+09:40:36 - root - INFO - Analyse suspendue pour EURUSD : un trade géré par ce bot est déjà en cours.
+09:40:36 - root - INFO - --- Analyse de GBPUSD ---
+09:40:36 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).
+09:40:36 - root - INFO - --- Analyse de BTCUSD ---
+09:40:36 - root - INFO - --- Analyse de ETHUSD ---
+09:40:36 - PatternDetector - INFO - Pattern INBALANCE ignoré (direction SELL vs tendance BUY).

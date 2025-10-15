@@ -1,58 +1,70 @@
+# Fichier: src/data_ingest/mt5_connector.py
+
 import MetaTrader5 as mt5
 import pandas as pd
 from datetime import datetime
 import logging
 
 class MT5Connector:
-    """Handles connection and data retrieval from MetaTrader 5."""
+    """Gère la connexion et la récupération de données depuis MetaTrader 5."""
     def __init__(self, credentials):
         self._credentials = credentials
         self._connection = mt5
         self.log = logging.getLogger(self.__class__.__name__)
 
+    def check_connection(self):
+        """Vérifie si le terminal est toujours accessible."""
+        return self._connection.terminal_info() is not None
+
     def connect(self):
-        """Initializes connection to the MT5 terminal."""
-        self.log.info("Attempting to connect to MetaTrader 5...")
+        """Initialise ou réinitialise la connexion au terminal MT5."""
+        self.log.info("Tentative de connexion à MetaTrader 5...")
+        
+        # S'assure de couper une connexion précédente avant d'en établir une nouvelle.
+        if self.check_connection():
+            self.log.info("Une connexion est déjà active. Tentative de réinitialisation.")
+            self._connection.shutdown()
+
         if not self._connection.initialize(
             login=self._credentials['login'],
             password=self._credentials['password'],
             server=self._credentials['server']
         ):
-            self.log.error(f"Failed to initialize MT5: {self._connection.last_error()}")
+            self.log.error(f"Échec de l'initialisation de MT5: {self._connection.last_error()}")
             return False
         
-        self.log.info(f"Successfully connected to MT5. Version: {self._connection.version()}")
+        self.log.info(f"Connexion à MT5 réussie. Version: {self._connection.version()}")
         return True
 
     def disconnect(self):
-        """Shuts down the connection to MT5."""
+        """Ferme la connexion à MT5."""
         self._connection.shutdown()
-        self.log.info("Disconnected from MetaTrader 5.")
+        self.log.info("Déconnecté de MetaTrader 5.")
 
     def get_connection(self):
-        """Returns the raw MT5 connection object."""
+        """Retourne l'objet de connexion MT5 brut."""
         return self._connection
 
     def get_ohlc(self, symbol, timeframe_str, num_bars):
-        """Fetches historical OHLC data."""
+        """Récupère les données OHLC historiques."""
         try:
             timeframe = getattr(mt5, f"TIMEFRAME_{timeframe_str.upper()}")
             rates = self._connection.copy_rates_from_pos(symbol, timeframe, 0, num_bars)
             if rates is None:
-                self.log.warning(f"Could not retrieve OHLC data for {symbol}: {self._connection.last_error()}")
+                self.log.warning(f"Impossible de récupérer les données OHLC pour {symbol}: {self._connection.last_error()}")
                 return None
             
             df = pd.DataFrame(rates)
             df['time'] = pd.to_datetime(df['time'], unit='s')
             return df
         except Exception as e:
-            self.log.error(f"Error fetching OHLC data: {e}")
+            self.log.error(f"Erreur lors de la récupération des données OHLC: {e}")
             return None
 
     def get_tick(self, symbol):
-        """Fetches the latest tick data for a symbol."""
+        """Récupère le dernier tick de prix pour un symbole."""
         tick = self._connection.symbol_info_tick(symbol)
         if tick:
             return tick
-        self.log.warning(f"Could not get tick for {symbol}: {self._connection.last_error()}")
+        self.log.warning(f"Impossible d'obtenir le tick pour {symbol}: {self._connection.last_error()}")
         return None

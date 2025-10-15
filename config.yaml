@@ -1,5 +1,5 @@
 # ==============================================================================
-#                 FICHIER DE CONFIGURATION PRINCIPAL - KASPERBOT v7.7
+#                 FICHIER DE CONFIGURATION PRINCIPAL - KASPERBOT v8.0
 # ==============================================================================
 
 # -- Identifiants de connexion à MetaTrader 5 --
@@ -15,7 +15,6 @@ api:
 
 # -- Paramètres de trading --
 trading_settings:
-  # NOUVEAU : Le bot peut maintenant surveiller plusieurs symboles.
   symbols: 
     - "XAUUSD"
     - "EURUSD"
@@ -32,10 +31,18 @@ risk_management:
   daily_loss_limit_percent: 0.05
   sl_tp_strategy: "ATR_MULTIPLE"
   
+  # NOUVEAU: Réglages ATR avec un défaut et des surcharges par symbole
   atr_settings:
-    period: 14
-    sl_multiple: 1.5
-    tp_multiple: 3.0
+    default:
+      period: 14
+      sl_multiple: 1.5
+      tp_multiple: 3.0
+    XAUUSD: # Paramètres spécifiques pour l'Or
+      sl_multiple: 1.8
+      tp_multiple: 3.5
+    BTCUSD: # Paramètres spécifiques pour le Bitcoin
+      sl_multiple: 2.5
+      tp_multiple: 4.0
 
   breakeven:
     enabled: true
