@@ -1,5 +1,5 @@
 # ==============================================================================
-#                 FICHIER DE CONFIGURATION PRINCIPAL - KASPERBOT v9.0
+#                 FICHIER DE CONFIGURATION PRINCIPAL - KASPERBOT v9.1
 # ==============================================================================
 
 # -- Identifiants de connexion à MetaTrader 5 --
@@ -27,9 +27,13 @@ trading_settings:
 
 # -- Moteur d'Apprentissage (Machine Learning) --
 learning:
-  enabled: false # Mettre sur 'true' pour que le bot s'optimise seul (NON RECOMMANDÉ AU DÉBUT)
+  enabled: false 
   analysis_period_hours: 1
-  min_trades_for_analysis: 20 # Nb de trades min avant de faire une suggestion
+  min_trades_for_analysis: 20
+
+# -- Journalisation (Logging) --
+logging:
+  verbose_log: true # true = mode bavard, false = mode silencieux
 
 # -- Gestion du risque --
 risk_management:

@@ -17,7 +17,6 @@ from src.shared_state import SharedState, LogHandler
 from src.analysis.performance_analyzer import PerformanceAnalyzer
 
 def setup_logging(state: SharedState):
-    # ... (cette fonction ne change pas)
     log_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s', datefmt='%H:%M:%S')
     ui_handler = LogHandler(state)
     file_handler = logging.FileHandler("trading_bot.log", mode='w', encoding='utf-8')
@@ -31,7 +30,6 @@ def setup_logging(state: SharedState):
     logging.getLogger('werkzeug').setLevel(logging.ERROR)
 
 def load_yaml(filepath: str) -> dict:
-    # ... (cette fonction ne change pas)
     try:
         with open(filepath, 'r', encoding='utf-8') as f:
             return yaml.safe_load(f)
@@ -41,8 +39,8 @@ def load_yaml(filepath: str) -> dict:
     return {}
 
 def main_trading_loop(state: SharedState):
-    """Boucle principale du bot v9.2, avec moteur d'apprentissage intégré."""
-    logging.info("Démarrage de la boucle de trading v9.2 (avec Kasper-Learn)...")
+    """Boucle principale du bot v9.3, avec mode de log 'bavard'/'silencieux'."""
+    logging.info("Démarrage de la boucle de trading v9.3 (avec Kasper-Learn)...")
     
     initial_config = load_yaml('config.yaml')
     state.update_config(initial_config)
@@ -70,6 +68,7 @@ def main_trading_loop(state: SharedState):
             magic_number = config['trading_settings'].get('magic_number', 0)
             symbols_to_trade = config['trading_settings'].get('symbols', [])
             timeframe = config['trading_settings'].get('timeframe', 'M15')
+            is_verbose = config.get('logging', {}).get('verbose_log', True)
             
             account_info = executor.get_account_info()
             if not account_info:
@@ -78,15 +77,13 @@ def main_trading_loop(state: SharedState):
                 continue
             
             state.update_status("Connecté", f"Balance: {account_info.balance:.2f} {account_info.currency}")
-
-            # Vérifie et archive les trades fermés
+            
             executor.check_for_closed_trades(magic_number)
 
             all_bot_positions = executor.get_open_positions(magic=magic_number)
             state.update_positions(all_bot_positions)
             
             if all_bot_positions:
-                # ... (logique de gestion de position existante)
                 positions_by_symbol = {}
                 for pos in all_bot_positions:
                     if pos.symbol not in positions_by_symbol: positions_by_symbol[pos.symbol] = []
@@ -102,32 +99,36 @@ def main_trading_loop(state: SharedState):
                         logging.warning(f"Impossible de gérer les positions sur {symbol}: {e}")
 
             for symbol in symbols_to_trade:
-                # ... (logique de détection de pattern existante)
-                logging.info(f"--- Analyse de {symbol} ---")
+                if is_verbose:
+                    logging.info(f"--- Analyse de {symbol} ---")
+                
                 if any(pos.symbol == symbol for pos in all_bot_positions):
-                    logging.info(f"Analyse suspendue pour {symbol} : un trade est déjà en cours.")
+                    if is_verbose: logging.info(f"Analyse suspendue pour {symbol} : un trade est déjà en cours.")
                     continue
                 try:
                     risk_manager = RiskManager(config, executor, symbol)
                 except ValueError as e:
                     logging.error(f"Init RiskManager échouée pour {symbol}: {e}.")
                     continue
+                
                 ohlc_data = connector.get_ohlc(symbol, timeframe, 200)
                 if ohlc_data is None or ohlc_data.empty:
-                    logging.warning(f"Aucune donnée OHLC pour {symbol}.")
+                    if is_verbose: logging.warning(f"Aucune donnée OHLC pour {symbol}.")
                     continue
+
                 detector = PatternDetector(config)
                 trade_signal = detector.detect_patterns(ohlc_data)
                 state.update_symbol_patterns(symbol, detector.get_detected_patterns_info())
+                
                 if trade_signal:
                     direction, pattern_name = trade_signal['direction'], trade_signal['pattern']
                     logging.info(f"PATTERN DÉTECTÉ sur {symbol}: [{pattern_name}] - Direction: {direction}")
+                    
                     if config['trading_settings']['live_trading_enabled']:
                         executor.execute_trade(account_info, risk_manager, symbol, direction, ohlc_data, pattern_name, magic_number)
                     else:
                         logging.info(f"ACTION (SIMULATION) sur {symbol}: Ouverture d'un trade {direction}.")
             
-            # --- MOTEUR D'APPRENTISSAGE ---
             analysis_period = timedelta(hours=config.get('learning', {}).get('analysis_period_hours', 1))
             if datetime.now() - last_analysis_time > analysis_period:
                 analyzer.run_analysis()
@@ -143,7 +144,6 @@ def main_trading_loop(state: SharedState):
     logging.info("Boucle de trading terminée.")
 
 if __name__ == "__main__":
-    # ... (cette partie ne change pas)
     shared_state = SharedState()
     setup_logging(shared_state)
     config = load_yaml('config.yaml')
