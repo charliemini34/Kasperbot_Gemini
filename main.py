@@ -69,10 +69,14 @@ def main_trading_loop(state: SharedState):
             
             if all_bot_positions:
                 for pos in all_bot_positions:
-                    rm_pos = RiskManager(config.get('risk_management', {}), executor, pos.symbol)
-                    tick = connector.get_tick(pos.symbol)
-                    if tick:
-                        rm_pos.manage_open_positions([pos], tick)
+                    try:
+                        rm_pos = RiskManager(config, executor, pos.symbol)
+                        tick = connector.get_tick(pos.symbol)
+                        if tick:
+                            rm_pos.manage_open_positions([pos], tick)
+                    except ValueError as e:
+                        logging.warning(f"Impossible de gérer la position sur {pos.symbol}: {e}")
+
 
             for symbol in symbols_to_trade:
                 logging.info(f"--- Analyse de {symbol} ---")
@@ -83,7 +87,12 @@ def main_trading_loop(state: SharedState):
                     logging.info(f"Analyse suspendue pour {symbol} : un trade géré par ce bot est déjà en cours.")
                     continue
 
-                risk_manager = RiskManager(config.get('risk_management', {}), executor, symbol)
+                try:
+                    risk_manager = RiskManager(config, executor, symbol)
+                except ValueError as e:
+                    logging.error(f"Impossible d'initialiser le RiskManager pour {symbol}: {e}. Le symbole est peut-être invalide.")
+                    continue
+                
                 ohlc_data = connector.get_ohlc(symbol, config['trading_settings']['timeframe'], 200)
                 if ohlc_data is None or ohlc_data.empty: continue
 
@@ -96,7 +105,7 @@ def main_trading_loop(state: SharedState):
                     logging.info(f"PATTERN DÉTECTÉ sur {symbol}: [{pattern_name}] - Direction: {direction}")
                     
                     if config['trading_settings']['live_trading_enabled']:
-                        executor.execute_trade(account_info, risk_manager, symbol, direction, ohlc_data, pattern_name, magic_number)
+                        executor.execute_trade(account_info, risk_manager, symbol, direction, ohlc_data, pattern_name)
                     else:
                         logging.info(f"ACTION (SIMULATION) sur {symbol}: Ouverture d'un trade {direction}.")
 
