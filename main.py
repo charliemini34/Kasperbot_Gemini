@@ -39,7 +39,7 @@ def load_yaml(filepath: str) -> dict:
     return {}
 
 def main_trading_loop(state: SharedState):
-    """Boucle principale du bot v9.3, avec mode de log 'bavard'/'silencieux'."""
+    """Boucle principale du bot v9.3, avec correction de l'AttributeError."""
     logging.info("Démarrage de la boucle de trading v9.3 (avec Kasper-Learn)...")
     
     initial_config = load_yaml('config.yaml')
@@ -124,10 +124,17 @@ def main_trading_loop(state: SharedState):
                     direction, pattern_name = trade_signal['direction'], trade_signal['pattern']
                     logging.info(f"PATTERN DÉTECTÉ sur {symbol}: [{pattern_name}] - Direction: {direction}")
                     
-                    if config['trading_settings']['live_trading_enabled']:
-                        executor.execute_trade(account_info, risk_manager, symbol, direction, ohlc_data, pattern_name, magic_number)
-                    else:
-                        logging.info(f"ACTION (SIMULATION) sur {symbol}: Ouverture d'un trade {direction}.")
+                    # --- CORRECTION DE L'ERREUR ICI ---
+                    # 1. On récupère les informations de contexte
+                    trend_info = detector.get_detected_patterns_info().get('TREND_FILTER', {})
+                    market_trend = trend_info.get('status', 'Indéterminée')
+                    volatility_atr = risk_manager.calculate_atr(ohlc_data, 14)
+
+                    # 2. On les passe à la fonction d'exécution
+                    executor.execute_trade(
+                        account_info, risk_manager, symbol, direction, ohlc_data, 
+                        pattern_name, magic_number, market_trend, volatility_atr
+                    )
             
             analysis_period = timedelta(hours=config.get('learning', {}).get('analysis_period_hours', 1))
             if datetime.now() - last_analysis_time > analysis_period:

@@ -10,16 +10,15 @@ from src.constants import BUY
 class MT5Executor:
     """
     Gère l'exécution des ordres et la communication avec l'API MT5.
-    v9.2 : Ajout de l'enregistrement structuré des trades pour le machine learning.
+    v9.3 : Correction de l'AttributeError en passant le contexte de marché en paramètre.
     """
     def __init__(self, mt5_connection):
         self._mt5 = mt5_connection
         self.log = logging.getLogger(self.__class__.__name__)
-        self._open_trades_context = {} # {ticket: {context_data}}
+        self._open_trades_context = {}
         self.history_file = 'trade_history.csv'
 
     def get_open_positions(self, symbol: str = None, magic: int = 0) -> list:
-        # ... (cette fonction ne change pas)
         if symbol:
             positions = self._mt5.positions_get(symbol=symbol)
         else:
@@ -29,7 +28,7 @@ class MT5Executor:
             return [pos for pos in positions if pos.magic == magic]
         return list(positions)
 
-    def execute_trade(self, account_info, risk_manager, symbol, direction, ohlc_data, pattern_name, magic_number):
+    def execute_trade(self, account_info, risk_manager, symbol, direction, ohlc_data, pattern_name, magic_number, market_trend, volatility_atr):
         """Orchestre le placement d'un trade et enregistre son contexte."""
         trade_type = mt5.ORDER_TYPE_BUY if direction == BUY else mt5.ORDER_TYPE_SELL
         price_info = self._mt5.symbol_info_tick(symbol)
@@ -46,20 +45,18 @@ class MT5Executor:
             result = self.place_order(symbol, trade_type, volume, price, sl, tp, magic_number, pattern_name)
             
             if result:
-                # Enregistre le contexte du trade dès son ouverture
                 self._open_trades_context[result.order] = {
                     'symbol': symbol,
                     'direction': direction,
                     'open_time': datetime.utcnow().isoformat(),
                     'pattern_trigger': pattern_name,
-                    'market_trend': risk_manager._get_trend_filter_direction(ohlc_data), # On récupère la tendance
-                    'volatility_atr': risk_manager._calculate_atr(ohlc_data, 14) # On récupère l'ATR
+                    'market_trend': market_trend,
+                    'volatility_atr': volatility_atr
                 }
         else:
             self.log.warning("Le volume calculé est de 0.0. L'ordre n'est pas placé.")
 
     def place_order(self, symbol, order_type, volume, price, sl, tp, magic_number, pattern_name):
-        # ... (cette fonction ne change pas)
         comment = f"KB9-{pattern_name}"[:31]
         request = {
             "action": mt5.TRADE_ACTION_DEAL, "symbol": symbol, "volume": volume,
@@ -78,10 +75,7 @@ class MT5Executor:
         return result
 
     def check_for_closed_trades(self, magic_number):
-        """Vérifie les trades fermés et les archive dans l'historique."""
         current_open_tickets = {pos.ticket for pos in self.get_open_positions(magic=magic_number)}
-        
-        # Tickets qui étaient dans notre contexte mais ne sont plus ouverts sur MT5
         closed_tickets = set(self._open_trades_context.keys()) - current_open_tickets
 
         for ticket in closed_tickets:
@@ -89,29 +83,20 @@ class MT5Executor:
             history_deals = self._mt5.history_deals_get(ticket=ticket)
             
             if history_deals:
-                # On cherche le deal de sortie pour obtenir le PnL
                 exit_deal = next((d for d in history_deals if d.entry == 1), None)
                 if exit_deal:
-                    context = self._open_trades_context.pop(ticket) # Retire le trade du contexte actif
-                    
+                    context = self._open_trades_context.pop(ticket)
                     trade_record = {
-                        'ticket': ticket,
-                        'symbol': context['symbol'],
-                        'direction': context['direction'],
-                        'open_time': context['open_time'],
-                        'close_time': datetime.fromtimestamp(exit_deal.time).isoformat(),
-                        'pnl': exit_deal.profit,
-                        'pattern_trigger': context['pattern_trigger'],
-                        'market_trend': context['market_trend'],
-                        'volatility_atr': context['volatility_atr']
+                        'ticket': ticket, 'symbol': context['symbol'], 'direction': context['direction'],
+                        'open_time': context['open_time'], 'close_time': datetime.fromtimestamp(exit_deal.time).isoformat(),
+                        'pnl': exit_deal.profit, 'pattern_trigger': context['pattern_trigger'],
+                        'market_trend': context['market_trend'], 'volatility_atr': context['volatility_atr']
                     }
                     self._archive_trade(trade_record)
             else:
-                # Si on ne trouve pas le deal (rare), on retire juste le contexte
                 self._open_trades_context.pop(ticket, None)
 
     def _archive_trade(self, trade_record: dict):
-        """Ajoute un enregistrement de trade au fichier CSV."""
         try:
             df = pd.DataFrame([trade_record])
             file_exists = os.path.exists(self.history_file)
@@ -124,7 +109,6 @@ class MT5Executor:
         return self._mt5.account_info()
     
     def modify_position(self, ticket, sl, tp):
-        # ... (cette fonction ne change pas)
         request = {"action": mt5.TRADE_ACTION_SLTP, "position": ticket, "sl": sl, "tp": tp}
         result = self._mt5.order_send(request)
         if result and result.retcode != mt5.TRADE_RETCODE_DONE:

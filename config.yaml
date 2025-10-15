@@ -39,7 +39,6 @@ risk_management:
     enabled: true
     trailing_multiple: 1.8
 trading_settings:
-  live_trading_enabled: false
   magic_number: 13579
   symbols:
   - XAUUSD
