@@ -42,8 +42,8 @@ def load_yaml(filepath: str) -> dict:
     return {}
 
 def main_trading_loop(state: SharedState):
-    """Boucle principale du bot, v8.1 avec gestion des trades par symbole."""
-    logging.info("Démarrage de la boucle de trading v8.1 (SMC Multi-Asset)...")
+    """Boucle principale du bot v9.0, stable et sécurisée."""
+    logging.info("Démarrage de la boucle de trading v9.0 (SMC Stable)...")
     
     initial_config = load_yaml('config.yaml')
     state.update_config(initial_config)
@@ -64,29 +64,25 @@ def main_trading_loop(state: SharedState):
                 time.sleep(10); continue
             state.update_status("Connecté", f"Balance: {account_info.balance:.2f} {account_info.currency}")
 
-            # Gère toutes les positions ouvertes par le bot, tous symboles confondus
             all_bot_positions = executor.get_open_positions(magic=magic_number)
             state.update_positions(all_bot_positions)
+            
             if all_bot_positions:
                 for pos in all_bot_positions:
-                    # Crée un RiskManager spécifique pour chaque trade à gérer
                     rm_pos = RiskManager(config.get('risk_management', {}), executor, pos.symbol)
                     tick = connector.get_tick(pos.symbol)
                     if tick:
                         rm_pos.manage_open_positions([pos], tick)
 
-            # Boucle d'analyse pour chaque symbole
             for symbol in symbols_to_trade:
                 logging.info(f"--- Analyse de {symbol} ---")
                 
-                # Vérifie s'il y a déjà un trade ouvert pour CE symbole
                 is_trade_already_open = any(pos.symbol == symbol for pos in all_bot_positions)
                 
                 if is_trade_already_open:
-                    logging.info(f"Analyse suspendue pour {symbol} : un trade est déjà en cours.")
+                    logging.info(f"Analyse suspendue pour {symbol} : un trade géré par ce bot est déjà en cours.")
                     continue
 
-                # Si aucun trade n'est ouvert pour ce symbole, on analyse
                 risk_manager = RiskManager(config.get('risk_management', {}), executor, symbol)
                 ohlc_data = connector.get_ohlc(symbol, config['trading_settings']['timeframe'], 200)
                 if ohlc_data is None or ohlc_data.empty: continue
@@ -100,7 +96,7 @@ def main_trading_loop(state: SharedState):
                     logging.info(f"PATTERN DÉTECTÉ sur {symbol}: [{pattern_name}] - Direction: {direction}")
                     
                     if config['trading_settings']['live_trading_enabled']:
-                        executor.execute_trade(account_info, risk_manager, symbol, direction, ohlc_data, pattern_name)
+                        executor.execute_trade(account_info, risk_manager, symbol, direction, ohlc_data, pattern_name, magic_number)
                     else:
                         logging.info(f"ACTION (SIMULATION) sur {symbol}: Ouverture d'un trade {direction}.")
 
