@@ -1,106 +1,152 @@
-10:27:22 - root - INFO - Interface web démarrée sur http://127.0.0.1:5000
-10:27:22 - root - INFO - Démarrage de la boucle de trading v9.2 (avec Kasper-Learn)...
-10:27:22 - MT5Connector - INFO - Tentative de connexion à MetaTrader 5...
-10:27:22 - MT5Connector - INFO - Connexion à MT5 réussie. Version: (500, 5327, '3 Oct 2025')
-10:27:22 - root - INFO - --- Analyse de XAUUSD ---
-10:27:22 - root - INFO - --- Analyse de EURUSD ---
-10:27:22 - root - INFO - Analyse suspendue pour EURUSD : un trade est déjà en cours.
-10:27:22 - root - INFO - --- Analyse de GBPUSD ---
-10:27:22 - root - INFO - --- Analyse de BTCUSD ---
-10:27:22 - root - INFO - --- Analyse de ETHUSD ---
-10:27:42 - root - INFO - --- Analyse de XAUUSD ---
-10:27:42 - root - INFO - --- Analyse de EURUSD ---
-10:27:42 - root - INFO - Analyse suspendue pour EURUSD : un trade est déjà en cours.
-10:27:42 - root - INFO - --- Analyse de GBPUSD ---
-10:27:42 - root - INFO - --- Analyse de BTCUSD ---
-10:27:42 - root - INFO - --- Analyse de ETHUSD ---
-10:28:02 - root - INFO - --- Analyse de XAUUSD ---
-10:28:02 - root - INFO - --- Analyse de EURUSD ---
-10:28:02 - root - INFO - Analyse suspendue pour EURUSD : un trade est déjà en cours.
-10:28:02 - root - INFO - --- Analyse de GBPUSD ---
-10:28:02 - root - INFO - --- Analyse de BTCUSD ---
-10:28:02 - root - INFO - --- Analyse de ETHUSD ---
-10:28:22 - root - INFO - --- Analyse de XAUUSD ---
-10:28:22 - root - INFO - --- Analyse de EURUSD ---
-10:28:22 - root - INFO - Analyse suspendue pour EURUSD : un trade est déjà en cours.
-10:28:22 - root - INFO - --- Analyse de GBPUSD ---
-10:28:22 - root - INFO - --- Analyse de BTCUSD ---
-10:28:22 - root - INFO - --- Analyse de ETHUSD ---
-10:28:42 - root - INFO - --- Analyse de XAUUSD ---
-10:28:42 - root - INFO - --- Analyse de EURUSD ---
-10:28:42 - root - INFO - Analyse suspendue pour EURUSD : un trade est déjà en cours.
-10:28:42 - root - INFO - --- Analyse de GBPUSD ---
-10:28:42 - root - INFO - --- Analyse de BTCUSD ---
-10:28:42 - root - INFO - --- Analyse de ETHUSD ---
-10:29:02 - root - INFO - --- Analyse de XAUUSD ---
-10:29:02 - root - INFO - --- Analyse de EURUSD ---
-10:29:02 - root - INFO - Analyse suspendue pour EURUSD : un trade est déjà en cours.
-10:29:02 - root - INFO - --- Analyse de GBPUSD ---
-10:29:03 - root - INFO - --- Analyse de BTCUSD ---
-10:29:03 - root - INFO - --- Analyse de ETHUSD ---
-10:29:23 - root - INFO - --- Analyse de XAUUSD ---
-10:29:23 - root - INFO - --- Analyse de EURUSD ---
-10:29:23 - root - INFO - Analyse suspendue pour EURUSD : un trade est déjà en cours.
-10:29:23 - root - INFO - --- Analyse de GBPUSD ---
-10:29:23 - root - INFO - --- Analyse de BTCUSD ---
-10:29:23 - root - INFO - --- Analyse de ETHUSD ---
-10:29:43 - root - INFO - --- Analyse de XAUUSD ---
-10:29:43 - root - INFO - --- Analyse de EURUSD ---
-10:29:43 - root - INFO - Analyse suspendue pour EURUSD : un trade est déjà en cours.
-10:29:43 - root - INFO - --- Analyse de GBPUSD ---
-10:29:43 - root - INFO - --- Analyse de BTCUSD ---
-10:29:43 - root - INFO - --- Analyse de ETHUSD ---
-10:30:03 - root - INFO - --- Analyse de XAUUSD ---
-10:30:03 - root - INFO - --- Analyse de EURUSD ---
-10:30:03 - root - INFO - Analyse suspendue pour EURUSD : un trade est déjà en cours.
-10:30:03 - root - INFO - --- Analyse de GBPUSD ---
-10:30:03 - root - INFO - --- Analyse de BTCUSD ---
-10:30:03 - root - INFO - --- Analyse de ETHUSD ---
-10:30:23 - root - INFO - --- Analyse de XAUUSD ---
-10:30:23 - root - INFO - --- Analyse de EURUSD ---
-10:30:23 - root - INFO - Analyse suspendue pour EURUSD : un trade est déjà en cours.
-10:30:23 - root - INFO - --- Analyse de GBPUSD ---
-10:30:23 - root - INFO - --- Analyse de BTCUSD ---
-10:30:23 - root - INFO - --- Analyse de ETHUSD ---
-10:30:43 - root - INFO - --- Analyse de XAUUSD ---
-10:30:43 - root - INFO - --- Analyse de EURUSD ---
-10:30:43 - root - INFO - Analyse suspendue pour EURUSD : un trade est déjà en cours.
-10:30:43 - root - INFO - --- Analyse de GBPUSD ---
-10:30:43 - root - INFO - --- Analyse de BTCUSD ---
-10:30:43 - root - INFO - --- Analyse de ETHUSD ---
-10:31:03 - root - INFO - --- Analyse de XAUUSD ---
-10:31:03 - root - INFO - --- Analyse de EURUSD ---
-10:31:03 - root - INFO - Analyse suspendue pour EURUSD : un trade est déjà en cours.
-10:31:03 - root - INFO - --- Analyse de GBPUSD ---
-10:31:03 - root - INFO - --- Analyse de BTCUSD ---
-10:31:03 - root - INFO - --- Analyse de ETHUSD ---
-10:31:23 - root - INFO - --- Analyse de XAUUSD ---
-10:31:23 - root - INFO - --- Analyse de EURUSD ---
-10:31:23 - root - INFO - Analyse suspendue pour EURUSD : un trade est déjà en cours.
-10:31:23 - root - INFO - --- Analyse de GBPUSD ---
-10:31:23 - root - INFO - --- Analyse de BTCUSD ---
-10:31:23 - root - INFO - --- Analyse de ETHUSD ---
-10:31:43 - root - INFO - --- Analyse de XAUUSD ---
-10:31:43 - root - INFO - --- Analyse de EURUSD ---
-10:31:43 - root - INFO - Analyse suspendue pour EURUSD : un trade est déjà en cours.
-10:31:43 - root - INFO - --- Analyse de GBPUSD ---
-10:31:43 - root - INFO - --- Analyse de BTCUSD ---
-10:31:43 - root - INFO - --- Analyse de ETHUSD ---
-10:32:03 - root - INFO - --- Analyse de XAUUSD ---
-10:32:03 - root - INFO - --- Analyse de EURUSD ---
-10:32:03 - root - INFO - Analyse suspendue pour EURUSD : un trade est déjà en cours.
-10:32:03 - root - INFO - --- Analyse de GBPUSD ---
-10:32:03 - root - INFO - --- Analyse de BTCUSD ---
-10:32:03 - root - INFO - --- Analyse de ETHUSD ---
-10:32:23 - root - INFO - --- Analyse de XAUUSD ---
-10:32:23 - root - INFO - --- Analyse de EURUSD ---
-10:32:23 - root - INFO - Analyse suspendue pour EURUSD : un trade est déjà en cours.
-10:32:23 - root - INFO - --- Analyse de GBPUSD ---
-10:32:23 - root - INFO - --- Analyse de BTCUSD ---
-10:32:23 - root - INFO - --- Analyse de ETHUSD ---
-10:32:43 - root - INFO - --- Analyse de XAUUSD ---
-10:32:43 - root - INFO - --- Analyse de EURUSD ---
-10:32:43 - root - INFO - Analyse suspendue pour EURUSD : un trade est déjà en cours.
-10:32:43 - root - INFO - --- Analyse de GBPUSD ---
-10:32:43 - root - INFO - --- Analyse de BTCUSD ---
-10:32:43 - root - INFO - --- Analyse de ETHUSD ---
+10:34:30 - root - INFO - Interface web démarrée sur http://127.0.0.1:5000
+10:34:30 - root - INFO - Démarrage de la boucle de trading v9.3 (avec Kasper-Learn)...
+10:34:30 - MT5Connector - INFO - Tentative de connexion à MetaTrader 5...
+10:34:30 - MT5Connector - INFO - Connexion à MT5 réussie. Version: (500, 5327, '3 Oct 2025')
+10:34:30 - root - INFO - --- Analyse de XAUUSD ---
+10:34:30 - root - INFO - --- Analyse de EURUSD ---
+10:34:30 - root - INFO - Analyse suspendue pour EURUSD : un trade est déjà en cours.
+10:34:30 - root - INFO - --- Analyse de GBPUSD ---
+10:34:30 - root - INFO - --- Analyse de BTCUSD ---
+10:34:30 - root - INFO - --- Analyse de ETHUSD ---
+11:19:39 - root - INFO - PATTERN DÉTECTÉ sur XAUUSD: [Order_Block_Buy] - Direction: BUY
+11:19:39 - root - INFO - ACTION (SIMULATION) sur XAUUSD: Ouverture d'un trade BUY.
+11:19:59 - root - INFO - PATTERN DÉTECTÉ sur XAUUSD: [Order_Block_Buy] - Direction: BUY
+11:19:59 - root - INFO - ACTION (SIMULATION) sur XAUUSD: Ouverture d'un trade BUY.
+11:20:19 - root - INFO - PATTERN DÉTECTÉ sur XAUUSD: [Order_Block_Buy] - Direction: BUY
+11:20:19 - root - INFO - ACTION (SIMULATION) sur XAUUSD: Ouverture d'un trade BUY.
+11:20:39 - root - INFO - PATTERN DÉTECTÉ sur XAUUSD: [Order_Block_Buy] - Direction: BUY
+11:20:39 - root - INFO - ACTION (SIMULATION) sur XAUUSD: Ouverture d'un trade BUY.
+11:20:59 - root - INFO - PATTERN DÉTECTÉ sur XAUUSD: [Order_Block_Buy] - Direction: BUY
+11:20:59 - root - INFO - ACTION (SIMULATION) sur XAUUSD: Ouverture d'un trade BUY.
+11:21:19 - root - INFO - PATTERN DÉTECTÉ sur XAUUSD: [Order_Block_Buy] - Direction: BUY
+11:21:19 - root - INFO - ACTION (SIMULATION) sur XAUUSD: Ouverture d'un trade BUY.
+11:21:40 - root - INFO - PATTERN DÉTECTÉ sur XAUUSD: [Order_Block_Buy] - Direction: BUY
+11:21:40 - root - INFO - ACTION (SIMULATION) sur XAUUSD: Ouverture d'un trade BUY.
+11:22:00 - root - INFO - PATTERN DÉTECTÉ sur XAUUSD: [Order_Block_Buy] - Direction: BUY
+11:22:00 - root - INFO - ACTION (SIMULATION) sur XAUUSD: Ouverture d'un trade BUY.
+11:22:20 - root - INFO - PATTERN DÉTECTÉ sur XAUUSD: [Order_Block_Buy] - Direction: BUY
+11:22:20 - root - INFO - ACTION (SIMULATION) sur XAUUSD: Ouverture d'un trade BUY.
+11:22:40 - root - INFO - PATTERN DÉTECTÉ sur XAUUSD: [Order_Block_Buy] - Direction: BUY
+11:22:40 - root - INFO - ACTION (SIMULATION) sur XAUUSD: Ouverture d'un trade BUY.
+11:23:00 - root - INFO - PATTERN DÉTECTÉ sur XAUUSD: [Order_Block_Buy] - Direction: BUY
+11:23:00 - root - INFO - ACTION (SIMULATION) sur XAUUSD: Ouverture d'un trade BUY.
+11:23:20 - root - INFO - PATTERN DÉTECTÉ sur XAUUSD: [Order_Block_Buy] - Direction: BUY
+11:23:20 - root - INFO - ACTION (SIMULATION) sur XAUUSD: Ouverture d'un trade BUY.
+11:23:40 - root - INFO - PATTERN DÉTECTÉ sur XAUUSD: [Order_Block_Buy] - Direction: BUY
+11:23:40 - root - INFO - ACTION (SIMULATION) sur XAUUSD: Ouverture d'un trade BUY.
+11:24:00 - root - INFO - PATTERN DÉTECTÉ sur XAUUSD: [Order_Block_Buy] - Direction: BUY
+11:24:00 - root - INFO - ACTION (SIMULATION) sur XAUUSD: Ouverture d'un trade BUY.
+11:24:20 - root - INFO - PATTERN DÉTECTÉ sur XAUUSD: [Order_Block_Buy] - Direction: BUY
+11:24:20 - root - INFO - ACTION (SIMULATION) sur XAUUSD: Ouverture d'un trade BUY.
+11:24:40 - root - INFO - PATTERN DÉTECTÉ sur XAUUSD: [Order_Block_Buy] - Direction: BUY
+11:24:40 - root - INFO - ACTION (SIMULATION) sur XAUUSD: Ouverture d'un trade BUY.
+11:25:00 - root - INFO - PATTERN DÉTECTÉ sur XAUUSD: [Order_Block_Buy] - Direction: BUY
+11:25:00 - root - INFO - ACTION (SIMULATION) sur XAUUSD: Ouverture d'un trade BUY.
+11:25:20 - root - INFO - PATTERN DÉTECTÉ sur XAUUSD: [Order_Block_Buy] - Direction: BUY
+11:25:20 - root - INFO - ACTION (SIMULATION) sur XAUUSD: Ouverture d'un trade BUY.
+11:25:40 - root - INFO - PATTERN DÉTECTÉ sur XAUUSD: [Order_Block_Buy] - Direction: BUY
+11:25:40 - root - INFO - ACTION (SIMULATION) sur XAUUSD: Ouverture d'un trade BUY.
+11:26:00 - root - INFO - PATTERN DÉTECTÉ sur XAUUSD: [Order_Block_Buy] - Direction: BUY
+11:26:00 - root - INFO - ACTION (SIMULATION) sur XAUUSD: Ouverture d'un trade BUY.
+11:26:20 - root - INFO - PATTERN DÉTECTÉ sur XAUUSD: [Order_Block_Buy] - Direction: BUY
+11:26:20 - root - INFO - ACTION (SIMULATION) sur XAUUSD: Ouverture d'un trade BUY.
+11:26:40 - root - INFO - PATTERN DÉTECTÉ sur XAUUSD: [Order_Block_Buy] - Direction: BUY
+11:26:40 - root - INFO - ACTION (SIMULATION) sur XAUUSD: Ouverture d'un trade BUY.
+11:27:01 - root - INFO - PATTERN DÉTECTÉ sur XAUUSD: [Order_Block_Buy] - Direction: BUY
+11:27:01 - root - INFO - ACTION (SIMULATION) sur XAUUSD: Ouverture d'un trade BUY.
+11:27:21 - root - INFO - PATTERN DÉTECTÉ sur XAUUSD: [Order_Block_Buy] - Direction: BUY
+11:27:21 - root - INFO - ACTION (SIMULATION) sur XAUUSD: Ouverture d'un trade BUY.
+11:27:41 - root - INFO - PATTERN DÉTECTÉ sur XAUUSD: [Order_Block_Buy] - Direction: BUY
+11:27:41 - root - INFO - ACTION (SIMULATION) sur XAUUSD: Ouverture d'un trade BUY.
+11:28:01 - root - INFO - PATTERN DÉTECTÉ sur XAUUSD: [Order_Block_Buy] - Direction: BUY
+11:28:01 - root - INFO - ACTION (SIMULATION) sur XAUUSD: Ouverture d'un trade BUY.
+11:28:21 - root - INFO - PATTERN DÉTECTÉ sur XAUUSD: [Order_Block_Buy] - Direction: BUY
+11:28:21 - root - INFO - ACTION (SIMULATION) sur XAUUSD: Ouverture d'un trade BUY.
+11:28:41 - root - INFO - PATTERN DÉTECTÉ sur XAUUSD: [Order_Block_Buy] - Direction: BUY
+11:28:41 - root - INFO - ACTION (SIMULATION) sur XAUUSD: Ouverture d'un trade BUY.
+11:29:01 - root - INFO - PATTERN DÉTECTÉ sur XAUUSD: [Order_Block_Buy] - Direction: BUY
+11:29:01 - root - INFO - ACTION (SIMULATION) sur XAUUSD: Ouverture d'un trade BUY.
+11:29:21 - root - INFO - PATTERN DÉTECTÉ sur XAUUSD: [Order_Block_Buy] - Direction: BUY
+11:29:21 - root - INFO - ACTION (SIMULATION) sur XAUUSD: Ouverture d'un trade BUY.
+11:29:41 - root - INFO - PATTERN DÉTECTÉ sur XAUUSD: [Order_Block_Buy] - Direction: BUY
+11:29:41 - root - INFO - ACTION (SIMULATION) sur XAUUSD: Ouverture d'un trade BUY.
+11:34:42 - PerformanceAnalyzer - INFO - Analyse de performance : L'historique des trades est vide.
+12:26:31 - root - INFO - PATTERN DÉTECTÉ sur ETHUSD: [Inbalance_Buy] - Direction: BUY
+12:26:31 - root - INFO - ACTION (SIMULATION) sur ETHUSD: Ouverture d'un trade BUY.
+12:26:52 - root - INFO - PATTERN DÉTECTÉ sur ETHUSD: [Inbalance_Buy] - Direction: BUY
+12:26:52 - root - INFO - ACTION (SIMULATION) sur ETHUSD: Ouverture d'un trade BUY.
+12:27:12 - root - INFO - PATTERN DÉTECTÉ sur ETHUSD: [Inbalance_Buy] - Direction: BUY
+12:27:12 - root - INFO - ACTION (SIMULATION) sur ETHUSD: Ouverture d'un trade BUY.
+12:27:32 - root - INFO - PATTERN DÉTECTÉ sur ETHUSD: [Inbalance_Buy] - Direction: BUY
+12:27:32 - root - INFO - ACTION (SIMULATION) sur ETHUSD: Ouverture d'un trade BUY.
+12:27:52 - root - INFO - PATTERN DÉTECTÉ sur ETHUSD: [Inbalance_Buy] - Direction: BUY
+12:27:52 - root - INFO - ACTION (SIMULATION) sur ETHUSD: Ouverture d'un trade BUY.
+12:28:12 - root - INFO - PATTERN DÉTECTÉ sur ETHUSD: [Inbalance_Buy] - Direction: BUY
+12:28:12 - root - INFO - ACTION (SIMULATION) sur ETHUSD: Ouverture d'un trade BUY.
+12:28:32 - root - INFO - PATTERN DÉTECTÉ sur ETHUSD: [Inbalance_Buy] - Direction: BUY
+12:28:32 - root - INFO - ACTION (SIMULATION) sur ETHUSD: Ouverture d'un trade BUY.
+12:28:52 - root - INFO - PATTERN DÉTECTÉ sur ETHUSD: [Inbalance_Buy] - Direction: BUY
+12:28:52 - root - INFO - ACTION (SIMULATION) sur ETHUSD: Ouverture d'un trade BUY.
+12:29:12 - root - INFO - PATTERN DÉTECTÉ sur ETHUSD: [Inbalance_Buy] - Direction: BUY
+12:29:12 - root - INFO - ACTION (SIMULATION) sur ETHUSD: Ouverture d'un trade BUY.
+12:29:32 - root - INFO - PATTERN DÉTECTÉ sur ETHUSD: [Inbalance_Buy] - Direction: BUY
+12:29:32 - root - INFO - ACTION (SIMULATION) sur ETHUSD: Ouverture d'un trade BUY.
+12:29:52 - root - INFO - PATTERN DÉTECTÉ sur ETHUSD: [Inbalance_Buy] - Direction: BUY
+12:29:52 - root - INFO - ACTION (SIMULATION) sur ETHUSD: Ouverture d'un trade BUY.
+12:30:12 - root - INFO - PATTERN DÉTECTÉ sur ETHUSD: [Inbalance_Buy] - Direction: BUY
+12:30:12 - root - INFO - ACTION (SIMULATION) sur ETHUSD: Ouverture d'un trade BUY.
+12:30:32 - root - INFO - PATTERN DÉTECTÉ sur ETHUSD: [Inbalance_Buy] - Direction: BUY
+12:30:32 - root - INFO - ACTION (SIMULATION) sur ETHUSD: Ouverture d'un trade BUY.
+12:30:52 - root - INFO - PATTERN DÉTECTÉ sur ETHUSD: [Inbalance_Buy] - Direction: BUY
+12:30:52 - root - INFO - ACTION (SIMULATION) sur ETHUSD: Ouverture d'un trade BUY.
+12:31:12 - root - INFO - PATTERN DÉTECTÉ sur ETHUSD: [Inbalance_Buy] - Direction: BUY
+12:31:12 - root - INFO - ACTION (SIMULATION) sur ETHUSD: Ouverture d'un trade BUY.
+12:31:32 - root - INFO - PATTERN DÉTECTÉ sur ETHUSD: [Inbalance_Buy] - Direction: BUY
+12:31:32 - root - INFO - ACTION (SIMULATION) sur ETHUSD: Ouverture d'un trade BUY.
+12:31:52 - root - INFO - PATTERN DÉTECTÉ sur ETHUSD: [Inbalance_Buy] - Direction: BUY
+12:31:52 - root - INFO - ACTION (SIMULATION) sur ETHUSD: Ouverture d'un trade BUY.
+12:32:12 - root - INFO - PATTERN DÉTECTÉ sur ETHUSD: [Inbalance_Buy] - Direction: BUY
+12:32:12 - root - INFO - ACTION (SIMULATION) sur ETHUSD: Ouverture d'un trade BUY.
+12:32:33 - root - INFO - PATTERN DÉTECTÉ sur ETHUSD: [Inbalance_Buy] - Direction: BUY
+12:32:33 - root - INFO - ACTION (SIMULATION) sur ETHUSD: Ouverture d'un trade BUY.
+12:32:53 - root - INFO - PATTERN DÉTECTÉ sur ETHUSD: [Inbalance_Buy] - Direction: BUY
+12:32:53 - root - INFO - ACTION (SIMULATION) sur ETHUSD: Ouverture d'un trade BUY.
+12:33:13 - root - INFO - PATTERN DÉTECTÉ sur ETHUSD: [Inbalance_Buy] - Direction: BUY
+12:33:13 - root - INFO - ACTION (SIMULATION) sur ETHUSD: Ouverture d'un trade BUY.
+12:33:33 - root - INFO - PATTERN DÉTECTÉ sur ETHUSD: [Inbalance_Buy] - Direction: BUY
+12:33:33 - root - INFO - ACTION (SIMULATION) sur ETHUSD: Ouverture d'un trade BUY.
+12:33:53 - root - INFO - PATTERN DÉTECTÉ sur ETHUSD: [Inbalance_Buy] - Direction: BUY
+12:33:53 - root - INFO - ACTION (SIMULATION) sur ETHUSD: Ouverture d'un trade BUY.
+12:34:13 - root - INFO - PATTERN DÉTECTÉ sur ETHUSD: [Inbalance_Buy] - Direction: BUY
+12:34:13 - root - INFO - ACTION (SIMULATION) sur ETHUSD: Ouverture d'un trade BUY.
+12:34:33 - root - INFO - PATTERN DÉTECTÉ sur ETHUSD: [Inbalance_Buy] - Direction: BUY
+12:34:33 - root - INFO - ACTION (SIMULATION) sur ETHUSD: Ouverture d'un trade BUY.
+12:34:53 - root - INFO - PATTERN DÉTECTÉ sur ETHUSD: [Inbalance_Buy] - Direction: BUY
+12:34:53 - root - INFO - ACTION (SIMULATION) sur ETHUSD: Ouverture d'un trade BUY.
+12:34:53 - PerformanceAnalyzer - INFO - Analyse de performance : L'historique des trades est vide.
+12:35:13 - root - INFO - PATTERN DÉTECTÉ sur ETHUSD: [Inbalance_Buy] - Direction: BUY
+12:35:13 - root - INFO - ACTION (SIMULATION) sur ETHUSD: Ouverture d'un trade BUY.
+12:35:33 - root - INFO - PATTERN DÉTECTÉ sur ETHUSD: [Inbalance_Buy] - Direction: BUY
+12:35:33 - root - INFO - ACTION (SIMULATION) sur ETHUSD: Ouverture d'un trade BUY.
+12:35:53 - root - INFO - PATTERN DÉTECTÉ sur ETHUSD: [Inbalance_Buy] - Direction: BUY
+12:35:53 - root - INFO - ACTION (SIMULATION) sur ETHUSD: Ouverture d'un trade BUY.
+12:36:13 - root - INFO - PATTERN DÉTECTÉ sur ETHUSD: [Inbalance_Buy] - Direction: BUY
+12:36:13 - root - INFO - ACTION (SIMULATION) sur ETHUSD: Ouverture d'un trade BUY.
+12:36:33 - root - INFO - PATTERN DÉTECTÉ sur ETHUSD: [Inbalance_Buy] - Direction: BUY
+12:36:33 - root - INFO - ACTION (SIMULATION) sur ETHUSD: Ouverture d'un trade BUY.
+12:36:53 - root - INFO - PATTERN DÉTECTÉ sur ETHUSD: [Inbalance_Buy] - Direction: BUY
+12:36:53 - root - INFO - ACTION (SIMULATION) sur ETHUSD: Ouverture d'un trade BUY.
+12:37:14 - root - INFO - PATTERN DÉTECTÉ sur ETHUSD: [Inbalance_Buy] - Direction: BUY
+12:37:14 - root - INFO - ACTION (SIMULATION) sur ETHUSD: Ouverture d'un trade BUY.
+12:37:34 - root - INFO - PATTERN DÉTECTÉ sur ETHUSD: [Inbalance_Buy] - Direction: BUY
+12:37:34 - root - INFO - ACTION (SIMULATION) sur ETHUSD: Ouverture d'un trade BUY.
+12:37:54 - root - INFO - PATTERN DÉTECTÉ sur ETHUSD: [Inbalance_Buy] - Direction: BUY
+12:37:54 - root - INFO - ACTION (SIMULATION) sur ETHUSD: Ouverture d'un trade BUY.
+12:38:54 - root - INFO - PATTERN DÉTECTÉ sur ETHUSD: [Inbalance_Buy] - Direction: BUY
+12:38:54 - root - INFO - ACTION (SIMULATION) sur ETHUSD: Ouverture d'un trade BUY.
+12:39:14 - root - INFO - PATTERN DÉTECTÉ sur ETHUSD: [Inbalance_Buy] - Direction: BUY
+12:39:14 - root - INFO - ACTION (SIMULATION) sur ETHUSD: Ouverture d'un trade BUY.
+12:39:34 - root - INFO - PATTERN DÉTECTÉ sur ETHUSD: [Inbalance_Buy] - Direction: BUY
+12:39:34 - root - INFO - ACTION (SIMULATION) sur ETHUSD: Ouverture d'un trade BUY.
+12:39:54 - root - INFO - PATTERN DÉTECTÉ sur ETHUSD: [Inbalance_Buy] - Direction: BUY
+12:39:54 - root - INFO - ACTION (SIMULATION) sur ETHUSD: Ouverture d'un trade BUY.
