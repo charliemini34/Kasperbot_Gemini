@@ -1,5 +1,5 @@
 # ==============================================================================
-#                 FICHIER DE CONFIGURATION PRINCIPAL - KASPERBOT v8.1
+#                 FICHIER DE CONFIGURATION PRINCIPAL - KASPERBOT v9.0
 # ==============================================================================
 
 # -- Identifiants de connexion à MetaTrader 5 --
@@ -15,15 +15,21 @@ api:
 
 # -- Paramètres de trading --
 trading_settings:
-  symbols: 
+  symbols:
     - "XAUUSD"
     - "EURUSD"
     - "GBPUSD"
     - "BTCUSD"
     - "ETHUSD"
   timeframe: "M15"
-  live_trading_enabled: True
+  live_trading_enabled: false
   magic_number: 13579
+
+# -- Moteur d'Apprentissage (Machine Learning) --
+learning:
+  enabled: false # Mettre sur 'true' pour que le bot s'optimise seul (NON RECOMMANDÉ AU DÉBUT)
+  analysis_period_hours: 1
+  min_trades_for_analysis: 20 # Nb de trades min avant de faire une suggestion
 
 # -- Gestion du risque --
 risk_management:
@@ -48,19 +54,10 @@ risk_management:
     trigger_pips: 100
     pips_plus: 10
 
-  # NOUVEAU : Trailing Stop basé sur l'ATR
   trailing_stop_atr:
     enabled: true
-    # Le trailing s'active quand le prix a parcouru 2x la distance de l'ATR
-    activation_multiple: 2.0 
-    # Le SL sera placé à une distance de 1.8x l'ATR derrière le prix actuel
+    activation_multiple: 2.0
     trailing_multiple: 1.8
-
-  # ANCIENNE METHODE (désactivée pour l'exemple)
-  trailing_stop:
-    enabled: false
-    trailing_pips: 150
-    activation_pips: 200
 
 # -- Détection de Patterns Smart Money Concepts (SMC) --
 pattern_detection:

@@ -6,6 +6,7 @@ import logging
 import yaml
 import webbrowser
 import os
+from datetime import datetime, timedelta
 
 from src.data_ingest.mt5_connector import MT5Connector
 from src.patterns.pattern_detector import PatternDetector
@@ -13,9 +14,9 @@ from src.risk.risk_manager import RiskManager
 from src.execution.mt5_executor import MT5Executor
 from src.api.server import start_api_server
 from src.shared_state import SharedState, LogHandler
+from src.analysis.performance_analyzer import PerformanceAnalyzer
 
 def setup_logging(state: SharedState):
-    """Configure le système de logging."""
     # ... (cette fonction ne change pas)
     log_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s', datefmt='%H:%M:%S')
     ui_handler = LogHandler(state)
@@ -30,7 +31,6 @@ def setup_logging(state: SharedState):
     logging.getLogger('werkzeug').setLevel(logging.ERROR)
 
 def load_yaml(filepath: str) -> dict:
-    """Charge un fichier YAML de manière sécurisée."""
     # ... (cette fonction ne change pas)
     try:
         with open(filepath, 'r', encoding='utf-8') as f:
@@ -41,8 +41,8 @@ def load_yaml(filepath: str) -> dict:
     return {}
 
 def main_trading_loop(state: SharedState):
-    """Boucle principale du bot v9.2, avec Trailing SL dynamique."""
-    logging.info("Démarrage de la boucle de trading v9.2 (SMC Stable)...")
+    """Boucle principale du bot v9.2, avec moteur d'apprentissage intégré."""
+    logging.info("Démarrage de la boucle de trading v9.2 (avec Kasper-Learn)...")
     
     initial_config = load_yaml('config.yaml')
     state.update_config(initial_config)
@@ -51,88 +51,87 @@ def main_trading_loop(state: SharedState):
     if not connector.connect():
         state.update_status("Déconnecté", "Connexion MT5 échouée.", is_emergency=True); return
 
+    executor = MT5Executor(connector.get_connection())
+    analyzer = PerformanceAnalyzer(state)
+    last_analysis_time = datetime.now()
+
     while not state.is_shutdown():
         try:
             if not connector.check_connection():
-                state.update_status("Déconnecté", "Connexion MT5 perdue. Tentative de reconnexion...", is_emergency=True)
+                state.update_status("Déconnecté", "Connexion MT5 perdue...", is_emergency=True)
                 if not connector.connect():
-                    logging.warning("Échec de la reconnexion, nouvelle tentative dans 30 secondes.")
+                    logging.warning("Échec reconnexion, nouvel essai dans 30s.")
                     time.sleep(30)
                     continue
                 else:
-                    state.update_status("Connecté", "Reconnexion à MT5 réussie.", is_emergency=False)
+                    state.update_status("Connecté", "Reconnexion réussie.", is_emergency=False)
 
             config = state.get_config()
             magic_number = config['trading_settings'].get('magic_number', 0)
             symbols_to_trade = config['trading_settings'].get('symbols', [])
             timeframe = config['trading_settings'].get('timeframe', 'M15')
             
-            executor = MT5Executor(connector.get_connection())
             account_info = executor.get_account_info()
             if not account_info:
-                logging.warning("Impossible de récupérer les informations du compte.")
+                logging.warning("Impossible de récupérer les infos du compte.")
                 time.sleep(10)
                 continue
             
             state.update_status("Connecté", f"Balance: {account_info.balance:.2f} {account_info.currency}")
 
+            # Vérifie et archive les trades fermés
+            executor.check_for_closed_trades(magic_number)
+
             all_bot_positions = executor.get_open_positions(magic=magic_number)
             state.update_positions(all_bot_positions)
             
             if all_bot_positions:
-                # On regroupe les positions par symbole pour optimiser les appels de données
+                # ... (logique de gestion de position existante)
                 positions_by_symbol = {}
                 for pos in all_bot_positions:
-                    if pos.symbol not in positions_by_symbol:
-                        positions_by_symbol[pos.symbol] = []
+                    if pos.symbol not in positions_by_symbol: positions_by_symbol[pos.symbol] = []
                     positions_by_symbol[pos.symbol].append(pos)
-
                 for symbol, positions in positions_by_symbol.items():
                     try:
-                        # On récupère les données OHLC une seule fois par symbole
                         ohlc_data_for_pos = connector.get_ohlc(symbol, timeframe, 200)
                         tick = connector.get_tick(symbol)
-                        
                         if tick and ohlc_data_for_pos is not None:
                             rm_pos = RiskManager(config, executor, symbol)
-                            # On passe les données OHLC pour le calcul de l'ATR
                             rm_pos.manage_open_positions(positions, tick, ohlc_data_for_pos)
-
                     except ValueError as e:
                         logging.warning(f"Impossible de gérer les positions sur {symbol}: {e}")
 
             for symbol in symbols_to_trade:
+                # ... (logique de détection de pattern existante)
                 logging.info(f"--- Analyse de {symbol} ---")
-                
-                is_trade_already_open = any(pos.symbol == symbol for pos in all_bot_positions)
-                
-                if is_trade_already_open:
+                if any(pos.symbol == symbol for pos in all_bot_positions):
                     logging.info(f"Analyse suspendue pour {symbol} : un trade est déjà en cours.")
                     continue
-
                 try:
                     risk_manager = RiskManager(config, executor, symbol)
                 except ValueError as e:
-                    logging.error(f"Impossible d'initialiser le RiskManager pour {symbol}: {e}. Symbole invalide ?")
+                    logging.error(f"Init RiskManager échouée pour {symbol}: {e}.")
                     continue
-                
                 ohlc_data = connector.get_ohlc(symbol, timeframe, 200)
                 if ohlc_data is None or ohlc_data.empty:
-                    logging.warning(f"Aucune donnée OHLC reçue pour {symbol}.")
+                    logging.warning(f"Aucune donnée OHLC pour {symbol}.")
                     continue
-
                 detector = PatternDetector(config)
                 trade_signal = detector.detect_patterns(ohlc_data)
                 state.update_symbol_patterns(symbol, detector.get_detected_patterns_info())
-
                 if trade_signal:
                     direction, pattern_name = trade_signal['direction'], trade_signal['pattern']
                     logging.info(f"PATTERN DÉTECTÉ sur {symbol}: [{pattern_name}] - Direction: {direction}")
-                    
                     if config['trading_settings']['live_trading_enabled']:
                         executor.execute_trade(account_info, risk_manager, symbol, direction, ohlc_data, pattern_name, magic_number)
                     else:
                         logging.info(f"ACTION (SIMULATION) sur {symbol}: Ouverture d'un trade {direction}.")
+            
+            # --- MOTEUR D'APPRENTISSAGE ---
+            analysis_period = timedelta(hours=config.get('learning', {}).get('analysis_period_hours', 1))
+            if datetime.now() - last_analysis_time > analysis_period:
+                analyzer.run_analysis()
+                last_analysis_time = datetime.now()
 
             time.sleep(20)
 
@@ -152,8 +151,6 @@ if __name__ == "__main__":
     api_thread = threading.Thread(target=start_api_server, args=(shared_state,), daemon=True)
     api_thread.start()
     logging.info(f"Interface web démarrée sur {url}")
-    try:
-        webbrowser.open(url)
-    except Exception:
-        logging.warning("Impossible d'ouvrir le navigateur automatiquement.")
+    try: webbrowser.open(url)
+    except Exception: logging.warning("Impossible d'ouvrir le navigateur.")
     main_trading_loop(shared_state)
