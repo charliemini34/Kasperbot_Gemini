@@ -1,5 +1,5 @@
 # Fichier: src/risk/risk_manager.py
-# Version améliorée par votre Partenaire de Code
+# Version Finale Robuste par votre Partenaire de Code
 
 import MetaTrader5 as mt5
 import logging
@@ -10,8 +10,9 @@ from src.constants import BUY, SELL
 
 class RiskManager:
     """
-    Gère le risque des trades.
-    v9.4 : Intègre le spread dans le calcul SL/TP et ajoute la validation du ratio Risque/Rendement.
+    Gère le risque des trades de manière professionnelle et sécurisée.
+    v10.0 : Annule le trade si le volume calculé est inférieur au minimum autorisé
+            pour garantir un respect strict du risque défini par l'utilisateur.
     """
     def __init__(self, config: dict, executor, symbol: str):
         self._config = config
@@ -29,24 +30,22 @@ class RiskManager:
         self.digits = self.symbol_info.digits
 
     def check_risk_reward_ratio(self, entry_price: float, sl_price: float, tp_price: float) -> bool:
-        """
-        Vérifie si le ratio Risque/Rendement du trade potentiel est acceptable.
-        """
+        """Vérifie si le ratio Risque/Rendement du trade potentiel est acceptable."""
         min_rr_ratio = self._config.get('risk_management', {}).get('min_risk_reward_ratio', 2.0)
 
         potential_loss = abs(entry_price - sl_price)
         potential_profit = abs(tp_price - entry_price)
 
-        if potential_loss == 0:
+        if potential_loss < self.point * 10: # Évite la division par zéro et les SL trop serrés
             return False
 
         rr_ratio = potential_profit / potential_loss
         
         if rr_ratio >= min_rr_ratio:
-            self.log.info(f"Validation R/R: Ratio de {rr_ratio:.2f} >= {min_rr_ratio}. Trade autorisé.")
+            self.log.info(f"Ratio R/R ({rr_ratio:.2f}) >= Seuil ({min_rr_ratio}). Trade autorisé.")
             return True
         else:
-            self.log.warning(f"Validation R/R: Ratio de {rr_ratio:.2f} < {min_rr_ratio}. Trade refusé.")
+            self.log.warning(f"Ratio R/R ({rr_ratio:.2f}) < Seuil ({min_rr_ratio}). Trade refusé.")
             return False
 
     def calculate_atr(self, ohlc_data: pd.DataFrame, period: int) -> float:
@@ -60,6 +59,7 @@ class RiskManager:
         return true_range.ewm(alpha=1/period, adjust=False).mean().iloc[-1]
 
     def calculate_volume(self, equity: float, entry_price: float, sl_price: float) -> float:
+        """Calcule le volume en respectant scrupuleusement le risque défini."""
         self.log.info("--- Début du Calcul de Volume ---")
         risk_settings = self._config.get('risk_management', {})
         risk_percent = risk_settings.get('risk_per_trade', 0.01)
@@ -67,10 +67,10 @@ class RiskManager:
         self.log.info(f"1. Capital: {equity:.2f} | Risque %: {risk_percent*100:.2f}% -> Montant à risquer: {risk_amount_account_currency:.2f} {self.account_info.currency}")
         
         sl_distance_price = abs(entry_price - sl_price)
-        if sl_distance_price < self.point * 10: 
-            self.log.warning("Distance de SL trop faible, volume à 0.")
+        if sl_distance_price < self.point * 5: 
+            self.log.warning("Distance de SL trop faible, calcul de volume annulé.")
             return 0.0
-        self.log.info(f"2. Distance du SL en prix: {sl_distance_price:.5f}")
+        self.log.info(f"2. Distance du SL en prix: {sl_distance_price:.{self.digits}f}")
 
         contract_size = self.symbol_info.trade_contract_size
         loss_per_lot_profit_currency = sl_distance_price * contract_size
@@ -86,21 +86,28 @@ class RiskManager:
             self.log.info(f"4. Taux de change {self.symbol_info.currency_profit}->{self.account_info.currency}: {conversion_rate:.5f} | Perte/lot convertie: {loss_per_lot_account_currency:.2f} {self.account_info.currency}")
 
         if loss_per_lot_account_currency <= 0: return 0.0
+        
         volume = risk_amount_account_currency / loss_per_lot_account_currency
         self.log.info(f"5. Volume brut calculé: {volume:.4f} lots")
+
+        # --- LOGIQUE DE SÉCURITÉ CRITIQUE ---
+        if volume < self.symbol_info.volume_min:
+            self.log.warning(f"RISQUE NON RESPECTÉ: Le volume calculé ({volume:.4f}) est inférieur au minimum du broker ({self.symbol_info.volume_min}). Trade annulé pour ne pas dépasser le risque.")
+            return 0.0
 
         volume_step = self.symbol_info.volume_step
         if volume_step > 0:
             volume = math.floor(volume / volume_step) * volume_step
         
-        final_volume = round(max(self.symbol_info.volume_min, min(self.symbol_info.volume_max, volume)), 2)
-        self.log.info(f"6. Volume final ajusté: {final_volume:.2f} lots")
+        final_volume = round(min(self.symbol_info.volume_max, volume), 2)
+        self.log.info(f"6. Volume final sécurisé: {final_volume:.2f} lots")
         self.log.info("--- Fin du Calcul de Volume ---")
         return final_volume
         
     def calculate_sl_tp(self, price: float, direction: str, ohlc_data, symbol: str):
+        """Calcule SL/TP en intégrant le spread pour plus de précision."""
         rm_settings = self._config.get('risk_management', {})
-        strategy = rm_settings.get('sl_tp_strategy', 'FIXED_PIPS')
+        strategy = rm_settings.get('sl_tp_strategy', 'ATR_MULTIPLE')
         
         tick_info = self._executor._mt5.symbol_info_tick(symbol)
         spread = (tick_info.ask - tick_info.bid) if tick_info else 0
@@ -113,15 +120,13 @@ class RiskManager:
             tp_multiple = symbol_settings.get('tp_multiple', 3.0)
             
             if direction == BUY:
-                # Pour un achat, le SL est plus bas, on l'ajuste avec le spread pour plus de sécurité
                 sl = price - (atr * sl_multiple) - spread
                 tp = price + (atr * tp_multiple)
             else: # SELL
-                # Pour une vente, le SL est plus haut, on l'ajuste avec le spread
                 sl = price + (atr * sl_multiple) + spread
                 tp = price - (atr * tp_multiple)
             return round(sl, self.digits), round(tp, self.digits)
-        else: # FIXED_PIPS
+        else: # FIXED_PIPS (non recommandé mais disponible)
             fixed_settings = rm_settings.get('fixed_pips_settings', {})
             sl_pips = fixed_settings.get('stop_loss_pips', 150)
             tp_pips = fixed_settings.get('take_profit_pips', 400)
@@ -146,11 +151,6 @@ class RiskManager:
         
         self.log.error(f"Impossible de trouver un taux de conversion pour {from_currency}->{to_currency}")
         return None
-
-    def is_daily_loss_limit_reached(self, equity: float, daily_pnl: float) -> bool:
-        loss_limit_percent = self._config.get('risk_management', {}).get('daily_loss_limit_percent', 0.05)
-        loss_limit_amount = equity * loss_limit_percent
-        return daily_pnl < 0 and abs(daily_pnl) >= loss_limit_amount
 
     def manage_open_positions(self, positions: list, current_tick, ohlc_data: pd.DataFrame):
         if not positions or not current_tick or ohlc_data is None or ohlc_data.empty: return

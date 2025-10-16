@@ -12,7 +12,7 @@ HTML_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Dashboard KasperBot v9.2</title>
+    <title>Dashboard KasperBot v9.3</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -26,13 +26,13 @@ HTML_TEMPLATE = """
         .btn-primary { background-color: #4f46e5; color: white; } .btn-primary:hover { background-color: #4338ca; }
         .form-checkbox { accent-color: #4f46e5; width: auto; }
         label { font-weight: 500; }
-        .config-section { border-top: 1px solid #374151; padding-top: 2rem; }
+        .config-section { border-top: 1px solid #374151; padding-top: 1.5rem; margin-top: 1.5rem; }
     </style>
 </head>
 <body class="p-4 sm:p-6 lg:p-8">
     <div class="max-w-7xl mx-auto">
         <header class="flex justify-between items-center mb-6">
-            <h1 class="text-2xl sm:text-3xl font-bold text-white">KasperBot <span class="text-sm text-gray-400">v9.2 (Kasper-Learn)</span></h1>
+            <h1 class="text-2xl sm:text-3xl font-bold text-white">KasperBot <span class="text-sm text-gray-400">v9.3 (Kasper-Learn)</span></h1>
             <div id="status-indicator" class="flex items-center space-x-2">
                 <div id="status-dot" class="h-4 w-4 rounded-full bg-gray-500"></div><span id="status-text" class="font-medium">Chargement...</span>
             </div>
@@ -44,19 +44,10 @@ HTML_TEMPLATE = """
         </nav></div></div>
         <main>
             <div id="content-dashboard" class="tab-content grid grid-cols-1 lg:grid-cols-3 gap-6">
-                <div class="lg:col-span-1 space-y-6">
-                    <div class="card p-5"><h2 class="text-xl font-semibold text-white mb-4">État du Bot</h2><div id="bot-status-container" class="space-y-3"></div></div>
-                    <div class="card p-5" id="learning-suggestions-card" style="display: none;"><h2 class="text-xl font-semibold text-white mb-4">Suggestions d'Analyse</h2><div id="learning-suggestions-container" class="space-y-2 text-sm"></div></div>
-                    <div id="patterns-main-container" class="space-y-6"></div>
                 </div>
-                <div class="lg:col-span-2 space-y-6">
-                    <div class="card p-5"><h2 class="text-xl font-semibold text-white mb-4">Positions Ouvertes</h2><div id="positions-container"></div></div>
-                    <div class="card p-5"><h2 class="text-xl font-semibold text-white mb-4">Journal d'Événements</h2><div id="logs-container" class="h-96 bg-gray-900 rounded-md p-3 overflow-y-auto text-xs font-mono"></div></div>
-                </div>
-            </div>
-            <div id="content-config" class="tab-content hidden"><div class="card p-6"><form id="config-form" class="space-y-8">
+            <div id="content-config" class="tab-content hidden"><div class="card p-6"><form id="config-form" class="space-y-6">
                 
-                <div class="config-section"><h3 class="text-lg font-medium text-white">Connexion MetaTrader 5</h3>
+                <div><h3 class="text-lg font-medium text-white">Connexion MetaTrader 5</h3>
                     <div class="mt-4 grid grid-cols-1 gap-y-6 sm:grid-cols-3 sm:gap-x-8">
                         <div><label for="mt5_login">Login MT5</label><input type="text" id="mt5_login"></div>
                         <div><label for="mt5_password">Mot de passe MT5</label><input type="password" id="mt5_password"></div>
@@ -64,14 +55,9 @@ HTML_TEMPLATE = """
                     </div>
                 </div>
 
-                <div class="config-section"><h3 class="text-lg font-medium text-white">Journalisation</h3>
+                <div class="config-section"><h3 class="text-lg font-medium text-white">Journalisation & Apprentissage</h3>
                     <div class="mt-4 grid grid-cols-1 gap-y-6 sm:grid-cols-2 sm:gap-x-8">
                         <div><label for="verbose_log">Mode du Journal</label><select id="verbose_log"><option value="true">Bavard (détails)</option><option value="false">Silencieux (critique)</option></select></div>
-                    </div>
-                </div>
-
-                <div class="config-section"><h3 class="text-lg font-medium text-white">Moteur d'Apprentissage</h3>
-                    <div class="mt-4 grid grid-cols-1 gap-y-6 sm:grid-cols-2 sm:gap-x-8">
                         <div><label for="learning_enabled">Mode Automatisé</label><select id="learning_enabled"><option value="true">Activé</option><option value="false">Désactivé (Suggestions)</option></select></div>
                     </div>
                 </div>
@@ -79,8 +65,11 @@ HTML_TEMPLATE = """
                 <div class="config-section"><h3 class="text-lg font-medium text-white">Gestion du Risque</h3>
                     <div class="mt-4 grid grid-cols-1 gap-y-6 sm:grid-cols-3 sm:gap-x-8">
                         <div><label for="risk_per_trade">Risque par Trade (%)</label><input type="number" id="risk_per_trade" step="0.01"></div>
-                        <div class="flex items-center mt-6"><input id="breakeven_enabled" type="checkbox" class="form-checkbox h-4 w-4 rounded"><label for="breakeven_enabled" class="ml-2">Activer le Breakeven</label></div>
-                        <div class="flex items-center mt-6"><input id="trailing_stop_atr_enabled" type="checkbox" class="form-checkbox h-4 w-4 rounded"><label for="trailing_stop_atr_enabled" class="ml-2">Activer le Trailing Stop</label></div>
+                        <div><label for="min_rr_ratio">Ratio R/R Minimum</label><input type="number" id="min_rr_ratio" step="0.1"></div>
+                        <div class="col-span-3 grid grid-cols-2 gap-x-8 mt-4">
+                           <div class="flex items-center"><input id="breakeven_enabled" type="checkbox" class="form-checkbox h-4 w-4 rounded"><label for="breakeven_enabled" class="ml-2">Activer le Breakeven</label></div>
+                           <div class="flex items-center"><input id="trailing_stop_atr_enabled" type="checkbox" class="form-checkbox h-4 w-4 rounded"><label for="trailing_stop_atr_enabled" class="ml-2">Activer le Trailing Stop</label></div>
+                        </div>
                     </div>
                 </div>
                 
@@ -159,6 +148,7 @@ HTML_TEMPLATE = """
                 document.getElementById('verbose_log').value = config.logging.verbose_log.toString();
                 document.getElementById('learning_enabled').value = config.learning.enabled.toString();
                 document.getElementById('risk_per_trade').value = (config.risk_management.risk_per_trade * 100).toFixed(2);
+                document.getElementById('min_rr_ratio').value = config.risk_management.min_rr_ratio;
                 document.getElementById('breakeven_enabled').checked = config.risk_management.breakeven.enabled;
                 document.getElementById('trailing_stop_atr_enabled').checked = config.risk_management.trailing_stop_atr.enabled;
 
@@ -183,6 +173,7 @@ HTML_TEMPLATE = """
                 config.logging.verbose_log = document.getElementById('verbose_log').value === 'true';
                 config.learning.enabled = document.getElementById('learning_enabled').value === 'true';
                 config.risk_management.risk_per_trade = parseFloat(document.getElementById('risk_per_trade').value) / 100;
+                config.risk_management.min_rr_ratio = parseFloat(document.getElementById('min_rr_ratio').value);
                 config.risk_management.breakeven.enabled = document.getElementById('breakeven_enabled').checked;
                 config.risk_management.trailing_stop_atr.enabled = document.getElementById('trailing_stop_atr_enabled').checked;
 
@@ -195,8 +186,6 @@ HTML_TEMPLATE = """
                 alert('Configuration sauvegardée ! Les identifiants MT5 nécessitent un redémarrage du bot pour être pris en compte.');
             } catch (error) { console.error("Erreur de sauvegarde:", error); alert("Erreur lors de la sauvegarde."); }
         }
-        
-        // ... (partie backtest inchangée)
         
         window.onload = () => {
             setInterval(fetchAllData, 3000);

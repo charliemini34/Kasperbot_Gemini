@@ -1,7 +1,16 @@
-15:37:39 - root - INFO - Interface web démarrée sur http://127.0.0.1:5000
-15:37:39 - root - INFO - Démarrage de la boucle de trading v9.4.1 (Kasper-Enhanced)...
-15:37:39 - MT5Connector - INFO - Tentative de connexion à MetaTrader 5...
-15:37:39 - MT5Connector - INFO - Connexion à MT5 réussie. Version: (500, 5327, '3 Oct 2025')
-15:37:39 - root - INFO - Synchronisation... Prochaine analyse dans 443 secondes.
-15:45:02 - root - INFO - Synchronisation... Prochaine analyse dans 900 secondes.
-16:00:02 - root - INFO - Synchronisation... Prochaine analyse dans 900 secondes.
+16:13:54 - root - INFO - Interface web démarrée sur http://127.0.0.1:5000
+16:13:54 - root - INFO - Démarrage de la boucle de trading v9.4.1 (Kasper-Enhanced)...
+16:13:54 - MT5Connector - INFO - Tentative de connexion à MetaTrader 5...
+16:13:54 - MT5Connector - INFO - Connexion à MT5 réussie. Version: (500, 5327, '3 Oct 2025')
+16:13:54 - root - INFO - --- Analyse de XAUUSD ---
+16:13:54 - root - INFO - --- Analyse de EURUSD ---
+16:13:54 - root - INFO - --- Analyse de GBPUSD ---
+16:13:54 - root - INFO - PATTERN DÉTECTÉ sur GBPUSD: [SMC_AMD_Sell] - Direction: SELL
+16:13:54 - MT5Executor - WARNING - Trade sur GBPUSD annulé : Ratio R/R (1.92) insuffisant. Minimum requis : 2.00.
+16:13:54 - root - INFO - --- Analyse de BTCUSD ---
+16:13:54 - root - INFO - PATTERN DÉTECTÉ sur BTCUSD: [SMC_AMD_Sell] - Direction: SELL
+16:13:54 - MT5Executor - WARNING - Trade sur BTCUSD annulé : Ratio R/R (1.58) insuffisant. Minimum requis : 2.00.
+16:13:54 - root - INFO - --- Analyse de ETHUSD ---
+16:13:54 - root - INFO - PATTERN DÉTECTÉ sur ETHUSD: [SMC_AMD_Sell] - Direction: SELL
+16:13:54 - MT5Executor - WARNING - Trade sur ETHUSD annulé : Ratio R/R (1.85) insuffisant. Minimum requis : 2.00.
+16:13:54 - root - INFO - Synchronisation... Prochaine analyse dans 67 secondes.
