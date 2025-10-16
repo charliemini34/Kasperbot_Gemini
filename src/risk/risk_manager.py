@@ -1,5 +1,5 @@
 # Fichier: src/risk/risk_manager.py
-# Version Finale Robuste par votre Partenaire de Code
+# Version 10.1 : Ratio Risque/Rendement flexible
 
 import MetaTrader5 as mt5
 import logging
@@ -11,8 +11,8 @@ from src.constants import BUY, SELL
 class RiskManager:
     """
     Gère le risque des trades de manière professionnelle et sécurisée.
-    v10.0 : Annule le trade si le volume calculé est inférieur au minimum autorisé
-            pour garantir un respect strict du risque défini par l'utilisateur.
+    v10.1 : Rend le filtre de ratio Risque/Rendement optionnel via la configuration,
+            tout en maintenant la priorité absolue sur le respect du risque par trade.
     """
     def __init__(self, config: dict, executor, symbol: str):
         self._config = config
@@ -30,13 +30,21 @@ class RiskManager:
         self.digits = self.symbol_info.digits
 
     def check_risk_reward_ratio(self, entry_price: float, sl_price: float, tp_price: float) -> bool:
-        """Vérifie si le ratio Risque/Rendement du trade potentiel est acceptable."""
-        min_rr_ratio = self._config.get('risk_management', {}).get('min_risk_reward_ratio', 2.0)
+        """
+        Vérifie si le ratio Risque/Rendement est acceptable, selon la configuration.
+        Si 'min_risk_reward_ratio' est <= 0 dans la config, ce filtre est désactivé.
+        """
+        min_rr_ratio = self._config.get('risk_management', {}).get('min_risk_reward_ratio', 1.5)
+
+        # Si le ratio minimum est à 0 ou moins, on désactive le filtre
+        if min_rr_ratio <= 0:
+            self.log.info("Filtre de Ratio R/R désactivé. Validation automatique.")
+            return True
 
         potential_loss = abs(entry_price - sl_price)
         potential_profit = abs(tp_price - entry_price)
 
-        if potential_loss < self.point * 10: # Évite la division par zéro et les SL trop serrés
+        if potential_loss < self.point * 10:
             return False
 
         rr_ratio = potential_profit / potential_loss
@@ -49,7 +57,6 @@ class RiskManager:
             return False
 
     def calculate_atr(self, ohlc_data: pd.DataFrame, period: int) -> float:
-        """Calcule la valeur de l'Average True Range (ATR)."""
         if ohlc_data is None or ohlc_data.empty: return 0.0
         high_low = ohlc_data['high'] - ohlc_data['low']
         high_close = np.abs(ohlc_data['high'] - ohlc_data['close'].shift())
@@ -59,7 +66,6 @@ class RiskManager:
         return true_range.ewm(alpha=1/period, adjust=False).mean().iloc[-1]
 
     def calculate_volume(self, equity: float, entry_price: float, sl_price: float) -> float:
-        """Calcule le volume en respectant scrupuleusement le risque défini."""
         self.log.info("--- Début du Calcul de Volume ---")
         risk_settings = self._config.get('risk_management', {})
         risk_percent = risk_settings.get('risk_per_trade', 0.01)
@@ -90,7 +96,6 @@ class RiskManager:
         volume = risk_amount_account_currency / loss_per_lot_account_currency
         self.log.info(f"5. Volume brut calculé: {volume:.4f} lots")
 
-        # --- LOGIQUE DE SÉCURITÉ CRITIQUE ---
         if volume < self.symbol_info.volume_min:
             self.log.warning(f"RISQUE NON RESPECTÉ: Le volume calculé ({volume:.4f}) est inférieur au minimum du broker ({self.symbol_info.volume_min}). Trade annulé pour ne pas dépasser le risque.")
             return 0.0
@@ -105,7 +110,6 @@ class RiskManager:
         return final_volume
         
     def calculate_sl_tp(self, price: float, direction: str, ohlc_data, symbol: str):
-        """Calcule SL/TP en intégrant le spread pour plus de précision."""
         rm_settings = self._config.get('risk_management', {})
         strategy = rm_settings.get('sl_tp_strategy', 'ATR_MULTIPLE')
         
@@ -122,11 +126,11 @@ class RiskManager:
             if direction == BUY:
                 sl = price - (atr * sl_multiple) - spread
                 tp = price + (atr * tp_multiple)
-            else: # SELL
+            else:
                 sl = price + (atr * sl_multiple) + spread
                 tp = price - (atr * tp_multiple)
             return round(sl, self.digits), round(tp, self.digits)
-        else: # FIXED_PIPS (non recommandé mais disponible)
+        else:
             fixed_settings = rm_settings.get('fixed_pips_settings', {})
             sl_pips = fixed_settings.get('stop_loss_pips', 150)
             tp_pips = fixed_settings.get('take_profit_pips', 400)
@@ -135,7 +139,7 @@ class RiskManager:
 
             if direction == BUY:
                 sl, tp = price - sl_distance - spread, price + tp_distance
-            else: # SELL
+            else:
                 sl, tp = price + sl_distance + spread, price - tp_distance
             return round(sl, self.digits), round(tp, self.digits)
 

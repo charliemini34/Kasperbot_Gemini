@@ -1,45 +1,51 @@
-# ==============================================================================
-#                 FICHIER DE CONFIGURATION PRINCIPAL - KASPERBOT v9.3
-# ==============================================================================
+# Fichier: config.yaml
+# Version 10.1 : Ratio Risque/Rendement flexible
 
-# -- Identifiants de connexion à MetaTrader 5 --
-mt5_credentials:
-  login: 10004952
-  password: "jsne80aX!"
-  server: "Axi-US50-Demo"
-
-# -- Paramètres de l'interface web (API) --
 api:
-  host: "127.0.0.1"
+  host: 127.0.0.1
   port: 5000
 
-# -- Paramètres de trading --
-trading_settings:
-  symbols:
-    - "XAUUSD"
-    - "EURUSD"
-    - "GBPUSD"
-    - "BTCUSD"
-    - "ETHUSD"
-  timeframe: "M15"
-  magic_number: 13579
+timing:
+  sync_mode: new_candle
+  sleep_interval_seconds: 20
 
-# -- Moteur d'Apprentissage (Machine Learning) --
-learning:
-  enabled: false 
-  analysis_period_hours: 1
-  min_trades_for_analysis: 20
-
-# -- Journalisation (Logging) --
 logging:
-  verbose_log: true # true = mode bavard, false = mode silencieux
+  verbose_log: true
 
-# -- Gestion du risque --
+mt5_credentials:
+  login: 10004952
+  password: jsne80aX!
+  server: Axi-US50-Demo
+
+trading_settings:
+  magic_number: 13579
+  symbols:
+  - XAUUSD
+  - EURUSD
+  - GBPUSD
+  - BTCUSD
+  - ETHUSD
+  timeframe: M15
+
+pattern_detection:
+  INBALANCE: true
+  ORDER_BLOCK: true
+  SMC_AMD_SESSION: true
+
+trend_filter:
+  enabled: true
+  higher_timeframe: H4
+  ema_period: 200
+
 risk_management:
-  risk_per_trade: 0.01
-  min_rr_ratio: 2.0 # NOUVEAU: Ratio Risque/Récompense minimum pour accepter un trade
-  daily_loss_limit_percent: 0.05
-  sl_tp_strategy: "ATR_MULTIPLE"
+  # Règle de priorité : Le risque par trade est TOUJOURS respecté.
+  # Le ratio R/R est un FILTRE SECONDAIRE.
+  # Mettez 0.0 pour désactiver le filtre de ratio et accepter tous les trades
+  # qui respectent le risque de 1%.
+  min_risk_reward_ratio: 1.5 # Exemple : Accepte les trades avec un R/R de 1.5 ou plus.
+  
+  risk_per_trade: 0.01 # Règle absolue : Ne jamais risquer plus de 1% du capital.
+  sl_tp_strategy: ATR_MULTIPLE
   
   atr_settings:
     default:
@@ -57,19 +63,13 @@ risk_management:
     enabled: true
     trigger_pips: 100
     pips_plus: 10
-
+    
   trailing_stop_atr:
     enabled: true
     activation_multiple: 2.0
     trailing_multiple: 1.8
 
-# -- Détection de Patterns Smart Money Concepts (SMC) --
-pattern_detection:
-  SMC_AMD_SESSION: true
-  INBALANCE: true
-  ORDER_BLOCK: true
-
-# -- Filtre de Tendance (Order Flow) --
-trend_filter:
-  enabled: true
-  ema_period: 200
+learning:
+  enabled: false
+  analysis_period_hours: 1
+  min_trades_for_analysis: 10

@@ -1,16 +1,76 @@
-16:13:54 - root - INFO - Interface web démarrée sur http://127.0.0.1:5000
-16:13:54 - root - INFO - Démarrage de la boucle de trading v9.4.1 (Kasper-Enhanced)...
-16:13:54 - MT5Connector - INFO - Tentative de connexion à MetaTrader 5...
-16:13:54 - MT5Connector - INFO - Connexion à MT5 réussie. Version: (500, 5327, '3 Oct 2025')
-16:13:54 - root - INFO - --- Analyse de XAUUSD ---
-16:13:54 - root - INFO - --- Analyse de EURUSD ---
-16:13:54 - root - INFO - --- Analyse de GBPUSD ---
-16:13:54 - root - INFO - PATTERN DÉTECTÉ sur GBPUSD: [SMC_AMD_Sell] - Direction: SELL
-16:13:54 - MT5Executor - WARNING - Trade sur GBPUSD annulé : Ratio R/R (1.92) insuffisant. Minimum requis : 2.00.
-16:13:54 - root - INFO - --- Analyse de BTCUSD ---
-16:13:54 - root - INFO - PATTERN DÉTECTÉ sur BTCUSD: [SMC_AMD_Sell] - Direction: SELL
-16:13:54 - MT5Executor - WARNING - Trade sur BTCUSD annulé : Ratio R/R (1.58) insuffisant. Minimum requis : 2.00.
-16:13:54 - root - INFO - --- Analyse de ETHUSD ---
-16:13:54 - root - INFO - PATTERN DÉTECTÉ sur ETHUSD: [SMC_AMD_Sell] - Direction: SELL
-16:13:54 - MT5Executor - WARNING - Trade sur ETHUSD annulé : Ratio R/R (1.85) insuffisant. Minimum requis : 2.00.
-16:13:54 - root - INFO - Synchronisation... Prochaine analyse dans 67 secondes.
+16:23:06 - root - INFO - Interface web démarrée sur http://127.0.0.1:5000
+16:23:06 - root - INFO - Démarrage de la boucle de trading v9.4.1 (Kasper-Enhanced)...
+16:23:06 - MT5Connector - INFO - Tentative de connexion à MetaTrader 5...
+16:23:06 - MT5Connector - INFO - Connexion à MT5 réussie. Version: (500, 5327, '3 Oct 2025')
+16:23:06 - root - INFO - --- Analyse de XAUUSD ---
+16:23:06 - root - INFO - --- Analyse de EURUSD ---
+16:23:06 - root - INFO - --- Analyse de GBPUSD ---
+16:23:06 - root - INFO - --- Analyse de BTCUSD ---
+16:23:06 - root - INFO - PATTERN DÉTECTÉ sur BTCUSD: [SMC_AMD_Sell] - Direction: SELL
+16:23:06 - RiskManager - INFO - --- Début du Calcul de Volume ---
+16:23:06 - RiskManager - INFO - 1. Capital: 2421.38 | Risque %: 1.00% -> Montant à risquer: 24.21 USD
+16:23:06 - RiskManager - INFO - 2. Distance du SL en prix: 1208.11
+16:23:06 - RiskManager - INFO - 3. Perte pour 1 lot: 1208.11 USD
+16:23:06 - RiskManager - INFO - 5. Volume brut calculé: 0.0200 lots
+16:23:06 - RiskManager - WARNING - RISQUE NON RESPECTÉ: Le volume calculé (0.0200) est inférieur au minimum du broker (0.1). Trade annulé pour ne pas dépasser le risque.
+16:23:06 - MT5Executor - WARNING - Le volume calculé est de 0.0. L'ordre n'est pas placé.
+16:23:06 - root - INFO - --- Analyse de ETHUSD ---
+16:23:06 - root - INFO - PATTERN DÉTECTÉ sur ETHUSD: [SMC_AMD_Sell] - Direction: SELL
+16:23:06 - RiskManager - INFO - --- Début du Calcul de Volume ---
+16:23:06 - RiskManager - INFO - 1. Capital: 2421.38 | Risque %: 1.00% -> Montant à risquer: 24.21 USD
+16:23:06 - RiskManager - INFO - 2. Distance du SL en prix: 40.976
+16:23:06 - RiskManager - INFO - 3. Perte pour 1 lot: 40.98 USD
+16:23:06 - RiskManager - INFO - 5. Volume brut calculé: 0.5909 lots
+16:23:06 - RiskManager - INFO - 6. Volume final sécurisé: 0.50 lots
+16:23:06 - RiskManager - INFO - --- Fin du Calcul de Volume ---
+16:23:06 - MT5Executor - INFO - Préparation de l'ordre SELL 0.5 lot(s) de ETHUSD @ 3991.68000 (R/R: 1.94)
+16:23:06 - MT5Executor - INFO - Ordre placé avec succès: Ticket #10248079
+16:23:06 - root - INFO - Synchronisation... Prochaine analyse dans 415 secondes.
+16:30:02 - root - INFO - --- Analyse de XAUUSD ---
+16:30:02 - root - INFO - --- Analyse de EURUSD ---
+16:30:02 - root - INFO - --- Analyse de GBPUSD ---
+16:30:02 - root - INFO - --- Analyse de BTCUSD ---
+16:30:02 - root - INFO - --- Analyse de ETHUSD ---
+16:30:02 - root - INFO - Analyse suspendue pour ETHUSD : un trade est déjà en cours.
+16:30:02 - root - INFO - Synchronisation... Prochaine analyse dans 900 secondes.
+16:45:01 - MT5Executor - INFO - Trade #10248079 détecté comme fermé. Tentative d'archivage...
+16:45:01 - MT5Executor - WARNING - Trade #10248079 fermé mais l'historique est indisponible pour le moment. Réessai au prochain cycle.
+16:45:01 - root - INFO - --- Analyse de XAUUSD ---
+16:45:02 - root - INFO - --- Analyse de EURUSD ---
+16:45:02 - root - INFO - --- Analyse de GBPUSD ---
+16:45:02 - root - INFO - --- Analyse de BTCUSD ---
+16:45:02 - root - INFO - PATTERN DÉTECTÉ sur BTCUSD: [Inbalance_Sell] - Direction: SELL
+16:45:02 - RiskManager - INFO - --- Début du Calcul de Volume ---
+16:45:02 - RiskManager - INFO - 1. Capital: 2400.82 | Risque %: 1.00% -> Montant à risquer: 24.01 USD
+16:45:02 - RiskManager - INFO - 2. Distance du SL en prix: 1235.30
+16:45:02 - RiskManager - INFO - 3. Perte pour 1 lot: 1235.30 USD
+16:45:02 - RiskManager - INFO - 5. Volume brut calculé: 0.0194 lots
+16:45:02 - RiskManager - WARNING - RISQUE NON RESPECTÉ: Le volume calculé (0.0194) est inférieur au minimum du broker (0.1). Trade annulé pour ne pas dépasser le risque.
+16:45:02 - MT5Executor - WARNING - Le volume calculé est de 0.0. L'ordre n'est pas placé.
+16:45:02 - root - INFO - --- Analyse de ETHUSD ---
+16:45:02 - root - INFO - Synchronisation... Prochaine analyse dans 900 secondes.
+17:00:01 - MT5Executor - INFO - Trade #10248079 détecté comme fermé. Tentative d'archivage...
+17:00:01 - MT5Executor - WARNING - Trade #10248079 fermé mais l'historique est indisponible pour le moment. Réessai au prochain cycle.
+17:00:01 - root - INFO - --- Analyse de XAUUSD ---
+17:00:02 - root - INFO - --- Analyse de EURUSD ---
+17:00:02 - root - INFO - --- Analyse de GBPUSD ---
+17:00:02 - root - INFO - --- Analyse de BTCUSD ---
+17:00:02 - root - INFO - --- Analyse de ETHUSD ---
+17:00:02 - root - INFO - Synchronisation... Prochaine analyse dans 900 secondes.
+17:15:01 - MT5Executor - INFO - Trade #10248079 détecté comme fermé. Tentative d'archivage...
+17:15:01 - MT5Executor - WARNING - Trade #10248079 fermé mais l'historique est indisponible pour le moment. Réessai au prochain cycle.
+17:15:01 - root - INFO - --- Analyse de XAUUSD ---
+17:15:02 - root - INFO - --- Analyse de EURUSD ---
+17:15:02 - root - INFO - --- Analyse de GBPUSD ---
+17:15:02 - root - INFO - --- Analyse de BTCUSD ---
+17:15:02 - root - INFO - --- Analyse de ETHUSD ---
+17:15:02 - root - INFO - Synchronisation... Prochaine analyse dans 900 secondes.
+17:30:01 - MT5Executor - INFO - Trade #10248079 détecté comme fermé. Tentative d'archivage...
+17:30:01 - MT5Executor - WARNING - Trade #10248079 fermé mais l'historique est indisponible pour le moment. Réessai au prochain cycle.
+17:30:01 - root - INFO - --- Analyse de XAUUSD ---
+17:30:02 - root - INFO - --- Analyse de EURUSD ---
+17:30:02 - root - INFO - --- Analyse de GBPUSD ---
+17:30:02 - root - INFO - --- Analyse de BTCUSD ---
+17:30:02 - root - INFO - --- Analyse de ETHUSD ---
+17:30:02 - PerformanceAnalyzer - INFO - Analyse de performance : L'historique des trades est vide.
+17:30:02 - root - INFO - Synchronisation... Prochaine analyse dans 900 secondes.
