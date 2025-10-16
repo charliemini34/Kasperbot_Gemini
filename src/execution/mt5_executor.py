@@ -1,16 +1,17 @@
 # Fichier: src/execution/mt5_executor.py
+# Version améliorée par votre Partenaire de Code
 
 import MetaTrader5 as mt5
 import logging
 import pandas as pd
 import os
 from datetime import datetime
-from src.constants import BUY
+from src.constants import BUY, SELL
 
 class MT5Executor:
     """
     Gère l'exécution des ordres et la communication avec l'API MT5.
-    v9.3 : Correction de l'AttributeError en passant le contexte de marché en paramètre.
+    v9.4 : Ajoute la validation du Risk/Reward avant de placer l'ordre.
     """
     def __init__(self, mt5_connection):
         self._mt5 = mt5_connection
@@ -29,7 +30,7 @@ class MT5Executor:
         return list(positions)
 
     def execute_trade(self, account_info, risk_manager, symbol, direction, ohlc_data, pattern_name, magic_number, market_trend, volatility_atr):
-        """Orchestre le placement d'un trade et enregistre son contexte."""
+        """Orchestre le placement d'un trade, avec validation R/R, et enregistre son contexte."""
         trade_type = mt5.ORDER_TYPE_BUY if direction == BUY else mt5.ORDER_TYPE_SELL
         price_info = self._mt5.symbol_info_tick(symbol)
         if not price_info:
@@ -38,10 +39,16 @@ class MT5Executor:
 
         price = price_info.ask if direction == BUY else price_info.bid
         sl, tp = risk_manager.calculate_sl_tp(price, direction, ohlc_data, symbol)
+
+        # NOUVEAU : Validation du ratio Risque/Rendement
+        if not risk_manager.check_risk_reward_ratio(price, sl, tp):
+            self.log.warning(f"Trade sur {symbol} annulé en raison d'un ratio Risque/Rendement insuffisant.")
+            return
+
         volume = risk_manager.calculate_volume(account_info.equity, price, sl)
 
         if volume > 0:
-            self.log.info(f"Préparation de l'ordre {direction} {volume} lot(s) de {symbol} @ {price:.3f}")
+            self.log.info(f"Préparation de l'ordre {direction} {volume} lot(s) de {symbol} @ {price:.5f}")
             result = self.place_order(symbol, trade_type, volume, price, sl, tp, magic_number, pattern_name)
             
             if result:
@@ -64,15 +71,30 @@ class MT5Executor:
             "magic": magic_number, "comment": comment,
             "type_time": mt5.ORDER_TIME_GTC, "type_filling": mt5.ORDER_FILLING_IOC,
         }
-        result = self._mt5.order_send(request)
-        if result is None:
-            self.log.error(f"Échec critique de l'envoi de l'ordre. Erreur MT5: {self._mt5.last_error()}")
-            return None
-        if result.retcode != mt5.TRADE_RETCODE_DONE:
-            self.log.error(f"Échec de l'envoi de l'ordre: retcode={result.retcode}, commentaire={result.comment}")
-            return None
-        self.log.info(f"Ordre placé avec succès: Ticket #{result.order}")
-        return result
+        
+        # Boucle de tentative simple pour gérer les erreurs non critiques
+        for attempt in range(3):
+            result = self._mt5.order_send(request)
+            if result is None:
+                self.log.error(f"Échec critique de l'envoi de l'ordre (tentative {attempt+1}/3). Erreur MT5: {self._mt5.last_error()}")
+                continue
+            if result.retcode == mt5.TRADE_RETCODE_DONE:
+                self.log.info(f"Ordre placé avec succès: Ticket #{result.order}")
+                return result
+            # Gestion des erreurs courantes qui peuvent être temporaires
+            if result.retcode in [mt5.TRADE_RETCODE_REQUOTE, mt5.TRADE_RETCODE_PRICE_OFF]:
+                self.log.warning(f"Re-quote ou prix obsolète (tentative {attempt+1}/3). Nouvel essai...")
+                time.sleep(1)
+                # Mise à jour du prix pour la nouvelle tentative
+                price_info = self._mt5.symbol_info_tick(symbol)
+                if price_info:
+                    request['price'] = price_info.ask if order_type == mt5.ORDER_TYPE_BUY else price_info.bid
+            else:
+                self.log.error(f"Échec de l'envoi de l'ordre: retcode={result.retcode}, commentaire={result.comment}")
+                return None
+        
+        self.log.error("Échec de l'envoi de l'ordre après 3 tentatives.")
+        return None
 
     def check_for_closed_trades(self, magic_number):
         current_open_tickets = {pos.ticket for pos in self.get_open_positions(magic=magic_number)}
@@ -83,7 +105,7 @@ class MT5Executor:
             history_deals = self._mt5.history_deals_get(ticket=ticket)
             
             if history_deals:
-                exit_deal = next((d for d in history_deals if d.entry == 1), None)
+                exit_deal = next((d for d in history_deals if d.entry == 1), None) # 1 = DEAL_ENTRY_OUT
                 if exit_deal:
                     context = self._open_trades_context.pop(ticket)
                     trade_record = {
@@ -94,6 +116,7 @@ class MT5Executor:
                     }
                     self._archive_trade(trade_record)
             else:
+                # Si aucune information n'est trouvée, on nettoie simplement le contexte pour éviter les erreurs
                 self._open_trades_context.pop(ticket, None)
 
     def _archive_trade(self, trade_record: dict):

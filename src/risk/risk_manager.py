@@ -1,16 +1,17 @@
 # Fichier: src/risk/risk_manager.py
+# Version améliorée par votre Partenaire de Code
 
 import MetaTrader5 as mt5
 import logging
 import math
 import pandas as pd
 import numpy as np
-from src.constants import BUY
+from src.constants import BUY, SELL
 
 class RiskManager:
     """
     Gère le risque des trades.
-    v9.3 : Correction de l'accès aux méthodes pour l'enregistrement du contexte.
+    v9.4 : Intègre le spread dans le calcul SL/TP et ajoute la validation du ratio Risque/Rendement.
     """
     def __init__(self, config: dict, executor, symbol: str):
         self._config = config
@@ -25,9 +26,31 @@ class RiskManager:
             raise ValueError("Impossible d'obtenir les infos du symbole ou du compte.")
             
         self.point = self.symbol_info.point
+        self.digits = self.symbol_info.digits
+
+    def check_risk_reward_ratio(self, entry_price: float, sl_price: float, tp_price: float) -> bool:
+        """
+        Vérifie si le ratio Risque/Rendement du trade potentiel est acceptable.
+        """
+        min_rr_ratio = self._config.get('risk_management', {}).get('min_risk_reward_ratio', 2.0)
+
+        potential_loss = abs(entry_price - sl_price)
+        potential_profit = abs(tp_price - entry_price)
+
+        if potential_loss == 0:
+            return False
+
+        rr_ratio = potential_profit / potential_loss
+        
+        if rr_ratio >= min_rr_ratio:
+            self.log.info(f"Validation R/R: Ratio de {rr_ratio:.2f} >= {min_rr_ratio}. Trade autorisé.")
+            return True
+        else:
+            self.log.warning(f"Validation R/R: Ratio de {rr_ratio:.2f} < {min_rr_ratio}. Trade refusé.")
+            return False
 
     def calculate_atr(self, ohlc_data: pd.DataFrame, period: int) -> float:
-        """Calcule la valeur de l'Average True Range (ATR). Public pour être utilisé par le contexte."""
+        """Calcule la valeur de l'Average True Range (ATR)."""
         if ohlc_data is None or ohlc_data.empty: return 0.0
         high_low = ohlc_data['high'] - ohlc_data['low']
         high_close = np.abs(ohlc_data['high'] - ohlc_data['close'].shift())
@@ -37,20 +60,22 @@ class RiskManager:
         return true_range.ewm(alpha=1/period, adjust=False).mean().iloc[-1]
 
     def calculate_volume(self, equity: float, entry_price: float, sl_price: float) -> float:
-        # ... (cette fonction ne change pas)
         self.log.info("--- Début du Calcul de Volume ---")
         risk_settings = self._config.get('risk_management', {})
         risk_percent = risk_settings.get('risk_per_trade', 0.01)
         risk_amount_account_currency = equity * risk_percent
         self.log.info(f"1. Capital: {equity:.2f} | Risque %: {risk_percent*100:.2f}% -> Montant à risquer: {risk_amount_account_currency:.2f} {self.account_info.currency}")
+        
         sl_distance_price = abs(entry_price - sl_price)
         if sl_distance_price < self.point * 10: 
             self.log.warning("Distance de SL trop faible, volume à 0.")
             return 0.0
         self.log.info(f"2. Distance du SL en prix: {sl_distance_price:.5f}")
+
         contract_size = self.symbol_info.trade_contract_size
         loss_per_lot_profit_currency = sl_distance_price * contract_size
         self.log.info(f"3. Perte pour 1 lot: {loss_per_lot_profit_currency:.2f} {self.symbol_info.currency_profit}")
+
         loss_per_lot_account_currency = loss_per_lot_profit_currency
         if self.symbol_info.currency_profit != self.account_info.currency:
             conversion_rate = self.get_conversion_rate(self.symbol_info.currency_profit, self.account_info.currency)
@@ -59,12 +84,15 @@ class RiskManager:
                 return 0.0
             loss_per_lot_account_currency /= conversion_rate
             self.log.info(f"4. Taux de change {self.symbol_info.currency_profit}->{self.account_info.currency}: {conversion_rate:.5f} | Perte/lot convertie: {loss_per_lot_account_currency:.2f} {self.account_info.currency}")
+
         if loss_per_lot_account_currency <= 0: return 0.0
         volume = risk_amount_account_currency / loss_per_lot_account_currency
         self.log.info(f"5. Volume brut calculé: {volume:.4f} lots")
+
         volume_step = self.symbol_info.volume_step
         if volume_step > 0:
             volume = math.floor(volume / volume_step) * volume_step
+        
         final_volume = round(max(self.symbol_info.volume_min, min(self.symbol_info.volume_max, volume)), 2)
         self.log.info(f"6. Volume final ajusté: {final_volume:.2f} lots")
         self.log.info("--- Fin du Calcul de Volume ---")
@@ -74,6 +102,9 @@ class RiskManager:
         rm_settings = self._config.get('risk_management', {})
         strategy = rm_settings.get('sl_tp_strategy', 'FIXED_PIPS')
         
+        tick_info = self._executor._mt5.symbol_info_tick(symbol)
+        spread = (tick_info.ask - tick_info.bid) if tick_info else 0
+
         if strategy == "ATR_MULTIPLE":
             symbol_settings = rm_settings.get('atr_settings', {}).get(symbol, rm_settings.get('atr_settings', {}).get('default', {}))
             period = symbol_settings.get('period', 14)
@@ -82,49 +113,58 @@ class RiskManager:
             tp_multiple = symbol_settings.get('tp_multiple', 3.0)
             
             if direction == BUY:
-                sl, tp = price - (atr * sl_multiple), price + (atr * tp_multiple)
-            else:
-                sl, tp = price + (atr * sl_multiple), price - (atr * tp_multiple)
-            return round(sl, self.symbol_info.digits), round(tp, self.symbol_info.digits)
-        else:
+                # Pour un achat, le SL est plus bas, on l'ajuste avec le spread pour plus de sécurité
+                sl = price - (atr * sl_multiple) - spread
+                tp = price + (atr * tp_multiple)
+            else: # SELL
+                # Pour une vente, le SL est plus haut, on l'ajuste avec le spread
+                sl = price + (atr * sl_multiple) + spread
+                tp = price - (atr * tp_multiple)
+            return round(sl, self.digits), round(tp, self.digits)
+        else: # FIXED_PIPS
             fixed_settings = rm_settings.get('fixed_pips_settings', {})
-            sl_pips, tp_pips = fixed_settings.get('stop_loss_pips', 150), fixed_settings.get('take_profit_pips', 400)
-            sl_distance, tp_distance = sl_pips * 10 * self.point, tp_pips * 10 * self.point
-            if direction == BUY: sl, tp = price - sl_distance, price + tp_distance
-            else: sl, tp = price + sl_distance, price - tp_distance
-            return round(sl, self.symbol_info.digits), round(tp, self.symbol_info.digits)
+            sl_pips = fixed_settings.get('stop_loss_pips', 150)
+            tp_pips = fixed_settings.get('take_profit_pips', 400)
+            sl_distance = sl_pips * 10 * self.point
+            tp_distance = tp_pips * 10 * self.point
+
+            if direction == BUY:
+                sl, tp = price - sl_distance - spread, price + tp_distance
+            else: # SELL
+                sl, tp = price + sl_distance + spread, price - tp_distance
+            return round(sl, self.digits), round(tp, self.digits)
 
     def get_conversion_rate(self, from_currency: str, to_currency: str) -> float | None:
-        # ... (cette fonction ne change pas)
         if from_currency == to_currency: return 1.0
         pair1 = f"{to_currency}{from_currency}"
         info1 = self._executor._mt5.symbol_info_tick(pair1)
         if info1 and info1.bid > 0: return info1.bid
+        
         pair2 = f"{from_currency}{to_currency}"
         info2 = self._executor._mt5.symbol_info_tick(pair2)
         if info2 and info2.ask > 0: return 1.0 / info2.ask
+        
         self.log.error(f"Impossible de trouver un taux de conversion pour {from_currency}->{to_currency}")
         return None
 
     def is_daily_loss_limit_reached(self, equity: float, daily_pnl: float) -> bool:
-        # ... (cette fonction ne change pas)
         loss_limit_percent = self._config.get('risk_management', {}).get('daily_loss_limit_percent', 0.05)
         loss_limit_amount = equity * loss_limit_percent
         return daily_pnl < 0 and abs(daily_pnl) >= loss_limit_amount
 
     def manage_open_positions(self, positions: list, current_tick, ohlc_data: pd.DataFrame):
-        # ... (cette fonction ne change pas)
         if not positions or not current_tick or ohlc_data is None or ohlc_data.empty: return
         self._apply_breakeven(positions, current_tick)
         if self._config.get('trailing_stop_atr', {}).get('enabled', False):
             self._apply_trailing_stop_atr(positions, current_tick, ohlc_data)
 
     def _apply_breakeven(self, positions, tick):
-        # ... (cette fonction ne change pas)
         cfg = self._config.get('breakeven', {})
         if not cfg.get('enabled', False): return
+        
         trigger_distance = cfg.get('trigger_pips', 150) * 10 * self.point
         pips_plus = cfg.get('pips_plus', 10) * 10 * self.point
+
         for pos in positions:
             if pos.type == mt5.ORDER_TYPE_BUY:
                 breakeven_sl = pos.price_open + pips_plus
@@ -136,15 +176,16 @@ class RiskManager:
                     self._executor.modify_position(pos.ticket, breakeven_sl, pos.tp)
     
     def _apply_trailing_stop_atr(self, positions, tick, ohlc_data):
-        # ... (cette fonction ne change pas)
         cfg = self._config.get('trailing_stop_atr', {})
         atr_settings = self._config.get('risk_management', {}).get('atr_settings', {})
         period = atr_settings.get('default', {}).get('period', 14)
         atr = self.calculate_atr(ohlc_data, period)
+        
         activation_multiple = cfg.get('activation_multiple', 2.0)
         trailing_multiple = cfg.get('trailing_multiple', 1.8)
         activation_distance = atr * activation_multiple
         trailing_distance = atr * trailing_multiple
+
         for pos in positions:
             new_sl = pos.sl
             if pos.type == mt5.ORDER_TYPE_BUY:
@@ -155,5 +196,6 @@ class RiskManager:
                 if (pos.price_open - tick.ask) >= activation_distance:
                     potential_new_sl = tick.ask + trailing_distance
                     if new_sl == 0 or potential_new_sl < new_sl: new_sl = potential_new_sl
+            
             if new_sl != pos.sl:
                 self._executor.modify_position(pos.ticket, new_sl, pos.tp)

@@ -4,7 +4,7 @@ api:
 learning:
   analysis_period_hours: 1
   enabled: false
-  min_trades_for_analysis: 20
+  min_trades_for_analysis: 10
 logging:
   verbose_log: false
 mt5_credentials:
@@ -31,13 +31,16 @@ risk_management:
     enabled: true
     pips_plus: 10
     trigger_pips: 100
-  daily_loss_limit_percent: 0.05
+  min_risk_reward_ratio: 2
   risk_per_trade: 0.01
   sl_tp_strategy: ATR_MULTIPLE
   trailing_stop_atr:
     activation_multiple: 2
     enabled: true
     trailing_multiple: 1.8
+timing:
+  sleep_interval_seconds: 20
+  sync_mode: new_candle
 trading_settings:
   magic_number: 13579
   symbols:
@@ -50,3 +53,4 @@ trading_settings:
 trend_filter:
   ema_period: 200
   enabled: true
+  higher_timeframe: H4

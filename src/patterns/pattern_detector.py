@@ -1,4 +1,5 @@
 # Fichier: src/patterns/pattern_detector.py
+# Version 9.4.1 (Correctif) par votre Partenaire de Code
 
 import pandas as pd
 import numpy as np
@@ -9,7 +10,8 @@ from src.constants import PATTERN_AMD, PATTERN_INBALANCE, PATTERN_ORDER_BLOCK, B
 class PatternDetector:
     """
     Module de reconnaissance de patterns Smart Money Concepts (SMC).
-    v9.3 : Amélioration du retour d'état pour l'affichage des signaux confirmés/invalidés.
+    v9.4.1 (Correctif) : Corrige une régression dans la détection des Order Blocks.
+    Intègre une analyse multi-temporelle pour un filtrage de tendance plus robuste.
     """
     def __init__(self, config):
         self.config = config
@@ -19,25 +21,39 @@ class PatternDetector:
     def get_detected_patterns_info(self):
         return self.detected_patterns_info
 
-    def _get_trend_filter_direction(self, df: pd.DataFrame) -> str:
-        """Détermine la tendance de fond avec une EMA pour filtrer les trades."""
+    def _get_trend_filter_direction(self, connector, symbol: str) -> str:
+        """
+        Détermine la tendance de fond sur un timeframe supérieur pour filtrer les trades.
+        """
         filter_cfg = self.config.get('trend_filter', {})
         if not filter_cfg.get('enabled', False):
-            self.detected_patterns_info['TREND_FILTER'] = {'status': 'Disabled'}
+            self.detected_patterns_info['TREND_FILTER'] = {'status': 'Désactivé'}
             return "ANY"
 
+        higher_timeframe = filter_cfg.get('higher_timeframe', 'H4')
         period = filter_cfg.get('ema_period', 200)
-        ema = df['close'].ewm(span=period, adjust=False).mean()
+        
+        htf_data = connector.get_ohlc(symbol, higher_timeframe, period + 50)
+        if htf_data is None or htf_data.empty:
+            self.log.warning(f"Impossible de récupérer les données {higher_timeframe} pour le filtre de tendance.")
+            self.detected_patterns_info['TREND_FILTER'] = {'status': f'Erreur données {higher_timeframe}'}
+            return "ANY"
 
-        if df['close'].iloc[-1] > ema.iloc[-1]:
-            self.detected_patterns_info['TREND_FILTER'] = {'status': 'Tendance HAUSSIÈRE'}
+        ema = htf_data['close'].ewm(span=period, adjust=False).mean()
+
+        if htf_data['close'].iloc[-1] > ema.iloc[-1]:
+            status = f"HAUSSIÈRE ({higher_timeframe})"
+            self.detected_patterns_info['TREND_FILTER'] = {'status': status}
             return BUY
         else:
-            self.detected_patterns_info['TREND_FILTER'] = {'status': 'Tendance BAISSIÈRE'}
+            status = f"BAISSIÈRE ({higher_timeframe})"
+            self.detected_patterns_info['TREND_FILTER'] = {'status': status}
             return SELL
 
-    def detect_patterns(self, ohlc_data: pd.DataFrame):
-        """Passe en revue toutes les stratégies de détection et les filtre par tendance."""
+    def detect_patterns(self, ohlc_data: pd.DataFrame, connector, symbol: str):
+        """
+        Passe en revue toutes les stratégies de détection et les filtre par la tendance de fond.
+        """
         self.detected_patterns_info = {}
         
         df = ohlc_data.copy()
@@ -46,7 +62,7 @@ class PatternDetector:
         if df.index.tz is None:
             df.index = df.index.tz_localize('UTC')
 
-        allowed_direction = self._get_trend_filter_direction(df)
+        allowed_direction = self._get_trend_filter_direction(connector, symbol)
         confirmed_trade_signal = None
 
         detection_functions = {
@@ -65,54 +81,59 @@ class PatternDetector:
                             confirmed_trade_signal = trade_signal
                             self.detected_patterns_info[name]['status'] = f"CONFIRMÉ ({trade_signal['direction']})"
                     else:
-                        self.detected_patterns_info[name]['status'] = f"INVALIDÉ ({trade_signal['direction']} vs {allowed_direction})"
+                        self.detected_patterns_info[name]['status'] = f"INVALIDÉ ({trade_signal['direction']} vs Tendance {allowed_direction})"
         
         return confirmed_trade_signal
 
     def _find_swing_points(self, series: pd.Series, n=3):
-        # ... (cette fonction ne change pas)
         lows = series[(series.shift(1) > series) & (series.shift(-1) > series)]
         highs = series[(series.shift(1) < series) & (series.shift(-1) < series)]
         return lows, highs
 
     def _detect_amd_session(self, df: pd.DataFrame):
-        # ... (cette fonction ne change pas)
         self.detected_patterns_info[PATTERN_AMD] = {'status': 'Analyse...'}
         last_candle_time = df.index[-1]
         if not (time(7, 0) <= last_candle_time.time() <= time(20, 0)):
             self.detected_patterns_info[PATTERN_AMD]['status'] = 'Hors session'
             return None
+            
         asian_session = df.between_time('00:00', '06:59').loc[last_candle_time.date().strftime('%Y-%m-%d')]
         if len(asian_session) < 5:
             self.detected_patterns_info[PATTERN_AMD]['status'] = 'Pas assez de données Asie'
             return None
+
         asian_high, asian_low = asian_session['high'].max(), asian_session['low'].min()
         self.detected_patterns_info[PATTERN_AMD]['status'] = f'Range Asie: {asian_low:.2f}-{asian_high:.2f}'
+        
         recent_candles = df.loc[df.index > asian_session.index[-1]]
         if recent_candles.empty: return None
+
         if recent_candles['high'].max() > asian_high:
             swing_lows, _ = self._find_swing_points(recent_candles['low'])
             if swing_lows.empty: return None
             choch_level = swing_lows.iloc[-1]
-            if df['close'].iloc[-1] < choch_level and df['close'].iloc[-2] >= choch_level:
+            if df['close'].iloc[-1] < choch_level:
                 self.detected_patterns_info[PATTERN_AMD]['status'] = f'Signal {SELL}'
                 return {'pattern': 'SMC_AMD_Sell', 'direction': SELL}
+
         if recent_candles['low'].min() < asian_low:
             _, swing_highs = self._find_swing_points(recent_candles['high'])
             if swing_highs.empty: return None
             choch_level = swing_highs.iloc[-1]
-            if df['close'].iloc[-1] > choch_level and df['close'].iloc[-2] <= choch_level:
+            if df['close'].iloc[-1] > choch_level:
                 self.detected_patterns_info[PATTERN_AMD]['status'] = f'Signal {BUY}'
                 return {'pattern': 'SMC_AMD_Buy', 'direction': BUY}
+
         self.detected_patterns_info[PATTERN_AMD]['status'] = 'Pas de signal'
         return None
 
     def _detect_inbalance(self, df: pd.DataFrame):
-        # ... (cette fonction ne change pas)
         self.detected_patterns_info[PATTERN_INBALANCE] = {'status': 'Pas de signal'}
         if len(df) < 50: return None
+        
         recent_high, recent_low = df['high'].iloc[-50:].max(), df['low'].iloc[-50:].min()
         equilibrium_mid = (recent_high + recent_low) / 2
+
         for i in range(len(df) - 3, len(df) - 20, -1):
             c1, c3 = df.iloc[i-2], df.iloc[i]
             if c1['high'] < c3['low']:
@@ -128,11 +149,14 @@ class PatternDetector:
         return None
 
     def _detect_order_block(self, df: pd.DataFrame):
-        # ... (cette fonction ne change pas)
         self.detected_patterns_info[PATTERN_ORDER_BLOCK] = {'status': 'Pas de signal'}
         if len(df) < 20: return None
-        swing_lows, _ = self._find_swing_points(df['low'].iloc[-20:])
-        _, swing_highs = self._find_swing_points(df['high'].iloc[-20:])
+
+        # CORRECTION : On cherche les points de swing sur les données récentes
+        # et on décompresse correctement les résultats.
+        swing_lows, swing_highs = self._find_swing_points(df.iloc[-50:])
+        
+        # Potentiel Order Block haussier (Bullish)
         if len(swing_highs) > 1 and len(swing_lows) > 0:
             if swing_highs.index[-1] > swing_lows.index[-1] and swing_highs.iloc[-1] > swing_highs.iloc[-2]:
                 bos_candle_idx = df.index.get_loc(swing_highs.index[-1])
@@ -143,6 +167,8 @@ class PatternDetector:
                     if df['low'].iloc[-1] <= ob['high'] and df['high'].iloc[-1] >= ob['low']:
                         self.detected_patterns_info[PATTERN_ORDER_BLOCK]['status'] = f'Signal {BUY}'
                         return {'pattern': 'Order_Block_Buy', 'direction': BUY}
+                        
+        # Potentiel Order Block baissier (Bearish)
         if len(swing_lows) > 1 and len(swing_highs) > 0:
             if swing_lows.index[-1] > swing_highs.index[-1] and swing_lows.iloc[-1] < swing_lows.iloc[-2]:
                 bos_candle_idx = df.index.get_loc(swing_lows.index[-1])
