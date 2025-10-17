@@ -1,5 +1,5 @@
 # Fichier: config.yaml
-# Version: 16.2.0 (Multi-Session-Guard)
+# Version: 16.3.0 (Pro-Journaling-Config)
 
 api:
   host: 127.0.0.1
@@ -9,6 +9,12 @@ mt5_credentials:
   login: 10004952
   password: "jsne80aX!"
   server: "Axi-US50-Demo"
+
+# --- NOUVELLE SECTION ---
+professional_journal:
+  enabled: true
+  # Le nom du fichier sera formaté dynamiquement. Ex: Journal_Trading_OCTOBRE_2025.csv
+  file_path_template: "Journal_Trading_{month_name}_{year}.csv"
 
 trading_settings:
   live_trading_enabled: false
@@ -24,14 +30,12 @@ trading_settings:
   - BTCUSD
   - ETHUSD
   
-  # NOUVEAU: Lister ici les symboles qui doivent être tradés 24/7
   crypto_symbols:
   - BTCUSD
   - ETHUSD
 
   timeframe: M15
   
-  # Sessions pour les actifs non-crypto (Forex, Indices, Matières Premières)
   trading_sessions:
   - "1-07:00-20:00" # Lundi
   - "2-07:00-20:00" # Mardi
@@ -75,3 +79,8 @@ trend_filter:
 learning:
   enabled: false
   min_trades_for_analysis: 10
+
+# --- NOUVELLE SECTION (pour le backtester) ---
+backtest_settings:
+  simulated_spread_pips: 1.5
+  commission_per_lot: 7.0

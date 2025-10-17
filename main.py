@@ -1,7 +1,7 @@
 # Fichier: main.py
-# Version: 16.3.0 (First-Cycle-Guard)
+# Version: 16.3.1 (Pro-Journaling-Init)
 # Dépendances: MetaTrader5, pytz, PyYAML, Flask
-# Description: Ajout d'un verrou pour empêcher le trading durant le premier cycle.
+# Description: Intègre l'initialisation du nouveau module de journalisation professionnelle.
 
 import time
 import threading
@@ -107,7 +107,7 @@ def is_within_trading_session(symbol: str, config: dict) -> bool:
 
 def main_trading_loop(state: SharedState):
     """Boucle principale qui orchestre le bot de trading."""
-    logging.info("Démarrage de la boucle de trading v16.3.0 (First-Cycle-Guard)...")
+    logging.info("Démarrage de la boucle de trading v16.3.1 (Pro-Journaling-Init)...")
     config = load_yaml('config.yaml')
     state.update_config(config)
     
@@ -116,7 +116,8 @@ def main_trading_loop(state: SharedState):
         state.update_status("Déconnecté", "La connexion initiale à MT5 a échoué.", is_emergency=True)
         return
 
-    executor = MT5Executor(connector.get_connection())
+    # --- MODIFICATION : Initialisation de l'Executor avec la config ---
+    executor = MT5Executor(connector.get_connection(), config)
     analyzer = PerformanceAnalyzer(state)
 
     symbols_to_trade = validate_symbols(config['trading_settings'].get('symbols', []), connector.get_connection())
@@ -125,7 +126,6 @@ def main_trading_loop(state: SharedState):
         state.update_status("Arrêté", "Aucun symbole valide.", is_emergency=True)
         return
 
-    # --- MODIFICATION CRITIQUE ---
     is_first_cycle = True
     
     while not state.is_shutdown():
@@ -141,6 +141,8 @@ def main_trading_loop(state: SharedState):
                 logging.info("Changement de configuration détecté. Rechargement...")
                 config = load_yaml('config.yaml')
                 state.update_config(config)
+                # Ré-initialiser l'executor avec la nouvelle config
+                executor = MT5Executor(connector.get_connection(), config)
                 symbols_to_trade = validate_symbols(config['trading_settings'].get('symbols', []), connector.get_connection())
                 state.clear_config_changed_flag()
                 logging.info("Configuration rechargée.")
@@ -209,7 +211,7 @@ def main_trading_loop(state: SharedState):
                     trade_signal = detector.detect_patterns(ohlc_data, connector, symbol)
                     state.update_symbol_patterns(symbol, detector.get_detected_patterns_info())
 
-                    if trade_signal and not is_first_cycle: # --- MODIFICATION CRITIQUE ---
+                    if trade_signal and not is_first_cycle:
                         direction, pattern_name = trade_signal['direction'], trade_signal['pattern']
                         logging.info(f"SIGNAL VALIDE sur {symbol}: [{pattern_name}] en direction de {direction}.")
                         
@@ -233,7 +235,7 @@ def main_trading_loop(state: SharedState):
             
             if is_first_cycle:
                 logging.info("Fin du cycle de synchronisation. Le trading sera activé au prochain cycle.")
-                is_first_cycle = False # Fin du premier cycle
+                is_first_cycle = False
             
             logging.info(f"Cycle terminé. Attente de {sleep_duration:.0f} secondes.")
             time.sleep(sleep_duration)

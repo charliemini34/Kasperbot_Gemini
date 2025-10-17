@@ -1,7 +1,6 @@
 # Fichier: src/execution/mt5_executor.py
-# Version: 15.0.0 (Execution-Hardened)
-# Dépendances: MetaTrader5, pandas, logging
-# Description: Exécuteur d'ordres MT5 avec gestion du remplissage IOC et suivi des trades robustes.
+# Version: 15.1.0 (Pro-Journaling-Integration)
+# Dépendances: MetaTrader5, pandas, logging, src.journal.professional_journal
 
 import MetaTrader5 as mt5
 import logging
@@ -9,14 +8,18 @@ import pandas as pd
 import os
 from datetime import datetime, timedelta
 from src.constants import BUY, SELL
+from src.journal.professional_journal import ProfessionalJournal # --- NOUVELLE IMPORTATION ---
 
 class MT5Executor:
-    def __init__(self, mt5_connection):
+    def __init__(self, mt5_connection, config: dict): # --- SIGNATURE MODIFIÉE ---
         self._mt5 = mt5_connection
         self.log = logging.getLogger(self.__class__.__name__)
         self.history_file = 'trade_history.csv'
-        self._trade_context = {} # Contexte pour l'archivage
+        self._trade_context = {}
+        # --- NOUVELLE LIGNE ---
+        self.professional_journal = ProfessionalJournal(config)
 
+    # ... (les fonctions get_open_positions, execute_trade, place_order restent inchangées) ...
     def get_open_positions(self, symbol: str = None, magic: int = 0) -> list:
         try:
             positions = self._mt5.positions_get(symbol=symbol) if symbol else self._mt5.positions_get()
@@ -73,7 +76,7 @@ class MT5Executor:
             "magic": magic_number,
             "comment": comment,
             "type_time": mt5.ORDER_TIME_GTC,
-            "type_filling": mt5.ORDER_FILLING_IOC, # --- MODIFICATION CRITIQUE ---
+            "type_filling": mt5.ORDER_FILLING_IOC,
         }
         
         self.log.debug(f"Envoi de la requête d'ordre : {request}")
@@ -93,11 +96,10 @@ class MT5Executor:
         else:
             self.log.error(f"Échec de l'envoi de l'ordre: retcode={result.retcode}, commentaire={result.comment}")
             return None
-
     def check_for_closed_trades(self, magic_number: int):
         """Vérifie et archive les trades fermés en se basant sur l'historique."""
         try:
-            from_date = datetime.utcnow() - timedelta(days=7) # Interroger sur une semaine pour être sûr
+            from_date = datetime.utcnow() - timedelta(days=7)
             history_deals = self._mt5.history_deals_get(from_date, datetime.utcnow())
             
             if history_deals is None:
@@ -105,15 +107,13 @@ class MT5Executor:
                 return
 
             closed_tickets = set()
-            # Identifier les tickets de sortie avec le bon magic number
             for deal in history_deals:
-                if deal.magic == magic_number and deal.entry == 1: # 1 = DEAL_ENTRY_OUT
+                if deal.magic == magic_number and deal.entry == 1:
                     closed_tickets.add(deal.position_id)
 
             for ticket in closed_tickets:
                 if ticket in self._trade_context:
                     context = self._trade_context.pop(ticket)
-                    # Trouver le deal de sortie correspondant pour obtenir le PnL
                     exit_deal = next((d for d in history_deals if d.position_id == ticket and d.entry == 1), None)
                     if exit_deal:
                         trade_record = {
@@ -127,15 +127,16 @@ class MT5Executor:
                             'volatility_atr': context['volatility_atr']
                         }
                         self._archive_trade(trade_record)
+                        # --- NOUVELLE LIGNE ---
+                        self.professional_journal.record_trade(trade_record, self.get_account_info())
                     else:
                          self.log.warning(f"Contexte trouvé pour le trade fermé #{ticket}, mais le deal de sortie est manquant.")
 
         except Exception as e:
             self.log.error(f"Erreur lors de la vérification des trades fermés: {e}", exc_info=True)
 
-
     def _archive_trade(self, trade_record: dict):
-        """Archive un trade dans un fichier CSV."""
+        # ... (Fonction inchangée)
         try:
             df = pd.DataFrame([trade_record])
             file_exists = os.path.exists(self.history_file)
@@ -143,7 +144,6 @@ class MT5Executor:
             self.log.info(f"Trade #{trade_record['ticket']} archivé avec un PnL de {trade_record['pnl']:.2f}$.")
         except IOError as e:
             self.log.error(f"Erreur d'écriture lors de l'archivage du trade #{trade_record['ticket']}: {e}")
-
     def get_account_info(self):
         try:
             return self._mt5.account_info()
