@@ -1,22 +1,46 @@
-# Fichier: config.yaml
-# Version 10.1 : Ratio Risque/Rendement flexible
-
 api:
   host: 127.0.0.1
   port: 5000
-
-timing:
-  sync_mode: new_candle
-  sleep_interval_seconds: 20
-
+learning:
+  analysis_period_hours: 1
+  enabled: false
+  min_trades_for_analysis: 10
 logging:
-  verbose_log: true
-
+  verbose_log: false
 mt5_credentials:
   login: 10004952
   password: jsne80aX!
   server: Axi-US50-Demo
-
+pattern_detection:
+  INBALANCE: true
+  ORDER_BLOCK: true
+  SMC_AMD_SESSION: true
+risk_management:
+  atr_settings:
+    BTCUSD:
+      sl_multiple: 2.5
+      tp_multiple: 4
+    XAUUSD:
+      sl_multiple: 1.8
+      tp_multiple: 3.5
+    default:
+      period: 14
+      sl_multiple: 1.5
+      tp_multiple: 3
+  breakeven:
+    enabled: true
+    pips_plus: 10
+    trigger_pips: 100
+  min_risk_reward_ratio: 1.5
+  risk_per_trade: 0.01
+  sl_tp_strategy: ATR_MULTIPLE
+  trailing_stop_atr:
+    activation_multiple: 2
+    enabled: true
+    trailing_multiple: 1.8
+timing:
+  sleep_interval_seconds: 20
+  sync_mode: new_candle
 trading_settings:
   magic_number: 13579
   symbols:
@@ -26,50 +50,7 @@ trading_settings:
   - BTCUSD
   - ETHUSD
   timeframe: M15
-
-pattern_detection:
-  INBALANCE: true
-  ORDER_BLOCK: true
-  SMC_AMD_SESSION: true
-
 trend_filter:
+  ema_period: 200
   enabled: true
   higher_timeframe: H4
-  ema_period: 200
-
-risk_management:
-  # Règle de priorité : Le risque par trade est TOUJOURS respecté.
-  # Le ratio R/R est un FILTRE SECONDAIRE.
-  # Mettez 0.0 pour désactiver le filtre de ratio et accepter tous les trades
-  # qui respectent le risque de 1%.
-  min_risk_reward_ratio: 1.5 # Exemple : Accepte les trades avec un R/R de 1.5 ou plus.
-  
-  risk_per_trade: 0.01 # Règle absolue : Ne jamais risquer plus de 1% du capital.
-  sl_tp_strategy: ATR_MULTIPLE
-  
-  atr_settings:
-    default:
-      period: 14
-      sl_multiple: 1.5
-      tp_multiple: 3.0
-    XAUUSD:
-      sl_multiple: 1.8
-      tp_multiple: 3.5
-    BTCUSD:
-      sl_multiple: 2.5
-      tp_multiple: 4.0
-
-  breakeven:
-    enabled: true
-    trigger_pips: 100
-    pips_plus: 10
-    
-  trailing_stop_atr:
-    enabled: true
-    activation_multiple: 2.0
-    trailing_multiple: 1.8
-
-learning:
-  enabled: false
-  analysis_period_hours: 1
-  min_trades_for_analysis: 10
