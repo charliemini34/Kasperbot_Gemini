@@ -1,11 +1,6 @@
-08:34:16 - root - INFO - Interface web démarrée sur http://127.0.0.1:5000
-08:34:16 - root - INFO - Démarrage de la boucle de trading v9.4.1 (Kasper-Enhanced)...
-08:34:16 - MT5Connector - INFO - Tentative de connexion à MetaTrader 5...
-08:34:16 - MT5Connector - INFO - Connexion à MT5 réussie. Version: (500, 5327, '3 Oct 2025')
-08:34:16 - root - INFO - Synchronisation... Prochaine analyse dans 645 secondes.
-08:45:02 - root - INFO - Synchronisation... Prochaine analyse dans 900 secondes.
-09:00:02 - root - INFO - Synchronisation... Prochaine analyse dans 900 secondes.
-09:15:02 - root - INFO - Synchronisation... Prochaine analyse dans 900 secondes.
-09:30:02 - root - INFO - Synchronisation... Prochaine analyse dans 900 secondes.
-09:45:02 - PerformanceAnalyzer - INFO - Analyse de performance : L'historique des trades est vide.
-09:45:02 - root - INFO - Synchronisation... Prochaine analyse dans 900 secondes.
+09:59:09 - root - INFO - Interface web démarrée sur http://127.0.0.1:5000
+09:59:09 - root - INFO - Démarrage de la boucle de trading v9.6.1 (Kasper-Final)...
+09:59:09 - MT5Connector - INFO - Tentative de connexion à MetaTrader 5...
+09:59:09 - MT5Connector - INFO - Connexion à MT5 réussie. Version: (500, 5327, '3 Oct 2025')
+09:59:09 - root - INFO - Synchronisation... Prochaine analyse dans 53 secondes.
+10:00:02 - root - INFO - Synchronisation... Prochaine analyse dans 900 secondes.
