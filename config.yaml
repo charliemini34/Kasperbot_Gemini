@@ -1,5 +1,5 @@
 # Fichier: config.yaml
-# Version: 16.3.0 (Pro-Journaling-Config)
+# Version: 17.0.0 (SMC-Targeting-Config)
 
 api:
   host: 127.0.0.1
@@ -10,10 +10,8 @@ mt5_credentials:
   password: "jsne80aX!"
   server: "Axi-US50-Demo"
 
-# --- NOUVELLE SECTION ---
 professional_journal:
   enabled: true
-  # Le nom du fichier sera formaté dynamiquement. Ex: Journal_Trading_OCTOBRE_2025.csv
   file_path_template: "Journal_Trading_{month_name}_{year}.csv"
 
 trading_settings:
@@ -46,12 +44,16 @@ trading_settings:
 risk_management:
   risk_per_trade: 0.01
   daily_loss_limit_percent: 2.0
-  sl_tp_strategy: ATR_MULTIPLE
-  atr_settings:
+  
+  # Choisissez entre "ATR_MULTIPLE" (basé sur la volatilité) 
+  # et "SMC_LIQUIDITY_TARGET" (basé sur la structure du marché)
+  sl_tp_strategy: "SMC_LIQUIDITY_TARGET" 
+  
+  atr_settings: # Toujours utilisé pour le SL
     default:
       period: 14
       sl_multiple: 1.5
-      tp_multiple: 3.0
+      tp_multiple: 3.0 # Utilisé seulement si sl_tp_strategy est "ATR_MULTIPLE"
     XAUUSD:
       sl_multiple: 1.8
       tp_multiple: 3.5
@@ -80,7 +82,6 @@ learning:
   enabled: false
   min_trades_for_analysis: 10
 
-# --- NOUVELLE SECTION (pour le backtester) ---
 backtest_settings:
   simulated_spread_pips: 1.5
   commission_per_lot: 7.0

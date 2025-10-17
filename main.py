@@ -1,7 +1,7 @@
 # Fichier: main.py
-# Version: 16.3.1 (Pro-Journaling-Init)
+# Version: 17.0.1 (SMC-Targeting-Fix)
 # Dépendances: MetaTrader5, pytz, PyYAML, Flask
-# Description: Intègre l'initialisation du nouveau module de journalisation professionnelle.
+# Description: Corrige l'appel à calculate_trade_parameters.
 
 import time
 import threading
@@ -107,7 +107,7 @@ def is_within_trading_session(symbol: str, config: dict) -> bool:
 
 def main_trading_loop(state: SharedState):
     """Boucle principale qui orchestre le bot de trading."""
-    logging.info("Démarrage de la boucle de trading v16.3.1 (Pro-Journaling-Init)...")
+    logging.info("Démarrage de la boucle de trading v17.0.1 (SMC-Targeting-Fix)...")
     config = load_yaml('config.yaml')
     state.update_config(config)
     
@@ -116,7 +116,6 @@ def main_trading_loop(state: SharedState):
         state.update_status("Déconnecté", "La connexion initiale à MT5 a échoué.", is_emergency=True)
         return
 
-    # --- MODIFICATION : Initialisation de l'Executor avec la config ---
     executor = MT5Executor(connector.get_connection(), config)
     analyzer = PerformanceAnalyzer(state)
 
@@ -141,7 +140,6 @@ def main_trading_loop(state: SharedState):
                 logging.info("Changement de configuration détecté. Rechargement...")
                 config = load_yaml('config.yaml')
                 state.update_config(config)
-                # Ré-initialiser l'executor avec la nouvelle config
                 executor = MT5Executor(connector.get_connection(), config)
                 symbols_to_trade = validate_symbols(config['trading_settings'].get('symbols', []), connector.get_connection())
                 state.clear_config_changed_flag()
@@ -212,15 +210,19 @@ def main_trading_loop(state: SharedState):
                     state.update_symbol_patterns(symbol, detector.get_detected_patterns_info())
 
                     if trade_signal and not is_first_cycle:
-                        direction, pattern_name = trade_signal['direction'], trade_signal['pattern']
-                        logging.info(f"SIGNAL VALIDE sur {symbol}: [{pattern_name}] en direction de {direction}.")
+                        logging.info(f"SIGNAL VALIDE sur {symbol}: [{trade_signal['pattern']}] en direction de {trade_signal['direction']}.")
                         
-                        volume, sl, tp = risk_manager.calculate_trade_parameters(account_info.equity, ohlc_data['close'].iloc[-1], direction, ohlc_data)
+                        volume, sl, tp = risk_manager.calculate_trade_parameters(
+                            account_info.equity, ohlc_data['close'].iloc[-1], ohlc_data, trade_signal
+                        )
                         
                         if volume > 0:
-                            executor.execute_trade(account_info, risk_manager, symbol, direction, ohlc_data, pattern_name, magic_number)
+                            executor.execute_trade(
+                                account_info, risk_manager, symbol, trade_signal['direction'], ohlc_data, 
+                                trade_signal['pattern'], magic_number
+                            )
                         else:
-                            logging.warning(f"Le volume calculé pour {symbol} est de 0. Le trade est annulé.")
+                            logging.warning(f"Le volume calculé pour {symbol} est de 0 ou SL/TP invalide. Le trade est annulé.")
                 
                 except ValueError as e:
                     logging.error(f"Impossible de traiter le symbole '{symbol}': {e}.")
