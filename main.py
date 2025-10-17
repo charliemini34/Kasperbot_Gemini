@@ -1,7 +1,7 @@
 # Fichier: main.py
-# Version: 9.6.1 (Final Build)
+# Version: 10.0.0 (Guardian Build)
 # Dépendances: MetaTrader5, pytz, PyYAML, Flask
-# Description: Point d'entrée principal avec boucle de trading robuste et sécurisée.
+# Description: Point d'entrée principal avec circuit breaker de perte et gestion d'erreurs améliorée.
 
 import time
 import threading
@@ -24,7 +24,10 @@ from src.analysis.performance_analyzer import PerformanceAnalyzer
 def setup_logging(state: SharedState):
     log_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s', datefmt='%H:%M:%S')
     ui_handler = LogHandler(state)
-    file_handler = logging.FileHandler("trading_bot.log", mode='w', encoding='utf-8')
+    # Assurer que le dossier de logs existe
+    if not os.path.exists('logs'):
+        os.makedirs('logs')
+    file_handler = logging.FileHandler("logs/trading_bot.log", mode='w', encoding='utf-8')
     console_handler = logging.StreamHandler()
     for handler in [ui_handler, file_handler, console_handler]:
         handler.setFormatter(log_formatter)
@@ -51,11 +54,11 @@ def get_timeframe_seconds(timeframe_str: str) -> int:
         return int(timeframe_str.replace('H', '')) * 3600
     elif 'D' in timeframe_str:
         return int(timeframe_str.replace('D', '')) * 86400
-    return 60 # Par défaut, 1 minute
+    return 60
 
 def main_trading_loop(state: SharedState):
-    """Boucle principale du bot v9.6.1, avec garde-fous et gestion d'erreurs améliorée."""
-    logging.info("Démarrage de la boucle de trading v9.6.1 (Kasper-Final)...")
+    """Boucle principale du bot v10.0, avec circuit breaker et gestion d'erreurs améliorée."""
+    logging.info("Démarrage de la boucle de trading v10.0 (Guardian Build)...")
     
     config = load_yaml('config.yaml')
     state.update_config(config)
@@ -68,10 +71,6 @@ def main_trading_loop(state: SharedState):
     analyzer = PerformanceAnalyzer(state)
     last_analysis_time = datetime.now()
 
-    # --- Initialisation des garde-fous ---
-    MAX_TRADES_PER_HOUR = 10 # Limite configurable
-    trade_timestamps = []
-
     while not state.is_shutdown():
         try:
             if not connector.check_connection():
@@ -83,16 +82,6 @@ def main_trading_loop(state: SharedState):
                 state.update_status("Connecté", "Reconnexion MT5 réussie.")
 
             config = state.get_config()
-            
-            # --- Vérification des garde-fous ---
-            now = datetime.now()
-            trade_timestamps = [t for t in trade_timestamps if now - t < timedelta(hours=1)]
-            if len(trade_timestamps) >= MAX_TRADES_PER_HOUR:
-                logging.warning(f"GARDE-FOU: Limite de {MAX_TRADES_PER_HOUR} trades/heure atteinte. Pause de l'analyse.")
-                state.update_status("En Pause (Garde-fou)", f"Limite de {MAX_TRADES_PER_HOUR} trades/h atteinte.")
-                time.sleep(60)
-                continue
-            
             magic_number = config['trading_settings'].get('magic_number', 0)
             symbols_to_trade = config['trading_settings'].get('symbols', [])
             timeframe = config['trading_settings'].get('timeframe', 'M15')
@@ -111,6 +100,7 @@ def main_trading_loop(state: SharedState):
             all_bot_positions = executor.get_open_positions(magic=magic_number)
             state.update_positions(all_bot_positions)
             
+            # --- Gestion des positions ouvertes (toujours active) ---
             if all_bot_positions:
                 positions_by_symbol = {}
                 for pos in all_bot_positions:
@@ -118,14 +108,25 @@ def main_trading_loop(state: SharedState):
                     positions_by_symbol[pos.symbol].append(pos)
                 for symbol, positions in positions_by_symbol.items():
                     try:
+                        rm_pos = RiskManager(config, executor, symbol)
                         ohlc_data_for_pos = connector.get_ohlc(symbol, timeframe, 200)
                         tick = connector.get_tick(symbol)
                         if tick and ohlc_data_for_pos is not None:
-                            rm_pos = RiskManager(config, executor, symbol)
                             rm_pos.manage_open_positions(positions, tick, ohlc_data_for_pos)
                     except ValueError as e:
                         logging.warning(f"Impossible de gérer les positions sur {symbol}: {e}")
 
+            # --- Circuit Breaker: Vérification de la perte journalière ---
+            # Utilise le risk manager du premier symbole pour la vérification
+            if symbols_to_trade:
+                main_rm = RiskManager(config, executor, symbols_to_trade[0])
+                limit_reached, daily_pnl = main_rm.is_daily_loss_limit_reached()
+                if limit_reached:
+                    state.update_status("Arrêt d'Urgence", f"Perte journalière max atteinte ({daily_pnl:.2f})", is_emergency=True)
+                    time.sleep(60) # Pause avant de re-vérifier
+                    continue # Saute l'ouverture de nouveaux trades
+
+            # --- Analyse et ouverture de nouvelles positions ---
             for symbol in symbols_to_trade:
                 if is_verbose: logging.info(f"--- Analyse de {symbol} ---")
                 
@@ -160,7 +161,6 @@ def main_trading_loop(state: SharedState):
                             account_info, risk_manager, symbol, direction, ohlc_data, 
                             pattern_name, magic_number, market_trend, volatility_atr
                         )
-                        trade_timestamps.append(datetime.now())
 
                 except ValueError as e:
                     logging.error(f"Erreur d'initialisation pour {symbol}: {e}.")
@@ -172,28 +172,19 @@ def main_trading_loop(state: SharedState):
                 analyzer.run_analysis()
                 last_analysis_time = datetime.now()
 
-            sync_mode = config.get('timing', {}).get('sync_mode', 'new_candle')
-            if sync_mode == 'new_candle':
-                timeframe_seconds = get_timeframe_seconds(timeframe)
-                now_utc = datetime.now(pytz.utc)
-                time_since_epoch = now_utc.timestamp()
-                next_candle_epoch = (time_since_epoch // timeframe_seconds + 1) * timeframe_seconds
-                sleep_duration = next_candle_epoch - time_since_epoch
-                sleep_duration = max(1, sleep_duration + 2) 
-                logging.info(f"Synchronisation... Prochaine analyse dans {sleep_duration:.0f} secondes.")
-                time.sleep(sleep_duration)
-            else:
-                sleep_interval = config.get('timing', {}).get('sleep_interval_seconds', 20)
-                time.sleep(sleep_interval)
+            # --- Synchronisation ---
+            timeframe_seconds = get_timeframe_seconds(timeframe)
+            now_utc = datetime.now(pytz.utc)
+            time_since_epoch = now_utc.timestamp()
+            next_candle_epoch = (time_since_epoch // timeframe_seconds + 1) * timeframe_seconds
+            sleep_duration = max(1, (next_candle_epoch - time_since_epoch) + 2) 
+            logging.info(f"Synchronisation... Prochaine analyse dans {sleep_duration:.0f} secondes.")
+            time.sleep(sleep_duration)
 
         except (mt5.error, ConnectionError) as conn_err:
             logging.error(f"Erreur de connexion MT5: {conn_err}", exc_info=False)
             state.update_status("Erreur Connexion", str(conn_err), is_emergency=True)
             time.sleep(20)
-        except ValueError as val_err:
-            logging.error(f"Erreur de données ou de configuration: {val_err}", exc_info=True)
-            state.update_status("Erreur Données", str(val_err), is_emergency=True)
-            time.sleep(60)
         except Exception as e:
             logging.critical(f"Erreur majeure non gérée dans la boucle principale: {e}", exc_info=True)
             state.update_status("ERREUR CRITIQUE", str(e), is_emergency=True)

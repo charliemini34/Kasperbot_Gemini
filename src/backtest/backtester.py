@@ -1,5 +1,5 @@
 # Fichier: src/backtest/backtester.py
-# Version: 2.0.0 (Robust Simulation)
+# Version: 3.0.0 (High-Fidelity Simulation)
 # Dépendances: pandas, numpy, yaml, MetaTrader5
 # Description: Moteur de backtesting haute-fidélité qui réplique la logique de trading en direct.
 
@@ -23,9 +23,7 @@ class MockConnector:
         self._historical_data = all_historical_data
 
     def get_ohlc(self, symbol: str, timeframe: str, num_bars: int, end_time=None):
-        """
-        Sert une tranche de données historiques pour une demande spécifique.
-        """
+        """Sert une tranche de données historiques pour une demande spécifique."""
         if timeframe not in self._historical_data:
             return None
             
@@ -43,8 +41,8 @@ class MockConnector:
 
 class Backtester:
     """
-    Module de backtesting v2.0.0 : Simule fidèlement la stratégie complète,
-    y compris le filtre de tendance multi-temporelles et la gestion de position.
+    Module de backtesting v3.0 : Simule fidèlement la stratégie complète,
+    y compris le filtre de tendance et la logique SMC corrigée.
     """
     def __init__(self, shared_state: SharedState):
         self.state = shared_state
@@ -87,15 +85,14 @@ class Backtester:
                 all_data[htf_str] = htf_df
 
             mock_connector = MockConnector(all_data)
-            detector = PatternDetector(config)
+            detector = PatternDetector(config) # Utilise la logique corrigée
             
             class MockExecutor:
                 def __init__(self, symbol):
                     self._mt5 = mt5
                     self.account_info = mt5.account_info()
                     self.symbol_info = mt5.symbol_info(symbol)
-                def modify_position(self, ticket, sl, tp):
-                    pass 
+                def modify_position(self, ticket, sl, tp): pass 
             
             risk_manager = RiskManager(config, MockExecutor(symbol), symbol)
 
@@ -105,25 +102,21 @@ class Backtester:
 
             for i in range(200, total_bars):
                 progress = ((i - 200) / (total_bars - 200)) * 100
-                if i % 20 == 0:
-                    self.state.update_backtest_progress(progress)
+                if i % 20 == 0: self.state.update_backtest_progress(progress)
 
                 current_time = main_df.index[i]
                 current_candle = main_df.iloc[i]
                 current_data_slice = main_df.iloc[:i+1]
                 
+                # --- Simulation de la gestion de position ---
                 if open_position:
                     closed, pnl = False, 0
                     if open_position['direction'] == "BUY":
-                        if current_candle['low'] <= open_position['sl']:
-                            closed, pnl = True, open_position['sl'] - open_position['entry_price']
-                        elif current_candle['high'] >= open_position['tp']:
-                            closed, pnl = True, open_position['tp'] - open_position['entry_price']
-                    else:
-                        if current_candle['high'] >= open_position['sl']:
-                            closed, pnl = True, open_position['entry_price'] - open_position['sl']
-                        elif current_candle['low'] <= open_position['tp']:
-                            closed, pnl = True, open_position['entry_price'] - open_position['tp']
+                        if current_candle['low'] <= open_position['sl']: closed, pnl = True, open_position['sl'] - open_position['entry_price']
+                        elif current_candle['high'] >= open_position['tp']: closed, pnl = True, open_position['tp'] - open_position['entry_price']
+                    else: # SELL
+                        if current_candle['high'] >= open_position['sl']: closed, pnl = True, open_position['entry_price'] - open_position['sl']
+                        elif current_candle['low'] <= open_position['tp']: closed, pnl = True, open_position['entry_price'] - open_position['tp']
 
                     if closed:
                         trade_pnl = pnl * open_position['volume'] * risk_manager.symbol_info.trade_contract_size
@@ -134,6 +127,7 @@ class Backtester:
                         open_position = None
                         equity_curve.append(equity)
                 
+                # --- Simulation de l'ouverture de trade ---
                 if not open_position:
                     trade_signal = detector.detect_patterns(current_data_slice, mock_connector, symbol)
                     
@@ -144,10 +138,8 @@ class Backtester:
                         
                         if volume > 0:
                             open_position = {
-                                'direction': trade_signal['direction'],
-                                'pattern': trade_signal['pattern'],
-                                'entry_price': entry_price,
-                                'sl': sl, 'tp': tp, 'volume': volume,
+                                'direction': trade_signal['direction'], 'pattern': trade_signal['pattern'],
+                                'entry_price': entry_price, 'sl': sl, 'tp': tp, 'volume': volume,
                                 'open_time': current_time
                             }
 
@@ -160,11 +152,8 @@ class Backtester:
             drawdown = ((equity_series - peak) / peak).min() if not peak.empty else 0
 
             results = {
-                "pnl": final_pnl, 
-                "total_trades": len(trades), 
-                "win_rate": win_rate, 
-                "max_drawdown_percent": abs(drawdown * 100), 
-                "equity_curve": equity_curve
+                "pnl": final_pnl, "total_trades": len(trades), "win_rate": win_rate, 
+                "max_drawdown_percent": abs(drawdown * 100), "equity_curve": equity_curve
             }
             self.state.finish_backtest(results)
             self.log.info(f"Backtest terminé. PnL final: {final_pnl:.2f}$")

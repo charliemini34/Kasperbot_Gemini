@@ -1,5 +1,7 @@
 # Fichier: src/execution/mt5_executor.py
-# Version 10.2 : Gestion robuste de la latence de l'historique MT5
+# Version 11.0.0 (Robust Archiving)
+# Dépendances: MetaTrader5, pandas, logging, os
+# Description: Gère l'exécution des ordres avec un archivage robuste des trades.
 
 import MetaTrader5 as mt5
 import logging
@@ -11,9 +13,8 @@ from src.constants import BUY, SELL
 
 class MT5Executor:
     """
-    Gère l'exécution des ordres avec une robustesse accrue.
-    v10.2 : Gère la latence de l'API MT5 en réessayant d'archiver les trades
-            si l'historique n'est pas immédiatement disponible.
+    Gère l'exécution et l'archivage des ordres avec une robustesse accrue.
+    v11.0 : Logique d'archivage améliorée pour gérer la latence de l'historique MT5.
     """
     def __init__(self, mt5_connection):
         self._mt5 = mt5_connection
@@ -38,11 +39,7 @@ class MT5Executor:
 
         price = price_info.ask if direction == BUY else price_info.bid
         sl, tp = risk_manager.calculate_sl_tp(price, direction, ohlc_data, symbol)
-
-        if not risk_manager.check_risk_reward_ratio(price, sl, tp):
-            self.log.warning(f"Trade sur {symbol} annulé (Ratio R/R insuffisant).")
-            return
-
+        
         volume = risk_manager.calculate_volume(account_info.equity, price, sl)
 
         if volume > 0:
@@ -61,7 +58,7 @@ class MT5Executor:
 
     def place_order(self, symbol, order_type, volume, price, sl, tp, magic_number, pattern_name):
         """Place un ordre avec une logique de tentatives multiples."""
-        comment = f"KB10-{pattern_name}"[:31]
+        comment = f"KasperBot-{pattern_name}"[:31]
         request = {
             "action": mt5.TRADE_ACTION_DEAL, "symbol": symbol, "volume": volume,
             "type": order_type, "price": price, "sl": sl, "tp": tp, "deviation": 20,
@@ -101,15 +98,11 @@ class MT5Executor:
         for ticket in closed_tickets:
             self.log.info(f"Trade #{ticket} détecté comme fermé. Tentative d'archivage...")
             
-            # On tente de récupérer l'historique du deal
             history_deals = self._mt5.history_deals_get(ticket=ticket)
             
-            # **CORRECTION DE LA LOGIQUE**
             if history_deals and len(history_deals) > 0:
-                # Si l'historique est trouvé, on procède à l'archivage
                 exit_deal = next((d for d in history_deals if d.entry == 1), None) # 1 = DEAL_ENTRY_OUT
                 if exit_deal:
-                    # On retire le trade du contexte uniquement APRES un archivage réussi
                     context = self._open_trades_context.pop(ticket)
                     trade_record = {
                         'ticket': ticket,
@@ -124,15 +117,12 @@ class MT5Executor:
                     }
                     self._archive_trade(trade_record)
                 else:
-                    # Cas rare où le deal de clôture n'est pas encore dans la liste
                     self.log.warning(f"Trade #{ticket} trouvé dans l'historique mais sans deal de sortie. Réessai au prochain cycle.")
             else:
-                # Si l'historique n'est PAS encore disponible, on ne fait RIEN.
-                # On ne retire PAS le ticket du contexte, ce qui force une nouvelle tentative
-                # au prochain cycle d'exécution de la fonction.
                 self.log.warning(f"Trade #{ticket} fermé mais l'historique est indisponible pour le moment. Réessai au prochain cycle.")
 
     def _archive_trade(self, trade_record: dict):
+        """Archive un trade dans le fichier CSV, en le créant si nécessaire."""
         try:
             df = pd.DataFrame([trade_record])
             file_exists = os.path.exists(self.history_file)

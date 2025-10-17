@@ -1,18 +1,21 @@
 # Fichier: src/risk/risk_manager.py
-# Version 10.1 : Ratio Risque/Rendement flexible
+# Version: 11.0.0 (Risk Control & Safety)
+# Dépendances: MetaTrader5, pandas, numpy, logging
+# Description: Module de gestion des risques avec circuit breaker de perte journalière.
 
 import MetaTrader5 as mt5
 import logging
 import math
 import pandas as pd
 import numpy as np
+from datetime import datetime, time
+import pytz
 from src.constants import BUY, SELL
 
 class RiskManager:
     """
-    Gère le risque des trades de manière professionnelle et sécurisée.
-    v10.1 : Rend le filtre de ratio Risque/Rendement optionnel via la configuration,
-            tout en maintenant la priorité absolue sur le respect du risque par trade.
+    Gère le risque des trades avec des garde-fous essentiels.
+    v11.0 : Ajout d'un circuit breaker sur la perte journalière.
     """
     def __init__(self, config: dict, executor, symbol: str):
         self._config = config
@@ -29,41 +32,40 @@ class RiskManager:
         self.point = self.symbol_info.point
         self.digits = self.symbol_info.digits
 
-    def check_risk_reward_ratio(self, entry_price: float, sl_price: float, tp_price: float) -> bool:
+    def is_daily_loss_limit_reached(self) -> (bool, float):
         """
-        Vérifie si le ratio Risque/Rendement est acceptable, selon la configuration.
-        Si 'min_risk_reward_ratio' est <= 0 dans la config, ce filtre est désactivé.
+        Vérifie si la limite de perte journalière est atteinte.
+        Retourne un tuple (booléen, pnl_journalier).
         """
-        min_rr_ratio = self._config.get('risk_management', {}).get('min_risk_reward_ratio', 1.5)
+        loss_limit_percent = self._config.get('risk_management', {}).get('daily_loss_limit_percent', 2.0)
+        if loss_limit_percent <= 0:
+            return False, 0.0
 
-        # Si le ratio minimum est à 0 ou moins, on désactive le filtre
-        if min_rr_ratio <= 0:
-            self.log.info("Filtre de Ratio R/R désactivé. Validation automatique.")
-            return True
+        try:
+            # Définir le début de la journée (00:00) dans le fuseau horaire de l'Europe de l'Est (utilisé par beaucoup de brokers)
+            broker_tz = pytz.timezone("EET")
+            today_start_utc = broker_tz.localize(datetime.now(broker_tz).replace(hour=0, minute=0, second=0, microsecond=0)).astimezone(pytz.utc)
+            
+            # Récupérer l'historique des transactions depuis le début de la journée
+            history_deals = self._executor._mt5.history_deals_get(today_start_utc, datetime.now(pytz.utc))
+            
+            if history_deals is None:
+                self.log.warning("Impossible de récupérer l'historique des transactions pour le calcul du PnL journalier.")
+                return False, 0.0
 
-        potential_loss = abs(entry_price - sl_price)
-        potential_profit = abs(tp_price - entry_price)
+            daily_pnl = sum(deal.profit for deal in history_deals)
+            
+            loss_limit_amount = (self.account_info.equity * loss_limit_percent) / 100
+            
+            if daily_pnl < 0 and abs(daily_pnl) >= loss_limit_amount:
+                self.log.critical(f"ARRÊT D'URGENCE: Perte journalière ({daily_pnl:.2f}) a atteint la limite de {loss_limit_percent}%.")
+                return True, daily_pnl
+                
+            return False, daily_pnl
 
-        if potential_loss < self.point * 10:
-            return False
-
-        rr_ratio = potential_profit / potential_loss
-        
-        if rr_ratio >= min_rr_ratio:
-            self.log.info(f"Ratio R/R ({rr_ratio:.2f}) >= Seuil ({min_rr_ratio}). Trade autorisé.")
-            return True
-        else:
-            self.log.warning(f"Ratio R/R ({rr_ratio:.2f}) < Seuil ({min_rr_ratio}). Trade refusé.")
-            return False
-
-    def calculate_atr(self, ohlc_data: pd.DataFrame, period: int) -> float:
-        if ohlc_data is None or ohlc_data.empty: return 0.0
-        high_low = ohlc_data['high'] - ohlc_data['low']
-        high_close = np.abs(ohlc_data['high'] - ohlc_data['close'].shift())
-        low_close = np.abs(ohlc_data['low'] - ohlc_data['close'].shift())
-        ranges = pd.concat([high_low, high_close, low_close], axis=1)
-        true_range = np.max(ranges, axis=1)
-        return true_range.ewm(alpha=1/period, adjust=False).mean().iloc[-1]
+        except Exception as e:
+            self.log.error(f"Erreur dans le calcul de la limite de perte journalière : {e}")
+            return False, 0.0
 
     def calculate_volume(self, equity: float, entry_price: float, sl_price: float) -> float:
         self.log.info("--- Début du Calcul de Volume ---")
@@ -143,6 +145,15 @@ class RiskManager:
                 sl, tp = price + sl_distance + spread, price - tp_distance
             return round(sl, self.digits), round(tp, self.digits)
 
+    def calculate_atr(self, ohlc_data: pd.DataFrame, period: int) -> float:
+        if ohlc_data is None or ohlc_data.empty: return 0.0
+        high_low = ohlc_data['high'] - ohlc_data['low']
+        high_close = np.abs(ohlc_data['high'] - ohlc_data['close'].shift())
+        low_close = np.abs(ohlc_data['low'] - ohlc_data['close'].shift())
+        ranges = pd.concat([high_low, high_close, low_close], axis=1)
+        true_range = np.max(ranges, axis=1)
+        return true_range.ewm(alpha=1/period, adjust=False).mean().iloc[-1]
+        
     def get_conversion_rate(self, from_currency: str, to_currency: str) -> float | None:
         if from_currency == to_currency: return 1.0
         pair1 = f"{to_currency}{from_currency}"
@@ -159,11 +170,11 @@ class RiskManager:
     def manage_open_positions(self, positions: list, current_tick, ohlc_data: pd.DataFrame):
         if not positions or not current_tick or ohlc_data is None or ohlc_data.empty: return
         self._apply_breakeven(positions, current_tick)
-        if self._config.get('trailing_stop_atr', {}).get('enabled', False):
+        if self._config.get('risk_management', {}).get('trailing_stop_atr', {}).get('enabled', False):
             self._apply_trailing_stop_atr(positions, current_tick, ohlc_data)
 
     def _apply_breakeven(self, positions, tick):
-        cfg = self._config.get('breakeven', {})
+        cfg = self._config.get('risk_management', {}).get('breakeven', {})
         if not cfg.get('enabled', False): return
         
         trigger_distance = cfg.get('trigger_pips', 150) * 10 * self.point
@@ -180,7 +191,7 @@ class RiskManager:
                     self._executor.modify_position(pos.ticket, breakeven_sl, pos.tp)
     
     def _apply_trailing_stop_atr(self, positions, tick, ohlc_data):
-        cfg = self._config.get('trailing_stop_atr', {})
+        cfg = self._config.get('risk_management', {}).get('trailing_stop_atr', {})
         atr_settings = self._config.get('risk_management', {}).get('atr_settings', {})
         period = atr_settings.get('default', {}).get('period', 14)
         atr = self.calculate_atr(ohlc_data, period)
