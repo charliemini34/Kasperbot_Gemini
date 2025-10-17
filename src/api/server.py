@@ -1,4 +1,5 @@
 # Fichier: src/api/server.py
+# Version: 2.0.1 (UI Hotfix)
 
 from flask import Flask, jsonify, render_template_string, request
 import yaml
@@ -12,14 +13,14 @@ HTML_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Dashboard KasperBot v9.2</title>
+    <title>Dashboard KasperBot v13.0</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         body { background-color: #111827; color: #d1d5db; font-family: 'Inter', sans-serif; }
         .card { background-color: #1f2937; border: 1px solid #374151; border-radius: 0.75rem; }
-        .tab-button { background-color: transparent; color: #9ca3af; border-color: transparent; }
+        .tab-button { background-color: transparent; color: #9ca3af; border-color: transparent; padding: 0.5rem 1rem; border-bottom: 2px solid transparent;}
         .tab-button.active { color: #4f46e5; border-color: #4f46e5; }
         input, select, textarea { background-color: #374151; border: 1px solid #4b5563; border-radius: 0.375rem; padding: 0.5rem 0.75rem; width: 100%; }
         .btn { padding: 0.5rem 1rem; border-radius: 0.375rem; font-weight: 600; transition: background-color 0.2s; cursor: pointer; }
@@ -32,7 +33,7 @@ HTML_TEMPLATE = """
 <body class="p-4 sm:p-6 lg:p-8">
     <div class="max-w-7xl mx-auto">
         <header class="flex justify-between items-center mb-6">
-            <h1 class="text-2xl sm:text-3xl font-bold text-white">KasperBot <span class="text-sm text-gray-400">v9.2 (Kasper-Learn)</span></h1>
+            <h1 class="text-2xl sm:text-3xl font-bold text-white">KasperBot <span class="text-sm text-gray-400">v13.0</span></h1>
             <div id="status-indicator" class="flex items-center space-x-2">
                 <div id="status-dot" class="h-4 w-4 rounded-full bg-gray-500"></div><span id="status-text" class="font-medium">Chargement...</span>
             </div>
@@ -55,7 +56,6 @@ HTML_TEMPLATE = """
                 </div>
             </div>
             <div id="content-config" class="tab-content hidden"><div class="card p-6"><form id="config-form" class="space-y-8">
-                
                 <div class="config-section"><h3 class="text-lg font-medium text-white">Connexion MetaTrader 5</h3>
                     <div class="mt-4 grid grid-cols-1 gap-y-6 sm:grid-cols-3 sm:gap-x-8">
                         <div><label for="mt5_login">Login MT5</label><input type="text" id="mt5_login"></div>
@@ -63,38 +63,34 @@ HTML_TEMPLATE = """
                         <div><label for="mt5_server">Serveur MT5</label><input type="text" id="mt5_server"></div>
                     </div>
                 </div>
-
-                <div class="config-section"><h3 class="text-lg font-medium text-white">Journalisation</h3>
-                    <div class="mt-4 grid grid-cols-1 gap-y-6 sm:grid-cols-2 sm:gap-x-8">
-                        <div><label for="verbose_log">Mode du Journal</label><select id="verbose_log"><option value="true">Bavard (détails)</option><option value="false">Silencieux (critique)</option></select></div>
-                    </div>
-                </div>
-
                 <div class="config-section"><h3 class="text-lg font-medium text-white">Moteur d'Apprentissage</h3>
                     <div class="mt-4 grid grid-cols-1 gap-y-6 sm:grid-cols-2 sm:gap-x-8">
                         <div><label for="learning_enabled">Mode Automatisé</label><select id="learning_enabled"><option value="true">Activé</option><option value="false">Désactivé (Suggestions)</option></select></div>
                     </div>
                 </div>
-
-                <div class="config-section"><h3 class="text-lg font-medium text-white">Gestion du Risque</h3>
-                    <div class="mt-4 grid grid-cols-1 gap-y-6 sm:grid-cols-3 sm:gap-x-8">
-                        <div><label for="risk_per_trade">Risque par Trade (%)</label><input type="number" id="risk_per_trade" step="0.01"></div>
-                        <div class="flex items-center mt-6"><input id="breakeven_enabled" type="checkbox" class="form-checkbox h-4 w-4 rounded"><label for="breakeven_enabled" class="ml-2">Activer le Breakeven</label></div>
-                        <div class="flex items-center mt-6"><input id="trailing_stop_atr_enabled" type="checkbox" class="form-checkbox h-4 w-4 rounded"><label for="trailing_stop_atr_enabled" class="ml-2">Activer le Trailing Stop</label></div>
-                    </div>
-                </div>
-                
                 <div class="config-section"><h3 class="text-lg font-medium text-white">Détection de Patterns</h3><div id="patterns-config-container" class="mt-4 grid grid-cols-2 sm:grid-cols-3 gap-4"></div></div>
-
                 <div class="pt-5"><div class="flex justify-end"><button type="submit" class="btn btn-primary">Sauvegarder et Appliquer</button></div></div>
             </form></div></div>
-            
             <div id="content-backtest" class="tab-content hidden">
-                 </div>
+                 <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                    <div class="lg:col-span-1"><div class="card p-6"><h2 class="text-xl font-semibold text-white mb-4">Paramètres du Backtest</h2>
+                    <form id="backtest-form" class="space-y-4">
+                        <div><label for="backtest_symbol">Symbole</label><input type="text" id="backtest_symbol" value="XAUUSD" class="mt-1"></div>
+                        <div><label for="backtest_timeframe">Timeframe</label><input type="text" id="backtest_timeframe" value="M15" class="mt-1"></div>
+                        <div><label for="start_date">Date de début</label><input type="date" id="start_date" class="mt-1"></div>
+                        <div><label for="end_date">Date de fin</label><input type="date" id="end_date" class="mt-1"></div>
+                        <div><label for="initial_capital">Capital Initial</label><input type="number" id="initial_capital" value="10000" class="mt-1"></div>
+                        <button type="submit" id="run-backtest-btn" class="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 rounded-md mt-4">Lancer le Backtest</button>
+                    </form></div></div>
+                    <div class="lg:col-span-2">
+                         <div id="backtest-results-card" class="card p-6 hidden"><h2 class="text-xl font-semibold">Résultats</h2><div id="backtest-summary" class="grid grid-cols-2 gap-4 text-center mb-4"></div><canvas id="equity-chart"></canvas></div>
+                         <div id="backtest-progress-card" class="card p-6 hidden"><h2 class="text-xl font-semibold">Backtest en cours...</h2><div class="w-full bg-gray-700 rounded-full h-4 mt-4"><div id="backtest-progress-bar" class="bg-blue-500 h-4 rounded-full" style="width: 0%"></div></div></div>
+                    </div>
+                </div>
+            </div>
         </main>
     </div>
     <script>
-        // --- Code JavaScript complet ---
         let equityChart = null;
         function showTab(tabName) {
             document.querySelectorAll('.tab-content').forEach(el => el.classList.add('hidden'));
@@ -108,18 +104,20 @@ HTML_TEMPLATE = """
             try {
                 const res = await fetch('/api/data');
                 const data = await res.json();
+                
                 const statusDot = document.getElementById('status-dot');
                 statusDot.className = `h-4 w-4 rounded-full ${data.status.is_emergency ? 'bg-red-500 animate-pulse' : 'bg-green-500'}`;
                 document.getElementById('status-text').textContent = data.status.status;
                 document.getElementById('bot-status-container').innerHTML = `<div class="flex justify-between"><span>Status:</span> <strong>${data.status.status}</strong></div><div class="flex justify-between"><span>Message:</span> <em class="text-gray-400 text-right truncate">${data.status.message}</em></div>`;
+                
                 const suggestionsContainer = document.getElementById('learning-suggestions-container');
                 if (data.status.analysis_suggestions && data.status.analysis_suggestions.length > 0) {
                     suggestionsContainer.innerHTML = data.status.analysis_suggestions.map(s => `<p class="text-yellow-400">${s}</p>`).join('');
                     document.getElementById('learning-suggestions-card').style.display = 'block';
                 } else {
-                    suggestionsContainer.innerHTML = '';
                     document.getElementById('learning-suggestions-card').style.display = 'none';
                 }
+                
                 const patternsMainContainer = document.getElementById('patterns-main-container');
                 patternsMainContainer.innerHTML = '';
                 if (data.status.symbol_data && Object.keys(data.status.symbol_data).length > 0) {
@@ -131,19 +129,20 @@ HTML_TEMPLATE = """
                                 const statusText = d.status || 'En attente...';
                                 if (statusText.includes('CONFIRMÉ')) statusColor = 'text-green-400';
                                 else if (statusText.includes('INVALIDÉ')) statusColor = 'text-red-400';
-                                else if (statusText.includes('Signal BUY')) statusColor = 'text-blue-400';
-                                else if (statusText.includes('Signal SELL')) statusColor = 'text-orange-400';
                                 patternsHTML += `<div class="flex justify-between text-sm"><span class="font-medium">${name}</span><strong class="${statusColor}">${statusText}</strong></div>`;
                             });
                         } else { patternsHTML = '<p class="text-gray-400 text-sm">En attente...</p>'; }
-                        patternsMainContainer.innerHTML += `<div class="card p-5"><h2 class="text-xl font-semibold text-white mb-4">Analyse SMC: <span class="text-indigo-400">${symbol}</span></h2><div class="space-y-2">${patternsHTML}</div></div>`;
+                        patternsMainContainer.innerHTML += `<div class="card p-5"><h2 class="text-xl font-semibold text-white mb-4">Analyse: <span class="text-indigo-400">${symbol}</span></h2><div class="space-y-2">${patternsHTML}</div></div>`;
                     });
                 }
+
                 const positionsContainer = document.getElementById('positions-container');
                 positionsContainer.innerHTML = data.positions.length > 0 ? `<div class="overflow-x-auto"><table class="w-full text-left"><thead><tr class="border-b border-gray-600 text-sm"><th class="p-2">Symbol</th><th class="p-2">Type</th><th class="p-2">Volume</th><th>Profit</th><th>Magic</th></tr></thead><tbody class="text-sm">${data.positions.map(p => `<tr class="border-b border-gray-700"><td class="p-2 font-bold">${p.symbol}</td><td class="p-2 font-bold ${p.type === 0 ? 'text-blue-400' : 'text-orange-400'}">${p.type === 0 ? 'BUY' : 'SELL'}</td><td class="p-2">${p.volume}</td><td class="p-2 font-semibold">${formatProfit(p.profit)}</td><td class="p-2">${p.magic}</td></tr>`).join('')}</tbody></table></div>` : '<p class="text-gray-400">Aucune position.</p>';
+                
                 const logsContainer = document.getElementById('logs-container');
                 const newLogsHtml = data.logs.map(log => `<p>${log}</p>`).join('');
                 if (logsContainer.innerHTML !== newLogsHtml) { logsContainer.innerHTML = newLogsHtml; logsContainer.scrollTop = logsContainer.scrollHeight; }
+
             } catch (error) { console.error("Erreur de mise à jour:", error); }
         }
         
@@ -151,17 +150,10 @@ HTML_TEMPLATE = """
             try {
                 const res = await fetch('/api/config');
                 const config = await res.json();
-
                 document.getElementById('mt5_login').value = config.mt5_credentials.login;
                 document.getElementById('mt5_password').value = config.mt5_credentials.password;
                 document.getElementById('mt5_server').value = config.mt5_credentials.server;
-                
-                document.getElementById('verbose_log').value = config.logging.verbose_log.toString();
                 document.getElementById('learning_enabled').value = config.learning.enabled.toString();
-                document.getElementById('risk_per_trade').value = (config.risk_management.risk_per_trade * 100).toFixed(2);
-                document.getElementById('breakeven_enabled').checked = config.risk_management.breakeven.enabled;
-                document.getElementById('trailing_stop_atr_enabled').checked = config.risk_management.trailing_stop_atr.enabled;
-
                 const patternsContainer = document.getElementById('patterns-config-container');
                 patternsContainer.innerHTML = '';
                 Object.keys(config.pattern_detection).forEach(name => {
@@ -175,34 +167,83 @@ HTML_TEMPLATE = """
             try {
                 const res = await fetch('/api/config');
                 let config = await res.json();
-                
                 config.mt5_credentials.login = parseInt(document.getElementById('mt5_login').value);
                 config.mt5_credentials.password = document.getElementById('mt5_password').value;
                 config.mt5_credentials.server = document.getElementById('mt5_server').value;
-
-                config.logging.verbose_log = document.getElementById('verbose_log').value === 'true';
                 config.learning.enabled = document.getElementById('learning_enabled').value === 'true';
-                config.risk_management.risk_per_trade = parseFloat(document.getElementById('risk_per_trade').value) / 100;
-                config.risk_management.breakeven.enabled = document.getElementById('breakeven_enabled').checked;
-                config.risk_management.trailing_stop_atr.enabled = document.getElementById('trailing_stop_atr_enabled').checked;
-
                 Object.keys(config.pattern_detection).forEach(name => {
                     const checkbox = document.getElementById(`pattern_${name}`);
                     if(checkbox) config.pattern_detection[name] = checkbox.checked;
                 });
-
                 await fetch('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(config) });
-                alert('Configuration sauvegardée ! Les identifiants MT5 nécessitent un redémarrage du bot pour être pris en compte.');
-            } catch (error) { console.error("Erreur de sauvegarde:", error); alert("Erreur lors de la sauvegarde."); }
+                alert('Configuration sauvegardée !');
+            } catch (error) { console.error("Erreur de sauvegarde:", error); }
         }
         
-        // ... (partie backtest inchangée)
+        async function runBacktest(event) {
+            event.preventDefault();
+            document.getElementById('backtest-progress-card').classList.remove('hidden');
+            document.getElementById('backtest-results-card').classList.add('hidden');
+            document.getElementById('run-backtest-btn').disabled = true;
+            const params = {
+                symbol: document.getElementById('backtest_symbol').value,
+                timeframe: document.getElementById('backtest_timeframe').value,
+                start_date: document.getElementById('start_date').value,
+                end_date: document.getElementById('end_date').value,
+                initial_capital: document.getElementById('initial_capital').value,
+            };
+            await fetch('/api/backtest', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(params) });
+            checkBacktestStatus();
+        }
+
+        async function checkBacktestStatus() {
+            const res = await fetch('/api/backtest/status');
+            const data = await res.json();
+            if (data.running) {
+                document.getElementById('backtest-progress-bar').style.width = data.progress + '%';
+                setTimeout(checkBacktestStatus, 1000);
+            } else {
+                document.getElementById('run-backtest-btn').disabled = false;
+                displayBacktestResults(data.results);
+            }
+        }
+
+        function displayBacktestResults(results) {
+            document.getElementById('backtest-progress-card').classList.add('hidden');
+            document.getElementById('backtest-results-card').classList.remove('hidden');
+            const summaryContainer = document.getElementById('backtest-summary');
+            if (results.error) {
+                summaryContainer.innerHTML = `<p class="col-span-2 text-red-400">${results.error}</p>`;
+                return;
+            }
+            summaryContainer.innerHTML = `
+                <div><p class="text-sm text-gray-400">Profit Final</p><p class="text-2xl font-bold ${results.pnl > 0 ? 'text-green-400' : 'text-red-400'}">${results.pnl.toFixed(2)}</p></div>
+                <div><p class="text-sm text-gray-400">Drawdown Max</p><p class="text-2xl font-bold">${results.max_drawdown_percent.toFixed(2)}%</p></div>
+                <div><p class="text-sm text-gray-400">Taux de Réussite</p><p class="text-2xl font-bold">${results.win_rate.toFixed(2)}%</p></div>
+                <div><p class="text-sm text-gray-400">Trades</p><p class="text-2xl font-bold">${results.total_trades}</p></div>
+            `;
+            const ctx = document.getElementById('equity-chart').getContext('2d');
+            if(equityChart) equityChart.destroy();
+            equityChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: Array.from(Array(results.equity_curve.length).keys()),
+                    datasets: [{ label: 'Évolution du Capital', data: results.equity_curve, borderColor: 'rgb(75, 192, 192)', tension: 0.1, pointRadius: 0 }]
+                },
+                options: { scales: { x: { display: false } } }
+            });
+        }
         
         window.onload = () => {
             setInterval(fetchAllData, 3000);
             fetchAllData();
             loadConfig();
             document.getElementById('config-form').addEventListener('submit', saveConfig);
+            document.getElementById('backtest-form').addEventListener('submit', runBacktest);
+            const today = new Date().toISOString().split('T')[0];
+            const lastYear = new Date(new Date().setFullYear(new Date().getFullYear() - 1)).toISOString().split('T')[0];
+            document.getElementById('end_date').value = today;
+            document.getElementById('start_date').value = lastYear;
         };
     </script>
 </body>
@@ -212,14 +253,6 @@ HTML_TEMPLATE = """
 def start_api_server(shared_state):
     app = Flask(__name__)
     logging.getLogger('werkzeug').setLevel(logging.ERROR)
-
-    def load_yaml(filepath):
-        with open(filepath, 'r', encoding='utf-8') as f:
-            return yaml.safe_load(f)
-
-    def write_yaml(filepath, data):
-        with open(filepath, 'w', encoding='utf-8') as f:
-            yaml.dump(data, f, sort_keys=False)
 
     @app.route('/')
     def index():
@@ -231,24 +264,36 @@ def start_api_server(shared_state):
     
     @app.route('/api/config', methods=['GET', 'POST'])
     def manage_config():
+        config_path = 'config.yaml'
         if request.method == 'POST':
             new_config = request.json
-            write_yaml('config.yaml', new_config)
+            with open(config_path, 'w', encoding='utf-8') as f:
+                yaml.dump(new_config, f, sort_keys=False)
             shared_state.update_config(new_config)
             shared_state.signal_config_changed()
             return jsonify({"status": "success"})
-        return jsonify(shared_state.get_config())
+        
+        with open(config_path, 'r', encoding='utf-8') as f:
+            config = yaml.safe_load(f)
+        return jsonify(config)
 
     @app.route('/api/backtest', methods=['POST'])
     def handle_backtest():
         from src.backtest.backtester import Backtester
         if shared_state.get_backtest_status()['running']: 
             return jsonify({"error": "Un backtest est déjà en cours."}), 400
+        
         bt = Backtester(shared_state)
         params = request.json
+        current_config = shared_state.get_config()
+        
         threading.Thread(
             target=bt.run, 
-            args=(params['start_date'], params['end_date'], params['initial_capital']), 
+            args=(
+                params['symbol'], params['timeframe'],
+                params['start_date'], params['end_date'], 
+                params['initial_capital'], current_config
+            ), 
             daemon=True
         ).start()
         return jsonify({"status": "Backtest démarré."})

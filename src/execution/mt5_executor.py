@@ -1,7 +1,5 @@
 # Fichier: src/execution/mt5_executor.py
-# Version 11.0.0 (Robust Archiving)
-# Dépendances: MetaTrader5, pandas, logging, os
-# Description: Gère l'exécution des ordres avec un archivage robuste des trades.
+# Version 12.0.0 (Adaptive Risk Archiving)
 
 import MetaTrader5 as mt5
 import logging
@@ -12,10 +10,6 @@ from datetime import datetime
 from src.constants import BUY, SELL
 
 class MT5Executor:
-    """
-    Gère l'exécution et l'archivage des ordres avec une robustesse accrue.
-    v11.0 : Logique d'archivage améliorée pour gérer la latence de l'historique MT5.
-    """
     def __init__(self, mt5_connection):
         self._mt5 = mt5_connection
         self.log = logging.getLogger(self.__class__.__name__)
@@ -23,14 +17,16 @@ class MT5Executor:
         self.history_file = 'trade_history.csv'
 
     def get_open_positions(self, symbol: str = None, magic: int = 0) -> list:
+        # ... (inchangé)
         if symbol: positions = self._mt5.positions_get(symbol=symbol)
         else: positions = self._mt5.positions_get()
         if positions is None: return []
         if magic > 0: return [pos for pos in positions if pos.magic == magic]
         return list(positions)
 
+
     def execute_trade(self, account_info, risk_manager, symbol, direction, ohlc_data, pattern_name, magic_number, market_trend, volatility_atr):
-        """Orchestre le placement d'un trade avec toutes les validations de sécurité."""
+        """Orchestre le placement d'un trade avec la nouvelle logique de risque adaptatif."""
         trade_type = mt5.ORDER_TYPE_BUY if direction == BUY else mt5.ORDER_TYPE_SELL
         price_info = self._mt5.symbol_info_tick(symbol)
         if not price_info:
@@ -38,12 +34,12 @@ class MT5Executor:
             return
 
         price = price_info.ask if direction == BUY else price_info.bid
-        sl, tp = risk_manager.calculate_sl_tp(price, direction, ohlc_data, symbol)
         
-        volume = risk_manager.calculate_volume(account_info.equity, price, sl)
+        # --- APPEL A LA NOUVELLE LOGIQUE ---
+        volume, sl, tp = risk_manager.calculate_trade_parameters(account_info.equity, price, direction, ohlc_data)
 
         if volume > 0:
-            self.log.info(f"Préparation de l'ordre {direction} {volume} lot(s) de {symbol} @ {price:.5f}")
+            self.log.info(f"Préparation de l'ordre {direction} {volume:.2f} lot(s) de {symbol} @ {price:.5f}")
             result = self.place_order(symbol, trade_type, volume, price, sl, tp, magic_number, pattern_name)
             
             if result:
@@ -54,10 +50,10 @@ class MT5Executor:
                     'volatility_atr': volatility_atr
                 }
         else:
-            self.log.warning(f"Trade sur {symbol} annulé (Volume calculé de 0.0).")
+            self.log.warning(f"Trade sur {symbol} annulé (Volume final de 0.0).")
 
     def place_order(self, symbol, order_type, volume, price, sl, tp, magic_number, pattern_name):
-        """Place un ordre avec une logique de tentatives multiples."""
+        # ... (inchangé)
         comment = f"KasperBot-{pattern_name}"[:31]
         request = {
             "action": mt5.TRADE_ACTION_DEAL, "symbol": symbol, "volume": volume,
@@ -90,8 +86,9 @@ class MT5Executor:
         self.log.error("Échec de l'envoi de l'ordre après 3 tentatives.")
         return None
 
+
     def check_for_closed_trades(self, magic_number):
-        """Détecte les trades fermés et gère la latence de l'historique MT5."""
+        # ... (inchangé)
         current_open_tickets = {pos.ticket for pos in self.get_open_positions(magic=magic_number)}
         closed_tickets = set(self._open_trades_context.keys()) - current_open_tickets
 
@@ -122,7 +119,7 @@ class MT5Executor:
                 self.log.warning(f"Trade #{ticket} fermé mais l'historique est indisponible pour le moment. Réessai au prochain cycle.")
 
     def _archive_trade(self, trade_record: dict):
-        """Archive un trade dans le fichier CSV, en le créant si nécessaire."""
+        # ... (inchangé)
         try:
             df = pd.DataFrame([trade_record])
             file_exists = os.path.exists(self.history_file)
@@ -135,6 +132,7 @@ class MT5Executor:
         return self._mt5.account_info()
     
     def modify_position(self, ticket, sl, tp):
+        # ... (inchangé)
         request = {"action": mt5.TRADE_ACTION_SLTP, "position": ticket, "sl": sl, "tp": tp}
         result = self._mt5.order_send(request)
         if result and result.retcode != mt5.TRADE_RETCODE_DONE:

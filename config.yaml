@@ -12,10 +12,13 @@ mt5_credentials:
   password: jsne80aX!
   server: Axi-US50-Demo
 pattern_detection:
+  CHANGE_OF_CHARACTER: true
   INBALANCE: true
+  LIQUIDITY_GRAB: true
   ORDER_BLOCK: true
   SMC_AMD_SESSION: true
 risk_management:
+  adjust_sl_to_fit_risk: true
   atr_settings:
     BTCUSD:
       sl_multiple: 2.5
@@ -31,6 +34,7 @@ risk_management:
     enabled: true
     pips_plus: 10
     trigger_pips: 100
+  daily_loss_limit_percent: 2
   min_risk_reward_ratio: 1.5
   risk_per_trade: 0.01
   sl_tp_strategy: ATR_MULTIPLE
