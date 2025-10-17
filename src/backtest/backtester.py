@@ -1,86 +1,155 @@
 # Fichier: src/backtest/backtester.py
+# Version: 2.0.0 (Robust Simulation)
+# Dépendances: pandas, numpy, yaml, MetaTrader5
+# Description: Moteur de backtesting haute-fidélité qui réplique la logique de trading en direct.
 
 import MetaTrader5 as mt5
 import pandas as pd
+import numpy as np
 from datetime import datetime
 import logging
 import yaml
-import numpy as np
 
 from src.patterns.pattern_detector import PatternDetector
 from src.risk.risk_manager import RiskManager
-from src.execution.mt5_executor import MT5Executor
+from src.shared_state import SharedState
+
+class MockConnector:
+    """
+    Un connecteur simulé pour fournir des données historiques au backtester
+    sans dépendre d'une connexion MT5 active pour chaque appel.
+    """
+    def __init__(self, all_historical_data: dict):
+        self._historical_data = all_historical_data
+
+    def get_ohlc(self, symbol: str, timeframe: str, num_bars: int, end_time=None):
+        """
+        Sert une tranche de données historiques pour une demande spécifique.
+        """
+        if timeframe not in self._historical_data:
+            return None
+            
+        df = self._historical_data[timeframe]
+        
+        if end_time:
+            data_slice = df[df.index <= end_time].tail(num_bars)
+        else:
+            data_slice = df.tail(num_bars)
+            
+        if len(data_slice) < num_bars:
+            return None
+            
+        return data_slice.reset_index()
 
 class Backtester:
-    """Module de backtesting v7.6 : Ne ferme plus la connexion MT5 principale."""
-    def __init__(self, shared_state):
+    """
+    Module de backtesting v2.0.0 : Simule fidèlement la stratégie complète,
+    y compris le filtre de tendance multi-temporelles et la gestion de position.
+    """
+    def __init__(self, shared_state: SharedState):
         self.state = shared_state
         self.log = logging.getLogger(self.__class__.__name__)
-        # On vérifie que MT5 est bien initialisé, mais on ne le gère pas ici.
         if not mt5.terminal_info():
-            self.log.error("Le Backtester ne peut pas démarrer car MT5 n'est pas connecté.")
-            raise ConnectionError("MT5 n'est pas initialisé.")
-            
-    def run(self, start_date_str, end_date_str, initial_capital):
+            raise ConnectionError("MT5 n'est pas initialisé, le backtester ne peut pas démarrer.")
+
+    def run(self, start_date_str: str, end_date_str: str, initial_capital: float):
         self.log.info(f"Démarrage du backtest de {start_date_str} à {end_date_str}...")
         self.state.start_backtest()
 
         try:
-            config = load_yaml('config.yaml')
+            config = yaml.safe_load(open('config.yaml', 'r', encoding='utf-8'))
             start_date = datetime.strptime(start_date_str, '%Y-%m-%d')
             end_date = datetime.strptime(end_date_str, '%Y-%m-%d')
             
-            symbol = config['trading_settings']['symbol']
-            timeframe_str = config['trading_settings']['timeframe']
-            timeframe = getattr(mt5, f"TIMEFRAME_{timeframe_str.upper()}")
+            symbol = config['trading_settings']['symbols'][0]
+            main_timeframe_str = config['trading_settings']['timeframe']
+            main_timeframe_mt5 = getattr(mt5, f"TIMEFRAME_{main_timeframe_str.upper()}")
             
-            all_data = mt5.copy_rates_range(symbol, timeframe, start_date, end_date)
-            if all_data is None or len(all_data) < 200:
-                raise ValueError("Pas assez de données historiques pour cette période.")
+            all_data = {}
+            main_df_rates = mt5.copy_rates_range(symbol, main_timeframe_mt5, start_date, end_date)
+            if main_df_rates is None or len(main_df_rates) < 200:
+                raise ValueError(f"Pas assez de données historiques pour le timeframe {main_timeframe_str}.")
             
-            df = pd.DataFrame(all_data)
-            df['time'] = pd.to_datetime(df['time'], unit='s')
+            main_df = pd.DataFrame(main_df_rates)
+            main_df['time'] = pd.to_datetime(main_df['time'], unit='s')
+            main_df.set_index('time', inplace=True)
+            all_data[main_timeframe_str] = main_df
+
+            if config.get('trend_filter', {}).get('enabled', False):
+                htf_str = config['trend_filter']['higher_timeframe']
+                htf_mt5 = getattr(mt5, f"TIMEFRAME_{htf_str.upper()}")
+                htf_rates = mt5.copy_rates_range(symbol, htf_mt5, start_date, end_date)
+                if htf_rates is None or len(htf_rates) == 0:
+                    raise ValueError(f"Pas assez de données historiques pour le timeframe supérieur {htf_str}.")
+                htf_df = pd.DataFrame(htf_rates)
+                htf_df['time'] = pd.to_datetime(htf_df['time'], unit='s')
+                htf_df.set_index('time', inplace=True)
+                all_data[htf_str] = htf_df
+
+            mock_connector = MockConnector(all_data)
+            detector = PatternDetector(config)
             
+            class MockExecutor:
+                def __init__(self, symbol):
+                    self._mt5 = mt5
+                    self.account_info = mt5.account_info()
+                    self.symbol_info = mt5.symbol_info(symbol)
+                def modify_position(self, ticket, sl, tp):
+                    pass 
+            
+            risk_manager = RiskManager(config, MockExecutor(symbol), symbol)
+
             equity = float(initial_capital)
             equity_curve, trades, open_position = [equity], [], None
-            
-            fake_executor = MT5Executor(mt5)
-            risk_manager = RiskManager(config['risk_management'], fake_executor, symbol)
-            detector = PatternDetector(config)
+            total_bars = len(main_df)
 
-            total_bars = len(df)
             for i in range(200, total_bars):
                 progress = ((i - 200) / (total_bars - 200)) * 100
-                if i % (total_bars // 100 or 1) == 0:
+                if i % 20 == 0:
                     self.state.update_backtest_progress(progress)
 
-                current_data = df.iloc[:i+1]
-                current_candle = df.iloc[i]
+                current_time = main_df.index[i]
+                current_candle = main_df.iloc[i]
+                current_data_slice = main_df.iloc[:i+1]
                 
                 if open_position:
                     closed, pnl = False, 0
-                    if open_position['direction'] == 'BUY':
-                        if current_candle['low'] <= open_position['sl']: closed, pnl = True, (open_position['sl'] - open_position['entry_price'])
-                        elif current_candle['high'] >= open_position['tp']: closed, pnl = True, (open_position['tp'] - open_position['entry_price'])
+                    if open_position['direction'] == "BUY":
+                        if current_candle['low'] <= open_position['sl']:
+                            closed, pnl = True, open_position['sl'] - open_position['entry_price']
+                        elif current_candle['high'] >= open_position['tp']:
+                            closed, pnl = True, open_position['tp'] - open_position['entry_price']
                     else:
-                        if current_candle['high'] >= open_position['sl']: closed, pnl = True, (open_position['entry_price'] - open_position['sl'])
-                        elif current_candle['low'] <= open_position['tp']: closed, pnl = True, (open_position['entry_price'] - open_position['tp'])
-                    
+                        if current_candle['high'] >= open_position['sl']:
+                            closed, pnl = True, open_position['entry_price'] - open_position['sl']
+                        elif current_candle['low'] <= open_position['tp']:
+                            closed, pnl = True, open_position['entry_price'] - open_position['tp']
+
                     if closed:
-                        equity += pnl * open_position['volume'] * risk_manager.symbol_info.trade_contract_size
-                        open_position['pnl'] = pnl * open_position['volume'] * risk_manager.symbol_info.trade_contract_size
+                        trade_pnl = pnl * open_position['volume'] * risk_manager.symbol_info.trade_contract_size
+                        equity += trade_pnl
+                        open_position['pnl'] = trade_pnl
+                        open_position['close_time'] = current_time
                         trades.append(open_position)
                         open_position = None
                         equity_curve.append(equity)
                 
                 if not open_position:
-                    trade_signal = detector.detect_patterns(current_data)
+                    trade_signal = detector.detect_patterns(current_data_slice, mock_connector, symbol)
+                    
                     if trade_signal:
                         entry_price = current_candle['close']
-                        sl, tp = risk_manager.calculate_sl_tp(entry_price, trade_signal['direction'], current_data)
+                        sl, tp = risk_manager.calculate_sl_tp(entry_price, trade_signal['direction'], current_data_slice, symbol)
                         volume = risk_manager.calculate_volume(equity, entry_price, sl)
+                        
                         if volume > 0:
-                            open_position = {'direction': trade_signal['direction'], 'entry_price': entry_price, 'sl': sl, 'tp': tp, 'volume': volume}
+                            open_position = {
+                                'direction': trade_signal['direction'],
+                                'pattern': trade_signal['pattern'],
+                                'entry_price': entry_price,
+                                'sl': sl, 'tp': tp, 'volume': volume,
+                                'open_time': current_time
+                            }
 
             final_pnl = equity - float(initial_capital)
             wins = [t for t in trades if t.get('pnl', 0) > 0]
@@ -90,14 +159,16 @@ class Backtester:
             peak = equity_series.expanding(min_periods=1).max()
             drawdown = ((equity_series - peak) / peak).min() if not peak.empty else 0
 
-            results = {"pnl": final_pnl, "total_trades": len(trades), "win_rate": win_rate, "max_drawdown_percent": abs(drawdown * 100), "equity_curve": equity_curve}
+            results = {
+                "pnl": final_pnl, 
+                "total_trades": len(trades), 
+                "win_rate": win_rate, 
+                "max_drawdown_percent": abs(drawdown * 100), 
+                "equity_curve": equity_curve
+            }
             self.state.finish_backtest(results)
-            self.log.info(f"Backtest terminé. PnL: {final_pnl:.2f}$")
+            self.log.info(f"Backtest terminé. PnL final: {final_pnl:.2f}$")
 
         except Exception as e:
             self.log.error(f"Erreur durant le backtest: {e}", exc_info=True)
             self.state.finish_backtest({"error": str(e)})
-
-def load_yaml(filepath: str) -> dict:
-    with open(filepath, 'r', encoding='utf-8') as f:
-        return yaml.safe_load(f)
