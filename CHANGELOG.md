@@ -37,3 +37,40 @@
     * **CORRECTION CRITIQUE**: La logique de détection des **Order Blocks (OB)** a été entièrement réécrite pour se conformer aux définitions standards du SMC. Un signal n'est maintenant considéré comme valide que s'il est suivi d'une claire **rupture de structure (BOS)**, ce qui augmente considérablement la pertinence et la qualité des signaux.
 * **Backtester (`src/backtest/backtester.py`)**:
     * Le moteur de simulation a été mis à jour pour utiliser la nouvelle logique de détection de patterns et les nouvelles règles de gestion des risques, garantissant que les backtests reflètent fidèlement la performance de la version actuelle du bot.
+    
+    # Changelog - KasperBot
+
+## v14.0.0 - (17/10/2025) - Build "Guardian+ Enhanced"
+
+### 🛡️ Sécurité et Stabilité (Priorité 1)
+
+* **Gestion des Erreurs (`main.py`, `risk_manager.py`, `mt5_connector.py`)**:
+    * Implémentation de blocs `try-except` plus granulaires dans toute l'application pour capturer des erreurs spécifiques (connexion, configuration, calcul) et éviter les arrêts critiques.
+* **Money Management (`risk_manager.py`)**:
+    * Ajout de garde-fous (`sanity checks`) dans `_calculate_volume` pour prévenir les divisions par zéro et les calculs basés sur des données invalides (ex: distance SL nulle).
+    * Le trade est désormais annulé si le volume calculé est inférieur au minimum autorisé, protégeant ainsi le capital contre des ajustements de SL extrêmes.
+* **Connexion MT5 (`mt5_connector.py`)**:
+    * La fonction `connect` implémente maintenant une boucle de tentatives avec une attente exponentielle (`exponential backoff`) pour gérer les pertes de connexion temporaires de manière plus résiliente.
+* **Configuration (`config.yaml`)**:
+    * Le mode `live_trading_enabled` est maintenant défini sur `false` par défaut pour prévenir tout trading en réel non intentionnel.
+
+### ✨ Fiabilité et Maintenabilité (Priorité 2)
+
+* **Journalisation (Tous les modules)**:
+    * La journalisation a été enrichie dans tous les modules critiques pour fournir des informations détaillées sur la logique de décision, le calcul des risques, la détection des patterns et l'état de la connexion.
+    * Les logs d'erreurs incluent maintenant des `exc_info=True` pour tracer la pile d'appels complète, facilitant le débogage.
+* **Validation des Stratégies SMC (`pattern_detector.py`)**:
+    * **CORRECTION CRITIQUE**: La logique de détection pour `_detect_choch` (Change of Character) et `_detect_order_block` a été entièrement réécrite pour s'aligner sur les définitions SMC standards, ce qui augmente considérablement la précision des signaux. Un OB nécessite maintenant une rupture de structure (BOS) pour être considéré comme valide.
+* **Structure du Code (`main.py`)**:
+    * La boucle de trading principale a été restructurée pour suivre un flux logique plus clair (Connexion -> Config -> Positions -> Disjoncteur -> Analyse).
+
+---
+
+## v14.0.2 - (17/10/2025) - Build "Guardian+ Symbol Validation"
+
+### 🐛 Corrections (Fixes)
+
+* **`main.py`**:
+    * **CORRECTION CRITIQUE**: Ajout d'une fonction `validate_symbols` qui vérifie au démarrage et après chaque rechargement de configuration si les symboles listés dans `config.yaml` sont bien disponibles sur la plateforme MetaTrader 5.
+    * Le bot n'essaiera plus de créer une instance de `RiskManager` pour un symbole invalide, ce qui empêche le crash `ValueError: Informations de compte ou de symbole MT5 manquantes`.
+    * Un message d'erreur clair est maintenant journalisé pour chaque symbole invalide, informant l'utilisateur de le corriger ou de le retirer de sa configuration.
