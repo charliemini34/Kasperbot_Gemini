@@ -1,7 +1,7 @@
 # Fichier: main.py
-# Version: 14.0.3 (Guardian+ Hotfix)
+# Version: 16.2.1 (Hotfix-Indentation)
 # Dépendances: MetaTrader5, pytz, PyYAML, Flask
-# Description: Correction d'une NameError due à une importation manquante pour PerformanceAnalyzer.
+# Description: Correction d'une IndentationError dans la fonction setup_logging.
 
 import time
 import threading
@@ -9,7 +9,7 @@ import logging
 import yaml
 import webbrowser
 import os
-from datetime import datetime
+from datetime import datetime, time as dt_time
 import pytz
 
 import MetaTrader5 as mt5
@@ -19,7 +19,6 @@ from src.risk.risk_manager import RiskManager
 from src.execution.mt5_executor import MT5Executor
 from src.api.server import start_api_server
 from src.shared_state import SharedState, LogHandler
-# **LIGNE CORRIGÉE**: Importation de PerformanceAnalyzer ajoutée
 from src.analysis.performance_analyzer import PerformanceAnalyzer
 
 def setup_logging(state: SharedState):
@@ -77,16 +76,44 @@ def validate_symbols(symbols_list, mt5_connection):
             logging.error(f"Le symbole '{symbol}' n'est pas disponible ou est mal orthographié. Il sera ignoré.")
     return valid_symbols
 
+def is_within_trading_session(symbol: str, config: dict) -> bool:
+    """Vérifie si le symbole peut être tradé à l'heure UTC actuelle."""
+    sessions_config = config.get('trading_settings', {}).get('trading_sessions', [])
+    crypto_symbols = config.get('trading_settings', {}).get('crypto_symbols', [])
+
+    if symbol in crypto_symbols:
+        return True
+
+    if not sessions_config:
+        return True
+
+    now_utc = datetime.now(pytz.utc)
+    current_weekday = (now_utc.weekday() + 1) % 7
+    current_time = now_utc.time()
+
+    for session in sessions_config:
+        try:
+            day_str, start_str, end_str = session.split('-')
+            day = int(day_str)
+            start_time = dt_time.fromisoformat(start_str)
+            end_time = dt_time.fromisoformat(end_str)
+
+            if day == current_weekday and start_time <= current_time < end_time:
+                return True
+        except (ValueError, TypeError):
+            logging.error(f"Format de session invalide: '{session}'")
+            continue
+    return False
 
 def main_trading_loop(state: SharedState):
     """Boucle principale qui orchestre le bot de trading."""
-    logging.info("Démarrage de la boucle de trading v14.0.3 (Guardian+ Hotfix)...")
+    logging.info("Démarrage de la boucle de trading v16.2.1 (Hotfix-Indentation)...")
     config = load_yaml('config.yaml')
     state.update_config(config)
     
     connector = MT5Connector(config['mt5_credentials'])
     if not connector.connect():
-        state.update_status("Déconnecté", "La connexion initiale à MT5 a échoué. Vérifiez les identifiants et le terminal.", is_emergency=True)
+        state.update_status("Déconnecté", "La connexion initiale à MT5 a échoué.", is_emergency=True)
         return
 
     executor = MT5Executor(connector.get_connection())
@@ -94,8 +121,8 @@ def main_trading_loop(state: SharedState):
 
     symbols_to_trade = validate_symbols(config['trading_settings'].get('symbols', []), connector.get_connection())
     if not symbols_to_trade:
-        logging.critical("Aucun symbole valide à trader n'a été trouvé. Vérifiez votre fichier config.yaml. Arrêt du bot.")
-        state.update_status("Arrêté", "Aucun symbole valide à trader.", is_emergency=True)
+        logging.critical("Aucun symbole valide à trader. Arrêt du bot.")
+        state.update_status("Arrêté", "Aucun symbole valide.", is_emergency=True)
         return
 
     while not state.is_shutdown():
@@ -108,12 +135,12 @@ def main_trading_loop(state: SharedState):
                 state.update_status("Connecté", "Reconnexion à MT5 réussie.")
 
             if state.config_changed_flag:
-                logging.info("Changement de configuration détecté. Rechargement et revalidation des symboles...")
+                logging.info("Changement de configuration détecté. Rechargement...")
                 config = load_yaml('config.yaml')
                 state.update_config(config)
                 symbols_to_trade = validate_symbols(config['trading_settings'].get('symbols', []), connector.get_connection())
                 state.clear_config_changed_flag()
-                logging.info("Configuration rechargée avec succès.")
+                logging.info("Configuration rechargée.")
 
             account_info = executor.get_account_info()
             if not account_info:
@@ -141,18 +168,27 @@ def main_trading_loop(state: SharedState):
                         tick = connector.get_tick(symbol)
                         if tick and ohlc_data_for_pos is not None:
                             rm_pos.manage_open_positions(positions, tick, ohlc_data_for_pos)
+                    except ValueError as e:
+                        logging.error(f"Erreur de validation pour la gestion des positions sur {symbol}: {e}")
                     except Exception as e:
                         logging.error(f"Erreur lors de la gestion des positions sur {symbol}: {e}", exc_info=True)
 
             if symbols_to_trade:
-                main_rm = RiskManager(config, executor, symbols_to_trade[0])
-                limit_reached, _ = main_rm.is_daily_loss_limit_reached()
-                if limit_reached:
-                    state.update_status("Arrêt d'Urgence", "Limite de perte journalière atteinte.", is_emergency=True)
-                    time.sleep(60)
-                    continue
+                try:
+                    main_rm = RiskManager(config, executor, symbols_to_trade[0])
+                    limit_reached, _ = main_rm.is_daily_loss_limit_reached()
+                    if limit_reached:
+                        state.update_status("Arrêt d'Urgence", "Limite de perte journalière atteinte.", is_emergency=True)
+                        time.sleep(60)
+                        continue
+                except ValueError:
+                    pass
 
             for symbol in symbols_to_trade:
+                if not is_within_trading_session(symbol, config):
+                    logging.debug(f"Symbole '{symbol}' hors de sa session de trading. Passage au suivant.")
+                    continue
+
                 if any(pos.symbol == symbol for pos in all_bot_positions):
                     logging.debug(f"Un trade est déjà ouvert pour {symbol}. Passage au suivant.")
                     continue
@@ -179,7 +215,9 @@ def main_trading_loop(state: SharedState):
                             executor.execute_trade(account_info, risk_manager, symbol, direction, ohlc_data, pattern_name, magic_number)
                         else:
                             logging.warning(f"Le volume calculé pour {symbol} est de 0. Le trade est annulé.")
-                            
+                
+                except ValueError as e:
+                    logging.error(f"Impossible de traiter le symbole '{symbol}': {e}.")
                 except Exception as e:
                     logging.error(f"Erreur d'analyse sur {symbol}: {e}", exc_info=True)
             
@@ -187,11 +225,15 @@ def main_trading_loop(state: SharedState):
             timeframe_seconds = get_timeframe_seconds(timeframe_str)
             now_utc = datetime.now(pytz.utc).timestamp()
             next_candle_epoch = (now_utc // timeframe_seconds + 1) * timeframe_seconds
-            sleep_duration = max(0, next_candle_epoch - now_utc)
+            sleep_duration = max(1, next_candle_epoch - now_utc)
             
             logging.info(f"Cycle terminé. Synchronisation sur la prochaine bougie. Attente de {sleep_duration:.0f} secondes.")
             time.sleep(sleep_duration)
 
+        except (ConnectionError, BrokenPipeError) as e:
+            logging.error(f"Erreur de connexion critique: {e}", exc_info=True)
+            state.update_status("Déconnecté", f"Erreur de connexion: {e}", is_emergency=True)
+            time.sleep(30)
         except Exception as e:
             logging.critical(f"ERREUR CRITIQUE non gérée dans la boucle principale: {e}", exc_info=True)
             state.update_status("ERREUR CRITIQUE", str(e), is_emergency=True)

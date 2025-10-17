@@ -1,7 +1,7 @@
 # Fichier: src/backtest/backtester.py
-# Version: 4.0.0 (High-Fidelity & Flexible)
+# Version: 15.2.0 (Hotfix-Refactor)
 # Dépendances: pandas, numpy, yaml, MetaTrader5
-# Description: Moteur de backtesting paramétrable et haute-fidélité.
+# Description: Correction de l'appel de méthode pour le calcul SL/TP.
 
 import MetaTrader5 as mt5
 import pandas as pd
@@ -61,11 +61,12 @@ class Backtester:
                 htf_mt5 = getattr(mt5, f"TIMEFRAME_{htf_str.upper()}")
                 htf_rates = mt5.copy_rates_range(symbol, htf_mt5, start_date, end_date)
                 if htf_rates is None or len(htf_rates) == 0:
-                    raise ValueError(f"Pas assez de données historiques pour le timeframe supérieur {htf_str}.")
-                htf_df = pd.DataFrame(htf_rates)
-                htf_df['time'] = pd.to_datetime(htf_df['time'], unit='s')
-                htf_df.set_index('time', inplace=True)
-                all_data[htf_str] = htf_df
+                    self.log.warning(f"Pas assez de données historiques pour le timeframe supérieur {htf_str}. Filtre de tendance désactivé pour ce backtest.")
+                else:
+                    htf_df = pd.DataFrame(htf_rates)
+                    htf_df['time'] = pd.to_datetime(htf_df['time'], unit='s')
+                    htf_df.set_index('time', inplace=True)
+                    all_data[htf_str] = htf_df
 
             mock_connector = MockConnector(all_data)
             detector = PatternDetector(config)
@@ -113,8 +114,9 @@ class Backtester:
                     
                     if trade_signal:
                         entry_price = current_candle['close']
-                        sl, tp = risk_manager.calculate_sl_tp(entry_price, trade_signal['direction'], current_data_slice, symbol)
-                        volume = risk_manager.calculate_volume(equity, entry_price, sl)
+                        # **LIGNE CORRIGÉE**: Utilisation de la méthode correcte _calculate_initial_sl_tp
+                        sl, tp = risk_manager._calculate_initial_sl_tp(entry_price, trade_signal['direction'], current_data_slice)
+                        volume = risk_manager._calculate_volume(equity, config.get('risk_management', {}).get('risk_per_trade', 0.01), entry_price, sl)
                         
                         if volume > 0:
                             open_position = {

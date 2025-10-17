@@ -1,20 +1,16 @@
 # Fichier: config.yaml
-# Version: 14.0.0 (Guardian+ Enhanced)
+# Version: 16.2.0 (Multi-Session-Guard)
 
 api:
   host: 127.0.0.1
   port: 5000
 
-# IMPORTANT: Remplir avec vos propres identifiants
 mt5_credentials:
-  #login: 60035780
-  #password: "Quench-Quantum4"
-  #server: "Axi-US51-Live"
   login: 10004952
   password: "jsne80aX!"
   server: "Axi-US50-Demo"
+
 trading_settings:
-  # false = mode simulation (aucun ordre réel), true = mode réel
   live_trading_enabled: false
   magic_number: 13579
   symbols:
@@ -25,13 +21,26 @@ trading_settings:
   - AUDUSD
   - USDCAD
   - USOIL
+  - BTCUSD
+  - ETHUSD
   
+  # NOUVEAU: Lister ici les symboles qui doivent être tradés 24/7
+  crypto_symbols:
+  - BTCUSD
+  - ETHUSD
+
   timeframe: M15
+  
+  # Sessions pour les actifs non-crypto (Forex, Indices, Matières Premières)
+  trading_sessions:
+  - "1-07:00-20:00" # Lundi
+  - "2-07:00-20:00" # Mardi
+  - "3-07:00-20:00" # Mercredi
+  - "4-07:00-20:00" # Jeudi
+  - "5-07:00-20:00" # Vendredi
 
 risk_management:
-  # Pourcentage du capital à risquer par trade (ex: 0.01 = 1%)
   risk_per_trade: 0.01
-  # Disjoncteur: arrête le trading pour la journée si ce % de perte est atteint
   daily_loss_limit_percent: 2.0
   sl_tp_strategy: ATR_MULTIPLE
   atr_settings:
@@ -44,12 +53,12 @@ risk_management:
       tp_multiple: 3.5
   breakeven:
     enabled: true
-    trigger_pips: 100 # Pips de profit requis pour activer le BE
-    pips_plus: 10    # Déplace le SL de X pips en profit
+    trigger_pips: 100
+    pips_plus: 10
   trailing_stop_atr:
     enabled: true
-    activation_multiple: 2.0 # Le TS s'active quand le prix a bougé de X * ATR en profit
-    trailing_multiple: 1.8   # Le SL suit le prix à une distance de X * ATR
+    activation_multiple: 2.0
+    trailing_multiple: 1.8
 
 pattern_detection:
   ORDER_BLOCK: true
