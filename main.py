@@ -1,7 +1,7 @@
 # Fichier: main.py
-# Version: 16.2.2 (Symbol-Isolation Hotfix)
+# Version: 16.3.0 (First-Cycle-Guard)
 # Dépendances: MetaTrader5, pytz, PyYAML, Flask
-# Description: Isole les erreurs par symbole pour empêcher un arrêt complet.
+# Description: Ajout d'un verrou pour empêcher le trading durant le premier cycle.
 
 import time
 import threading
@@ -107,7 +107,7 @@ def is_within_trading_session(symbol: str, config: dict) -> bool:
 
 def main_trading_loop(state: SharedState):
     """Boucle principale qui orchestre le bot de trading."""
-    logging.info("Démarrage de la boucle de trading v16.2.2 (Symbol-Isolation Hotfix)...")
+    logging.info("Démarrage de la boucle de trading v16.3.0 (First-Cycle-Guard)...")
     config = load_yaml('config.yaml')
     state.update_config(config)
     
@@ -125,6 +125,9 @@ def main_trading_loop(state: SharedState):
         state.update_status("Arrêté", "Aucun symbole valide.", is_emergency=True)
         return
 
+    # --- MODIFICATION CRITIQUE ---
+    is_first_cycle = True
+    
     while not state.is_shutdown():
         try:
             if not connector.check_connection():
@@ -183,15 +186,16 @@ def main_trading_loop(state: SharedState):
                         continue
                 except ValueError:
                     pass
-            # --- MODIFICATION CRITIQUE ---
+            
+            if is_first_cycle:
+                logging.info("Premier cycle d'analyse : le trading est désactivé pour synchronisation.")
+
             for symbol in symbols_to_trade:
                 try:
                     if not is_within_trading_session(symbol, config):
-                        logging.debug(f"Symbole '{symbol}' hors de sa session de trading. Passage au suivant.")
                         continue
 
                     if any(pos.symbol == symbol for pos in all_bot_positions):
-                        logging.debug(f"Un trade est déjà ouvert pour {symbol}. Passage au suivant.")
                         continue
                     
                     risk_manager = RiskManager(config, executor, symbol)
@@ -199,14 +203,13 @@ def main_trading_loop(state: SharedState):
                     ohlc_data = connector.get_ohlc(symbol, timeframe, 300)
                     
                     if ohlc_data is None or ohlc_data.empty:
-                        logging.warning(f"Aucune donnée OHLC disponible pour {symbol} sur le timeframe {timeframe}.")
                         continue
 
                     detector = PatternDetector(config)
                     trade_signal = detector.detect_patterns(ohlc_data, connector, symbol)
                     state.update_symbol_patterns(symbol, detector.get_detected_patterns_info())
 
-                    if trade_signal:
+                    if trade_signal and not is_first_cycle: # --- MODIFICATION CRITIQUE ---
                         direction, pattern_name = trade_signal['direction'], trade_signal['pattern']
                         logging.info(f"SIGNAL VALIDE sur {symbol}: [{pattern_name}] en direction de {direction}.")
                         
@@ -228,7 +231,11 @@ def main_trading_loop(state: SharedState):
             next_candle_epoch = (now_utc // timeframe_seconds + 1) * timeframe_seconds
             sleep_duration = max(1, next_candle_epoch - now_utc)
             
-            logging.info(f"Cycle terminé. Synchronisation sur la prochaine bougie. Attente de {sleep_duration:.0f} secondes.")
+            if is_first_cycle:
+                logging.info("Fin du cycle de synchronisation. Le trading sera activé au prochain cycle.")
+                is_first_cycle = False # Fin du premier cycle
+            
+            logging.info(f"Cycle terminé. Attente de {sleep_duration:.0f} secondes.")
             time.sleep(sleep_duration)
 
         except (ConnectionError, BrokenPipeError) as e:
