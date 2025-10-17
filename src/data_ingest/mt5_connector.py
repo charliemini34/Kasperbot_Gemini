@@ -1,7 +1,7 @@
 # Fichier: src/data_ingest/mt5_connector.py
-# Version: 14.0.0 (Guardian+ Enhanced)
+# Version: 14.0.1 (Connection-Hardened)
 # Dépendances: MetaTrader5, pandas, logging, time
-# Description: Connecteur MT5 robuste avec une logique de reconnexion améliorée et une gestion des erreurs.
+# Description: Connecteur MT5 robuste avec une logique de reconnexion améliorée.
 
 import MetaTrader5 as mt5
 import pandas as pd
@@ -23,13 +23,12 @@ class MT5Connector:
         """Initialise ou réinitialise la connexion au terminal MT5 avec des tentatives de reconnexion."""
         self.log.info("Tentative de connexion à MetaTrader 5...")
         
-        # S'assure de couper une connexion précédente avant d'en établir une nouvelle.
-        if self.check_connection():
-            self.log.info("Une connexion est déjà active. Tentative de réinitialisation.")
+        for i in range(5):
+            # --- MODIFICATION ---
+            # S'assure de couper toute connexion précédente avant une nouvelle tentative.
             self._connection.shutdown()
             time.sleep(1)
 
-        for i in range(5): # Tente de se connecter 5 fois
             if self._connection.initialize(
                 login=self._credentials['login'],
                 password=self._credentials['password'],
@@ -39,7 +38,7 @@ class MT5Connector:
                 return True
             else:
                 self.log.error(f"Échec de l'initialisation de MT5 (tentative {i+1}/5): {self._connection.last_error()}")
-                time.sleep(i * 2) # Attente exponentielle (0, 2, 4, 6, 8 secondes)
+                time.sleep(i * 2)
         
         return False
 

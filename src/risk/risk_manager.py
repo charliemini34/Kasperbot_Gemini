@@ -1,5 +1,5 @@
 # Fichier: src/risk/risk_manager.py
-# Version: 15.1.0 (Guardian+ Hardened)
+# Version: 16.0.0 (Guardian+ Hardened)
 # Dépendances: MetaTrader5, pandas, numpy, logging, pytz, src.constants
 
 import MetaTrader5 as mt5
@@ -17,21 +17,21 @@ class RiskManager:
     """
     Gère le risque des trades avec des garde-fous essentiels, des calculs précis,
     et une gestion des erreurs renforcée.
-    v15.1.0: Ajout de type hinting, docstrings et gestion d'erreurs plus spécifique.
+    v16.0.0: Calcul de volume corrigé, conversion de devises améliorée.
     """
     def __init__(self, config: dict, executor, symbol: str):
         self.log = logging.getLogger(self.__class__.__name__)
         self._config: Dict = config
         self._executor = executor
         self._symbol: str = symbol
-        
+
         self.symbol_info = self._executor._mt5.symbol_info(self._symbol)
         self.account_info = self._executor._mt5.account_info()
-        
+
         if not self.symbol_info or not self.account_info:
             self.log.critical(f"Impossible d'obtenir les informations pour le symbole {self._symbol} ou pour le compte.")
             raise ValueError("Informations de compte ou de symbole MT5 manquantes.")
-            
+
         self.point: float = self.symbol_info.point
         self.digits: int = self.symbol_info.digits
 
@@ -41,19 +41,18 @@ class RiskManager:
         loss_limit_percent = risk_settings.get('daily_loss_limit_percent', 2.0)
         if loss_limit_percent <= 0:
             return False, 0.0
-        
+
         try:
-            broker_tz = pytz.timezone("EET")
-            now_in_broker_tz = datetime.now(broker_tz)
-            today_start_broker_tz = now_in_broker_tz.replace(hour=0, minute=0, second=0, microsecond=0)
+            # MT5 deals times are in UTC.
+            today_start_utc = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
             
-            history_deals = self._executor._mt5.history_deals_get(today_start_broker_tz, datetime.now())
-            if history_deals is None: 
+            history_deals = self._executor._mt5.history_deals_get(today_start_utc, datetime.utcnow())
+            if history_deals is None:
                 self.log.warning("Impossible de récupérer l'historique des transactions pour la limite de perte journalière.")
                 return False, 0.0
 
             magic_number = self._config.get('trading_settings', {}).get('magic_number', 0)
-            daily_pnl = sum(deal.profit for deal in history_deals if deal.magic == magic_number)
+            daily_pnl = sum(deal.profit for deal in history_deals if deal.magic == magic_number and deal.entry == 1) # deal.entry == 1 means exit deals
             
             loss_limit_amount = (self.account_info.equity * loss_limit_percent) / 100.0
             
@@ -116,7 +115,7 @@ class RiskManager:
             if not conversion_rate or conversion_rate <= 0:
                 self.log.error(f"Impossible d'obtenir un taux de conversion valide pour {profit_currency}->{self.account_info.currency}. Annulation.")
                 return 0.0
-            loss_per_lot_account_currency /= conversion_rate
+            loss_per_lot_account_currency *= conversion_rate # Corrected logic: multiply by rate
             self.log.debug(f"4. Conversion: {profit_currency}/{self.account_info.currency} @ {conversion_rate:.5f} -> Perte/Lot en devise du compte: {loss_per_lot_account_currency:.2f}")
         else:
             self.log.debug("4. Pas de conversion de devise nécessaire.")
@@ -128,11 +127,17 @@ class RiskManager:
         volume = risk_amount_account_currency / loss_per_lot_account_currency
         self.log.debug(f"5. Volume brut: {risk_amount_account_currency:.2f} / {loss_per_lot_account_currency:.2f} = {volume:.4f} lots")
 
+        # --- MODIFICATION CRITIQUE ---
         volume_step = self.symbol_info.volume_step
-        volume = math.floor(volume / volume_step) * volume_step
-        final_volume = round(max(self.symbol_info.volume_min, min(self.symbol_info.volume_max, volume)), 2)
-        
-        self.log.debug(f"6. Volume final ajusté: {final_volume:.2f} (Min: {self.symbol_info.volume_min}, Max: {self.symbol_info.volume_max}, Step: {volume_step})")
+        if volume_step > 0:
+            volume = math.floor(volume / volume_step) * volume_step
+        else:
+             self.log.warning("Volume step is zero, cannot adjust volume.")
+             return 0.0
+
+        final_volume = max(0, min(self.symbol_info.volume_max, volume))
+
+        self.log.debug(f"6. Volume final ajusté: {final_volume:.4f} (Min: {self.symbol_info.volume_min}, Max: {self.symbol_info.volume_max}, Step: {volume_step})")
         self.log.debug("--- FIN DU CALCUL DE VOLUME ---")
         return final_volume
 
@@ -167,17 +172,29 @@ class RiskManager:
     def get_conversion_rate(self, from_currency: str, to_currency: str) -> Optional[float]:
         if from_currency == to_currency: return 1.0
         
+        # Direct pair
         pair1 = f"{from_currency}{to_currency}"
         info1 = self._executor._mt5.symbol_info_tick(pair1)
         if info1 and info1.ask > 0:
-            self.log.debug(f"Taux de change direct trouvé pour {pair1}: {1.0 / info1.ask}")
-            return 1.0 / info1.ask
+            self.log.debug(f"Taux de change direct trouvé pour {pair1}: {info1.ask}")
+            return info1.ask
 
+        # Inverse pair
         pair2 = f"{to_currency}{from_currency}"
         info2 = self._executor._mt5.symbol_info_tick(pair2)
         if info2 and info2.bid > 0:
-            self.log.debug(f"Taux de change inverse trouvé pour {pair2}: {info2.bid}")
-            return info2.bid
+            self.log.debug(f"Taux de change inverse trouvé pour {pair2}: {1.0 / info2.bid}")
+            return 1.0 / info2.bid
+
+        # Cross-currency via USD
+        for pivot in ["USD", "EUR", "GBP"]:
+             if from_currency != pivot and to_currency != pivot:
+                 rate1 = self.get_conversion_rate(from_currency, pivot)
+                 rate2 = self.get_conversion_rate(pivot, to_currency)
+                 if rate1 and rate2:
+                     cross_rate = rate1 * rate2
+                     self.log.debug(f"Taux de change croisé trouvé via {pivot}: {cross_rate}")
+                     return cross_rate
 
         self.log.error(f"Impossible de trouver une paire de conversion pour {from_currency} -> {to_currency}")
         return None

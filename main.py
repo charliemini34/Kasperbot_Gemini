@@ -1,7 +1,7 @@
 # Fichier: main.py
-# Version: 16.2.1 (Hotfix-Indentation)
+# Version: 16.2.2 (Symbol-Isolation Hotfix)
 # Dépendances: MetaTrader5, pytz, PyYAML, Flask
-# Description: Correction d'une IndentationError dans la fonction setup_logging.
+# Description: Isole les erreurs par symbole pour empêcher un arrêt complet.
 
 import time
 import threading
@@ -107,7 +107,7 @@ def is_within_trading_session(symbol: str, config: dict) -> bool:
 
 def main_trading_loop(state: SharedState):
     """Boucle principale qui orchestre le bot de trading."""
-    logging.info("Démarrage de la boucle de trading v16.2.1 (Hotfix-Indentation)...")
+    logging.info("Démarrage de la boucle de trading v16.2.2 (Symbol-Isolation Hotfix)...")
     config = load_yaml('config.yaml')
     state.update_config(config)
     
@@ -183,16 +183,17 @@ def main_trading_loop(state: SharedState):
                         continue
                 except ValueError:
                     pass
-
+            # --- MODIFICATION CRITIQUE ---
             for symbol in symbols_to_trade:
-                if not is_within_trading_session(symbol, config):
-                    logging.debug(f"Symbole '{symbol}' hors de sa session de trading. Passage au suivant.")
-                    continue
-
-                if any(pos.symbol == symbol for pos in all_bot_positions):
-                    logging.debug(f"Un trade est déjà ouvert pour {symbol}. Passage au suivant.")
-                    continue
                 try:
+                    if not is_within_trading_session(symbol, config):
+                        logging.debug(f"Symbole '{symbol}' hors de sa session de trading. Passage au suivant.")
+                        continue
+
+                    if any(pos.symbol == symbol for pos in all_bot_positions):
+                        logging.debug(f"Un trade est déjà ouvert pour {symbol}. Passage au suivant.")
+                        continue
+                    
                     risk_manager = RiskManager(config, executor, symbol)
                     timeframe = config['trading_settings'].get('timeframe', 'M15')
                     ohlc_data = connector.get_ohlc(symbol, timeframe, 300)
