@@ -1,5 +1,5 @@
 # Fichier: src/risk/risk_manager.py
-# Version: 17.0.1 (Signal-Validation-Fix)
+# Version: 17.0.2 (Volume-Debug-Logging)
 # Dépendances: MetaTrader5, pandas, numpy, logging, pytz, src.constants
 
 import MetaTrader5 as mt5
@@ -16,7 +16,7 @@ from src.constants import BUY, SELL
 class RiskManager:
     """
     Gère le risque avec une stratégie de TP configurable et une validation des signaux.
-    v17.0.1: Ajout de la validation du dictionnaire de signal.
+    v17.0.2: Ajout de logs pour déboguer le calcul de volume (min et step).
     """
     def __init__(self, config: dict, executor, symbol: str):
         self.log = logging.getLogger(self.__class__.__name__)
@@ -77,8 +77,13 @@ class RiskManager:
 
             ideal_volume = self._calculate_volume(equity, risk_percent, price, ideal_sl)
 
-            if ideal_volume < self.symbol_info.volume_min:
-                self.log.warning(f"Le volume idéal ({ideal_volume:.4f}) est inférieur au min ({self.symbol_info.volume_min}). Trade annulé.")
+            # --- MODIFICATION : Ajout de logs de débogage ---
+            vol_min_from_api = self.symbol_info.volume_min
+            vol_step_from_api = self.symbol_info.volume_step
+            self.log.debug(f"DEBUG VOLUME pour {self._symbol}: Vol Calculé={ideal_volume:.4f}, Vol Min API={vol_min_from_api}, Vol Step API={vol_step_from_api}")
+            
+            if ideal_volume < vol_min_from_api:
+                self.log.warning(f"Le volume idéal ({ideal_volume:.4f}) est inférieur au min API ({vol_min_from_api}). Trade annulé.")
                 return 0.0, 0.0, 0.0
                 
             return ideal_volume, ideal_sl, ideal_tp
@@ -119,18 +124,20 @@ class RiskManager:
             return 0.0
 
         volume = risk_amount_account_currency / loss_per_lot_account_currency
-        self.log.debug(f"5. Volume brut: {risk_amount_account_currency:.2f} / {loss_per_lot_account_currency:.2f} = {volume:.4f} lots")
+        self.log.debug(f"5. Volume brut: {volume:.6f} lots ({risk_amount_account_currency:.2f} / {loss_per_lot_account_currency:.2f})")
 
         volume_step = self.symbol_info.volume_step
         if volume_step > 0:
+            # --- MODIFICATION : Log avant ajustement ---
+            self.log.debug(f"5b. Avant ajustement Step ({volume_step}): Volume = {volume:.6f}")
             volume = math.floor(volume / volume_step) * volume_step
         else:
-             self.log.warning("Volume step is zero, cannot adjust volume.")
+             self.log.warning("Volume step is zero or negative, cannot adjust volume.")
              return 0.0
 
         final_volume = max(0, min(self.symbol_info.volume_max, volume))
 
-        self.log.debug(f"6. Volume final ajusté: {final_volume:.4f} (Min: {self.symbol_info.volume_min}, Max: {self.symbol_info.volume_max}, Step: {volume_step})")
+        self.log.debug(f"6. Volume final ajusté: {final_volume:.4f} (Min API: {self.symbol_info.volume_min}, Max API: {self.symbol_info.volume_max}, Step API: {volume_step})")
         self.log.debug("--- FIN DU CALCUL DE VOLUME ---")
         return final_volume
 
@@ -203,6 +210,17 @@ class RiskManager:
         if ohlc_data is None or ohlc_data.empty or len(ohlc_data) < period:
             return None
         
+        # S'assurer que les colonnes sont présentes et que les données sont numériques
+        required_cols = ['high', 'low', 'close']
+        if not all(col in ohlc_data.columns for col in required_cols):
+             self.log.error(f"Colonnes manquantes pour calculer l'ATR: {required_cols}")
+             return None
+        ohlc_data[required_cols] = ohlc_data[required_cols].apply(pd.to_numeric, errors='coerce')
+        ohlc_data.dropna(subset=required_cols, inplace=True)
+        if len(ohlc_data) < period:
+             return None
+
+        # Calcul de l'ATR
         high_low = ohlc_data['high'] - ohlc_data['low']
         high_close = np.abs(ohlc_data['high'] - ohlc_data['close'].shift())
         low_close = np.abs(ohlc_data['low'] - ohlc_data['close'].shift())
@@ -210,7 +228,11 @@ class RiskManager:
         ranges = pd.concat([high_low, high_close, low_close], axis=1)
         true_range = np.max(ranges, axis=1)
         
-        return true_range.ewm(alpha=1/period, adjust=False).mean().iloc[-1]
+        # Utilisation de ewm (Exponential Moving Average) qui est plus standard pour l'ATR
+        atr_series = true_range.ewm(span=period, adjust=False).mean()
+        
+        return atr_series.iloc[-1]
+
 
     def manage_open_positions(self, positions: list, current_tick, ohlc_data: pd.DataFrame):
         if not positions or not current_tick or ohlc_data is None or ohlc_data.empty: return
@@ -230,13 +252,15 @@ class RiskManager:
             pnl_pips = 0.0
             if pos.type == mt5.ORDER_TYPE_BUY:
                 pnl_pips = (tick.bid - pos.price_open) / self.point
-                if pos.sl < pos.price_open and pnl_pips >= trigger_pips:
+                # Vérifier si SL est différent de 0 ET inférieur au prix d'entrée
+                if pos.sl != 0 and pos.sl < pos.price_open and pnl_pips >= trigger_pips:
                     breakeven_sl = pos.price_open + (pips_plus * self.point)
                     self.log.info(f"BREAK-EVEN déclenché pour le ticket #{pos.ticket}. Nouveau SL: {breakeven_sl:.{self.digits}f}")
                     self._executor.modify_position(pos.ticket, breakeven_sl, pos.tp)
             elif pos.type == mt5.ORDER_TYPE_SELL:
                 pnl_pips = (pos.price_open - tick.ask) / self.point
-                if (pos.sl == 0 or pos.sl > pos.price_open) and pnl_pips >= trigger_pips:
+                 # Vérifier si SL est différent de 0 ET supérieur au prix d'entrée
+                if pos.sl != 0 and pos.sl > pos.price_open and pnl_pips >= trigger_pips:
                     breakeven_sl = pos.price_open - (pips_plus * self.point)
                     self.log.info(f"BREAK-EVEN déclenché pour le ticket #{pos.ticket}. Nouveau SL: {breakeven_sl:.{self.digits}f}")
                     self._executor.modify_position(pos.ticket, breakeven_sl, pos.tp)
@@ -254,17 +278,23 @@ class RiskManager:
         
         for pos in positions:
             new_sl = pos.sl
+            current_sl = pos.sl # Garder une trace du SL actuel pour comparaison
+
             if pos.type == mt5.ORDER_TYPE_BUY:
                 if (tick.bid - pos.price_open) >= (atr * activation_multiple):
                     potential_new_sl = tick.bid - (atr * trailing_multiple)
-                    if potential_new_sl > pos.sl:
+                    # S'assurer que le nouveau SL est supérieur au SL actuel ET au prix d'entrée (sécurité)
+                    if potential_new_sl > current_sl and potential_new_sl > pos.price_open:
                         new_sl = potential_new_sl
             elif pos.type == mt5.ORDER_TYPE_SELL:
                 if (pos.price_open - tick.ask) >= (atr * activation_multiple):
                     potential_new_sl = tick.ask + (atr * trailing_multiple)
-                    if new_sl == 0 or potential_new_sl < new_sl:
+                     # S'assurer que le nouveau SL est inférieur au SL actuel (si SL non nul) ET au prix d'entrée
+                    if (current_sl == 0 or potential_new_sl < current_sl) and potential_new_sl < pos.price_open:
                         new_sl = potential_new_sl
                         
-            if new_sl != pos.sl:
-                self.log.info(f"TRAILING STOP: Mise à jour du SL pour #{pos.ticket} à {new_sl:.{self.digits}f}")
-                self._executor.modify_position(pos.ticket, new_sl, pos.tp)
+            # Arrondir avant de comparer et de modifier
+            new_sl_rounded = round(new_sl, self.digits)
+            if new_sl_rounded != round(current_sl, self.digits):
+                self.log.info(f"TRAILING STOP: Mise à jour du SL pour #{pos.ticket} à {new_sl_rounded:.{self.digits}f}")
+                self._executor.modify_position(pos.ticket, new_sl_rounded, pos.tp)

@@ -1,6 +1,7 @@
 # Fichier: src/execution/mt5_executor.py
-# Version: 15.1.0 (Pro-Journaling-Integration)
+# Version: 15.3.0 (Execution-Streamlined)
 # Dépendances: MetaTrader5, pandas, logging, src.journal.professional_journal
+# Description: Simplifie execute_trade pour utiliser les params calculés par main.py.
 
 import MetaTrader5 as mt5
 import logging
@@ -8,18 +9,21 @@ import pandas as pd
 import os
 from datetime import datetime, timedelta
 from src.constants import BUY, SELL
-from src.journal.professional_journal import ProfessionalJournal # --- NOUVELLE IMPORTATION ---
+from src.journal.professional_journal import ProfessionalJournal
+
+# On importe RiskManager juste pour le type hinting, pas pour l'utiliser directement ici
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from src.risk.risk_manager import RiskManager
 
 class MT5Executor:
-    def __init__(self, mt5_connection, config: dict): # --- SIGNATURE MODIFIÉE ---
+    def __init__(self, mt5_connection, config: dict):
         self._mt5 = mt5_connection
         self.log = logging.getLogger(self.__class__.__name__)
         self.history_file = 'trade_history.csv'
         self._trade_context = {}
-        # --- NOUVELLE LIGNE ---
         self.professional_journal = ProfessionalJournal(config)
 
-    # ... (les fonctions get_open_positions, execute_trade, place_order restent inchangées) ...
     def get_open_positions(self, symbol: str = None, magic: int = 0) -> list:
         try:
             positions = self._mt5.positions_get(symbol=symbol) if symbol else self._mt5.positions_get()
@@ -32,34 +36,43 @@ class MT5Executor:
             self.log.error(f"Erreur lors de la récupération des positions: {e}", exc_info=True)
             return []
 
-    def execute_trade(self, account_info, risk_manager, symbol, direction, ohlc_data, pattern_name, magic_number):
-        """Orchestre le placement d'un trade avec une journalisation détaillée."""
+    # --- MODIFICATION MAJEURE ---
+    # La fonction reçoit maintenant sl et tp calculés par main.py
+    def execute_trade(self, account_info, risk_manager: 'RiskManager', symbol: str, direction: str, 
+                        volume: float, sl: float, tp: float, pattern_name: str, magic_number: int):
+        """Place l'ordre de trade avec les paramètres SL/TP déjà calculés."""
         self.log.info(f"--- DÉBUT DE L'EXÉCUTION DU TRADE POUR {symbol} ---")
         
-        trade_type = mt5.ORDER_TYPE_BUY if direction == BUY else mt5.ORDER_TYPE_SELL
         price_info = self._mt5.symbol_info_tick(symbol)
-        
         if not price_info:
             self.log.error(f"Impossible d'obtenir le tick pour {symbol}. Ordre annulé.")
             return
 
         price = price_info.ask if direction == BUY else price_info.bid
-        volume, sl, tp = risk_manager.calculate_trade_parameters(account_info.equity, price, direction, ohlc_data)
-
+        
+        # Le volume, sl, tp sont maintenant reçus en argument, plus besoin de les recalculer ici
         if volume > 0:
             self.log.info(f"Paramètres de l'ordre: {direction} {volume:.2f} lot(s) de {symbol} @ {price:.5f}, SL={sl:.5f}, TP={tp:.5f}")
+            trade_type = mt5.ORDER_TYPE_BUY if direction == BUY else mt5.ORDER_TYPE_SELL
             result = self.place_order(symbol, trade_type, volume, price, sl, tp, magic_number, pattern_name)
             
             if result and result.order > 0:
-                # Stocker le contexte pour l'archivage futur
+                # Calcul de l'ATR ici juste pour l'archivage, utilise les données OHLC du risk_manager
+                ohlc_data_for_atr = risk_manager._executor._mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M15, 0, 100) # Récupère données pour ATR
+                atr_value = 0
+                if ohlc_data_for_atr is not None:
+                     df_atr = pd.DataFrame(ohlc_data_for_atr)
+                     atr_value = risk_manager.calculate_atr(df_atr, 14) or 0
+
                 self._trade_context[result.order] = {
                     'symbol': symbol, 'direction': direction,
                     'open_time': datetime.utcnow().isoformat(),
                     'pattern_trigger': pattern_name,
-                    'volatility_atr': risk_manager.calculate_atr(ohlc_data, 14) or 0
+                    'volatility_atr': atr_value 
                 }
         else:
-            self.log.warning(f"Trade sur {symbol} annulé car le volume est de 0.0.")
+            # Ce cas ne devrait plus se produire car le check est fait dans main.py
+            self.log.warning(f"Execute_trade appelé avec volume 0 pour {symbol}. Logique anormale.")
 
     def place_order(self, symbol, order_type, volume, price, sl, tp, magic_number, pattern_name):
         """Place un ordre de marché avec une gestion robuste des erreurs et un remplissage IOC."""
@@ -96,6 +109,7 @@ class MT5Executor:
         else:
             self.log.error(f"Échec de l'envoi de l'ordre: retcode={result.retcode}, commentaire={result.comment}")
             return None
+
     def check_for_closed_trades(self, magic_number: int):
         """Vérifie et archive les trades fermés en se basant sur l'historique."""
         try:
@@ -127,7 +141,6 @@ class MT5Executor:
                             'volatility_atr': context['volatility_atr']
                         }
                         self._archive_trade(trade_record)
-                        # --- NOUVELLE LIGNE ---
                         self.professional_journal.record_trade(trade_record, self.get_account_info())
                     else:
                          self.log.warning(f"Contexte trouvé pour le trade fermé #{ticket}, mais le deal de sortie est manquant.")
@@ -135,8 +148,9 @@ class MT5Executor:
         except Exception as e:
             self.log.error(f"Erreur lors de la vérification des trades fermés: {e}", exc_info=True)
 
+
     def _archive_trade(self, trade_record: dict):
-        # ... (Fonction inchangée)
+        """Archive un trade dans un fichier CSV."""
         try:
             df = pd.DataFrame([trade_record])
             file_exists = os.path.exists(self.history_file)
@@ -144,6 +158,7 @@ class MT5Executor:
             self.log.info(f"Trade #{trade_record['ticket']} archivé avec un PnL de {trade_record['pnl']:.2f}$.")
         except IOError as e:
             self.log.error(f"Erreur d'écriture lors de l'archivage du trade #{trade_record['ticket']}: {e}")
+
     def get_account_info(self):
         try:
             return self._mt5.account_info()

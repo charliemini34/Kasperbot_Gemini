@@ -1,7 +1,7 @@
 # Fichier: main.py
-# Version: 17.0.1 (SMC-Targeting-Fix)
+# Version: 17.0.2 (Executor-Call-Fix)
 # Dépendances: MetaTrader5, pytz, PyYAML, Flask
-# Description: Corrige l'appel à calculate_trade_parameters.
+# Description: Corrige l'appel à executor.execute_trade pour passer volume, sl, tp.
 
 import time
 import threading
@@ -107,7 +107,7 @@ def is_within_trading_session(symbol: str, config: dict) -> bool:
 
 def main_trading_loop(state: SharedState):
     """Boucle principale qui orchestre le bot de trading."""
-    logging.info("Démarrage de la boucle de trading v17.0.1 (SMC-Targeting-Fix)...")
+    logging.info("Démarrage de la boucle de trading v17.0.2 (Executor-Call-Fix)...")
     config = load_yaml('config.yaml')
     state.update_config(config)
     
@@ -217,8 +217,10 @@ def main_trading_loop(state: SharedState):
                         )
                         
                         if volume > 0:
+                            # --- MODIFICATION DE L'APPEL ---
                             executor.execute_trade(
-                                account_info, risk_manager, symbol, trade_signal['direction'], ohlc_data, 
+                                account_info, risk_manager, symbol, trade_signal['direction'], 
+                                volume, sl, tp, # Passer volume, sl, tp
                                 trade_signal['pattern'], magic_number
                             )
                         else:
@@ -246,6 +248,10 @@ def main_trading_loop(state: SharedState):
             logging.error(f"Erreur de connexion critique: {e}", exc_info=True)
             state.update_status("Déconnecté", f"Erreur de connexion: {e}", is_emergency=True)
             time.sleep(30)
+        # --- MODIFICATION : Capture spécifique de KeyboardInterrupt ---
+        except KeyboardInterrupt:
+            logging.info("Arrêt manuel détecté (Ctrl+C).")
+            state.shutdown() # Signale l'arrêt aux autres threads
         except Exception as e:
             logging.critical(f"ERREUR CRITIQUE non gérée dans la boucle principale: {e}", exc_info=True)
             state.update_status("ERREUR CRITIQUE", str(e), is_emergency=True)
