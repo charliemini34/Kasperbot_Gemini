@@ -1,6 +1,7 @@
 # Fichier: src/risk/risk_manager.py
-# Version: 17.0.2 (Volume-Debug-Logging)
+# Version: 17.0.4 (Final-Volume-Rounding)
 # Dépendances: MetaTrader5, pandas, numpy, logging, pytz, src.constants
+# Description: Restaure l'arrondi correct au volume_step dans _calculate_volume.
 
 import MetaTrader5 as mt5
 import logging
@@ -15,8 +16,8 @@ from src.constants import BUY, SELL
 
 class RiskManager:
     """
-    Gère le risque avec une stratégie de TP configurable et une validation des signaux.
-    v17.0.2: Ajout de logs pour déboguer le calcul de volume (min et step).
+    Gère le risque avec une stratégie de TP configurable et arrondi de volume correct.
+    v17.0.4: Assure l'arrondi correct au volume_step pour tous les actifs.
     """
     def __init__(self, config: dict, executor, symbol: str):
         self.log = logging.getLogger(self.__class__.__name__)
@@ -75,71 +76,84 @@ class RiskManager:
                 self.log.error(f"SL/TP invalide ou trop serré. SL: {ideal_sl}, TP: {ideal_tp}. Trade annulé.")
                 return 0.0, 0.0, 0.0
 
-            ideal_volume = self._calculate_volume(equity, risk_percent, price, ideal_sl)
+            # Calcul du volume, correctement arrondi au step par _calculate_volume
+            final_volume = self._calculate_volume(equity, risk_percent, price, ideal_sl)
 
-            # --- MODIFICATION : Ajout de logs de débogage ---
             vol_min_from_api = self.symbol_info.volume_min
             vol_step_from_api = self.symbol_info.volume_step
-            self.log.debug(f"DEBUG VOLUME pour {self._symbol}: Vol Calculé={ideal_volume:.4f}, Vol Min API={vol_min_from_api}, Vol Step API={vol_step_from_api}")
+            self.log.debug(f"DEBUG VOLUME pour {self._symbol}: Vol Final={final_volume:.4f}, Vol Min API={vol_min_from_api}, Vol Step API={vol_step_from_api}")
             
-            if ideal_volume < vol_min_from_api:
-                self.log.warning(f"Le volume idéal ({ideal_volume:.4f}) est inférieur au min API ({vol_min_from_api}). Trade annulé.")
-                return 0.0, 0.0, 0.0
-                
-            return ideal_volume, ideal_sl, ideal_tp
+            # Vérification finale par rapport au minimum API
+            if final_volume < vol_min_from_api:
+                # Vérification spéciale pour 0.0 car math.floor peut donner 0 si vol < step
+                if final_volume == 0.0 and vol_min_from_api > 0:
+                     self.log.warning(f"Le volume calculé ({final_volume:.4f}), après ajustement au step ({vol_step_from_api}), est inférieur au min API ({vol_min_from_api}). Trade annulé.")
+                     return 0.0, 0.0, 0.0
+                elif final_volume != 0.0 : # Si non nul mais < min (cas rare)
+                     self.log.warning(f"Le volume final ({final_volume:.4f}) est inférieur au min API ({vol_min_from_api}). Trade annulé.")
+                     return 0.0, 0.0, 0.0
+
+            # Vérification que le volume n'est pas nul (peut arriver si floor ramène à 0)
+            if final_volume <= 0:
+                 self.log.warning(f"Le volume final calculé pour {self._symbol} est zéro. Trade annulé.")
+                 return 0.0, 0.0, 0.0
+
+            return final_volume, ideal_sl, ideal_tp
 
         except Exception as e:
             self.log.error(f"Erreur inattendue lors du calcul des paramètres de trade : {e}", exc_info=True)
             return 0.0, 0.0, 0.0
     
     def _calculate_volume(self, equity: float, risk_percent: float, entry_price: float, sl_price: float) -> float:
-        self.log.debug("--- DÉBUT DU CALCUL DE VOLUME SÉCURISÉ ---")
+        self.log.debug("--- DÉBUT DU CALCUL DE VOLUME ---")
         
         risk_amount_account_currency = equity * risk_percent
-        self.log.debug(f"1. Capital: {equity:.2f} | Risque: {risk_percent:.2%} -> Montant à risquer: {risk_amount_account_currency:.2f} {self.account_info.currency}")
+        self.log.debug(f"1. Capital: {equity:.2f} | Risque: {risk_percent:.2%} -> Montant Risqué: {risk_amount_account_currency:.2f} {self.account_info.currency}")
 
         sl_distance_price = abs(entry_price - sl_price)
         if sl_distance_price < self.point:
-            self.log.error("Distance du SL quasi nulle. Annulation du calcul de volume.")
+            self.log.error("Distance SL quasi nulle.")
             return 0.0
-        self.log.debug(f"2. Distance SL: {sl_distance_price:.{self.digits}f} (en prix de l'actif)")
+        self.log.debug(f"2. Distance SL: {sl_distance_price:.{self.digits}f}")
 
         loss_per_lot_profit_currency = sl_distance_price * self.symbol_info.trade_contract_size
         profit_currency = self.symbol_info.currency_profit
-        self.log.debug(f"3. Perte/Lot en devise de profit ({profit_currency}): {loss_per_lot_profit_currency:.2f}")
+        self.log.debug(f"3. Perte/Lot ({profit_currency}): {loss_per_lot_profit_currency:.2f}")
 
         loss_per_lot_account_currency = loss_per_lot_profit_currency
         if profit_currency != self.account_info.currency:
             conversion_rate = self.get_conversion_rate(profit_currency, self.account_info.currency)
             if not conversion_rate or conversion_rate <= 0:
-                self.log.error(f"Impossible d'obtenir un taux de conversion valide pour {profit_currency}->{self.account_info.currency}. Annulation.")
+                self.log.error(f"Taux conversion invalide {profit_currency}->{self.account_info.currency}.")
                 return 0.0
             loss_per_lot_account_currency *= conversion_rate
-            self.log.debug(f"4. Conversion: {profit_currency}/{self.account_info.currency} @ {conversion_rate:.5f} -> Perte/Lot en devise du compte: {loss_per_lot_account_currency:.2f}")
+            self.log.debug(f"4. Conversion @ {conversion_rate:.5f} -> Perte/Lot ({self.account_info.currency}): {loss_per_lot_account_currency:.2f}")
         else:
-            self.log.debug("4. Pas de conversion de devise nécessaire.")
+            self.log.debug("4. Pas de conversion nécessaire.")
 
         if loss_per_lot_account_currency <= 0:
-            self.log.error("La perte par lot calculée est nulle ou négative. Annulation.")
+            self.log.error("Perte par lot nulle ou négative.")
             return 0.0
 
-        volume = risk_amount_account_currency / loss_per_lot_account_currency
-        self.log.debug(f"5. Volume brut: {volume:.6f} lots ({risk_amount_account_currency:.2f} / {loss_per_lot_account_currency:.2f})")
+        raw_volume = risk_amount_account_currency / loss_per_lot_account_currency
+        self.log.debug(f"5. Volume Brut: {raw_volume:.6f} lots")
 
         volume_step = self.symbol_info.volume_step
-        if volume_step > 0:
-            # --- MODIFICATION : Log avant ajustement ---
-            self.log.debug(f"5b. Avant ajustement Step ({volume_step}): Volume = {volume:.6f}")
-            volume = math.floor(volume / volume_step) * volume_step
+        if volume_step <= 0:
+             self.log.warning("Volume step invalide (<= 0). Utilisation du volume brut.")
+             adjusted_volume = raw_volume # Pas d'ajustement possible
         else:
-             self.log.warning("Volume step is zero or negative, cannot adjust volume.")
-             return 0.0
-
-        final_volume = max(0, min(self.symbol_info.volume_max, volume))
-
-        self.log.debug(f"6. Volume final ajusté: {final_volume:.4f} (Min API: {self.symbol_info.volume_min}, Max API: {self.symbol_info.volume_max}, Step API: {volume_step})")
+             # --- MODIFICATION : Arrondi correct au step ---
+             adjusted_volume = math.floor(raw_volume / volume_step) * volume_step
+             self.log.debug(f"6. Volume Ajusté au Step ({volume_step}): {adjusted_volume:.6f}")
+        
+        # Application des limites min/max du broker APRES l'arrondi au step
+        final_volume = max(0, min(self.symbol_info.volume_max, adjusted_volume))
+        
+        self.log.debug(f"7. Volume Final (après min/max): {final_volume:.4f} (Min API: {self.symbol_info.volume_min}, Max API: {self.symbol_info.volume_max})")
         self.log.debug("--- FIN DU CALCUL DE VOLUME ---")
         return final_volume
+
 
     def _calculate_initial_sl_tp(self, price: float, ohlc_data: pd.DataFrame, trade_signal: dict) -> Tuple[float, float]:
         rm_settings = self._config.get('risk_management', {})
@@ -162,7 +176,10 @@ class RiskManager:
             if not tp:
                 self.log.error("Stratégie SMC choisie mais aucune cible de liquidité trouvée dans le signal.")
                 return 0.0, 0.0
-            self.log.debug(f"Stratégie SMC: Cible de liquidité à {tp:.{self.digits}f}")
+            # Petite marge de sécurité pour le TP SMC (ex: 1 pip)
+            tp_offset = self.symbol_info.point * 10
+            tp = tp - tp_offset if direction == BUY else tp + tp_offset
+            self.log.debug(f"Stratégie SMC: Cible liquidité ajustée à {tp:.{self.digits}f}")
 
         elif strategy == "ATR_MULTIPLE":
             tp_multiple = atr_settings.get('tp_multiple', 3.0)
@@ -174,12 +191,14 @@ class RiskManager:
             self.log.error(f"La stratégie SL/TP '{strategy}' n'est pas reconnue.")
             return 0.0, 0.0
         
-        if abs(tp - price) < abs(sl - price):
-            self.log.warning(f"Le TP est plus proche que le SL (Ratio < 1). Le trade pourrait ne pas être profitable.")
+        # Validation Ratio R/R seulement si TP > 0 et SL > 0
+        if tp > 0 and sl > 0 and abs(tp - price) < abs(sl - price):
+            self.log.warning(f"Le TP ({tp:.{self.digits}f}) est plus proche que le SL ({sl:.{self.digits}f}) (Ratio < 1).")
 
         return round(sl, self.digits), round(tp, self.digits)
         
     def get_conversion_rate(self, from_currency: str, to_currency: str) -> Optional[float]:
+        # ... (inchangé) ...
         if from_currency == to_currency: return 1.0
         
         pair1 = f"{from_currency}{to_currency}"
@@ -207,34 +226,40 @@ class RiskManager:
         return None
     
     def calculate_atr(self, ohlc_data: pd.DataFrame, period: int) -> Optional[float]:
+        # ... (inchangé) ...
         if ohlc_data is None or ohlc_data.empty or len(ohlc_data) < period:
             return None
         
-        # S'assurer que les colonnes sont présentes et que les données sont numériques
         required_cols = ['high', 'low', 'close']
         if not all(col in ohlc_data.columns for col in required_cols):
              self.log.error(f"Colonnes manquantes pour calculer l'ATR: {required_cols}")
              return None
-        ohlc_data[required_cols] = ohlc_data[required_cols].apply(pd.to_numeric, errors='coerce')
-        ohlc_data.dropna(subset=required_cols, inplace=True)
-        if len(ohlc_data) < period:
+        # Créer une copie pour éviter SettingWithCopyWarning
+        df_copy = ohlc_data.copy()
+        df_copy[required_cols] = df_copy[required_cols].apply(pd.to_numeric, errors='coerce')
+        df_copy.dropna(subset=required_cols, inplace=True)
+        if len(df_copy) < period:
              return None
 
-        # Calcul de l'ATR
-        high_low = ohlc_data['high'] - ohlc_data['low']
-        high_close = np.abs(ohlc_data['high'] - ohlc_data['close'].shift())
-        low_close = np.abs(ohlc_data['low'] - ohlc_data['close'].shift())
+        high_low = df_copy['high'] - df_copy['low']
+        high_close = np.abs(df_copy['high'] - df_copy['close'].shift())
+        low_close = np.abs(df_copy['low'] - df_copy['close'].shift())
         
         ranges = pd.concat([high_low, high_close, low_close], axis=1)
         true_range = np.max(ranges, axis=1)
         
-        # Utilisation de ewm (Exponential Moving Average) qui est plus standard pour l'ATR
         atr_series = true_range.ewm(span=period, adjust=False).mean()
         
-        return atr_series.iloc[-1]
-
+        # Vérifier si la dernière valeur est NaN
+        last_atr = atr_series.iloc[-1]
+        if pd.isna(last_atr):
+            self.log.warning(f"Calcul ATR a retourné NaN pour la dernière valeur.")
+            return None
+        
+        return last_atr
 
     def manage_open_positions(self, positions: list, current_tick, ohlc_data: pd.DataFrame):
+        # ... (inchangé) ...
         if not positions or not current_tick or ohlc_data is None or ohlc_data.empty: return
         
         risk_settings = self._config.get('risk_management', {})
@@ -245,6 +270,7 @@ class RiskManager:
             self._apply_trailing_stop_atr(positions, current_tick, ohlc_data, risk_settings)
 
     def _apply_breakeven(self, positions: list, tick, be_cfg: dict):
+        # ... (inchangé) ...
         trigger_pips = be_cfg.get('trigger_pips', 150)
         pips_plus = be_cfg.get('pips_plus', 10)
         
@@ -252,20 +278,19 @@ class RiskManager:
             pnl_pips = 0.0
             if pos.type == mt5.ORDER_TYPE_BUY:
                 pnl_pips = (tick.bid - pos.price_open) / self.point
-                # Vérifier si SL est différent de 0 ET inférieur au prix d'entrée
                 if pos.sl != 0 and pos.sl < pos.price_open and pnl_pips >= trigger_pips:
                     breakeven_sl = pos.price_open + (pips_plus * self.point)
                     self.log.info(f"BREAK-EVEN déclenché pour le ticket #{pos.ticket}. Nouveau SL: {breakeven_sl:.{self.digits}f}")
                     self._executor.modify_position(pos.ticket, breakeven_sl, pos.tp)
             elif pos.type == mt5.ORDER_TYPE_SELL:
                 pnl_pips = (pos.price_open - tick.ask) / self.point
-                 # Vérifier si SL est différent de 0 ET supérieur au prix d'entrée
                 if pos.sl != 0 and pos.sl > pos.price_open and pnl_pips >= trigger_pips:
                     breakeven_sl = pos.price_open - (pips_plus * self.point)
                     self.log.info(f"BREAK-EVEN déclenché pour le ticket #{pos.ticket}. Nouveau SL: {breakeven_sl:.{self.digits}f}")
                     self._executor.modify_position(pos.ticket, breakeven_sl, pos.tp)
     
     def _apply_trailing_stop_atr(self, positions: list, tick, ohlc_data: pd.DataFrame, risk_cfg: dict):
+        # ... (inchangé) ...
         ts_cfg = risk_cfg.get('trailing_stop_atr', {})
         atr_cfg = risk_cfg.get('atr_settings', {}).get('default', {})
         
@@ -278,22 +303,19 @@ class RiskManager:
         
         for pos in positions:
             new_sl = pos.sl
-            current_sl = pos.sl # Garder une trace du SL actuel pour comparaison
+            current_sl = pos.sl 
 
             if pos.type == mt5.ORDER_TYPE_BUY:
                 if (tick.bid - pos.price_open) >= (atr * activation_multiple):
                     potential_new_sl = tick.bid - (atr * trailing_multiple)
-                    # S'assurer que le nouveau SL est supérieur au SL actuel ET au prix d'entrée (sécurité)
                     if potential_new_sl > current_sl and potential_new_sl > pos.price_open:
                         new_sl = potential_new_sl
             elif pos.type == mt5.ORDER_TYPE_SELL:
                 if (pos.price_open - tick.ask) >= (atr * activation_multiple):
                     potential_new_sl = tick.ask + (atr * trailing_multiple)
-                     # S'assurer que le nouveau SL est inférieur au SL actuel (si SL non nul) ET au prix d'entrée
                     if (current_sl == 0 or potential_new_sl < current_sl) and potential_new_sl < pos.price_open:
                         new_sl = potential_new_sl
                         
-            # Arrondir avant de comparer et de modifier
             new_sl_rounded = round(new_sl, self.digits)
             if new_sl_rounded != round(current_sl, self.digits):
                 self.log.info(f"TRAILING STOP: Mise à jour du SL pour #{pos.ticket} à {new_sl_rounded:.{self.digits}f}")
