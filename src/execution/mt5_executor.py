@@ -1,7 +1,7 @@
 # Fichier: src/execution/mt5_executor.py
-# Version: 15.3.0 (Execution-Streamlined)
+# Version: 15.3.1 (Final-Volume-Log)
 # Dépendances: MetaTrader5, pandas, logging, src.journal.professional_journal
-# Description: Simplifie execute_trade pour utiliser les params calculés par main.py.
+# Description: Ajoute un log pour voir le volume final avant l'envoi.
 
 import MetaTrader5 as mt5
 import logging
@@ -25,6 +25,7 @@ class MT5Executor:
         self.professional_journal = ProfessionalJournal(config)
 
     def get_open_positions(self, symbol: str = None, magic: int = 0) -> list:
+        # ... (inchangé) ...
         try:
             positions = self._mt5.positions_get(symbol=symbol) if symbol else self._mt5.positions_get()
             if positions is None:
@@ -36,11 +37,9 @@ class MT5Executor:
             self.log.error(f"Erreur lors de la récupération des positions: {e}", exc_info=True)
             return []
 
-    # --- MODIFICATION MAJEURE ---
-    # La fonction reçoit maintenant sl et tp calculés par main.py
     def execute_trade(self, account_info, risk_manager: 'RiskManager', symbol: str, direction: str, 
                         volume: float, sl: float, tp: float, pattern_name: str, magic_number: int):
-        """Place l'ordre de trade avec les paramètres SL/TP déjà calculés."""
+        # ... (inchangé) ...
         self.log.info(f"--- DÉBUT DE L'EXÉCUTION DU TRADE POUR {symbol} ---")
         
         price_info = self._mt5.symbol_info_tick(symbol)
@@ -50,15 +49,17 @@ class MT5Executor:
 
         price = price_info.ask if direction == BUY else price_info.bid
         
-        # Le volume, sl, tp sont maintenant reçus en argument, plus besoin de les recalculer ici
         if volume > 0:
             self.log.info(f"Paramètres de l'ordre: {direction} {volume:.2f} lot(s) de {symbol} @ {price:.5f}, SL={sl:.5f}, TP={tp:.5f}")
             trade_type = mt5.ORDER_TYPE_BUY if direction == BUY else mt5.ORDER_TYPE_SELL
+            
+            # --- MODIFICATION : Log de débogage final ---
+            self.log.debug(f"DEBUG VOLUME FINAL pour {symbol}: Tentative d'envoi avec volume = {volume}")
+            
             result = self.place_order(symbol, trade_type, volume, price, sl, tp, magic_number, pattern_name)
             
             if result and result.order > 0:
-                # Calcul de l'ATR ici juste pour l'archivage, utilise les données OHLC du risk_manager
-                ohlc_data_for_atr = risk_manager._executor._mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M15, 0, 100) # Récupère données pour ATR
+                ohlc_data_for_atr = risk_manager._executor._mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M15, 0, 100) 
                 atr_value = 0
                 if ohlc_data_for_atr is not None:
                      df_atr = pd.DataFrame(ohlc_data_for_atr)
@@ -71,16 +72,16 @@ class MT5Executor:
                     'volatility_atr': atr_value 
                 }
         else:
-            # Ce cas ne devrait plus se produire car le check est fait dans main.py
-            self.log.warning(f"Execute_trade appelé avec volume 0 pour {symbol}. Logique anormale.")
+            self.log.warning(f"Execute_trade appelé avec volume 0 pour {symbol}.")
+
 
     def place_order(self, symbol, order_type, volume, price, sl, tp, magic_number, pattern_name):
-        """Place un ordre de marché avec une gestion robuste des erreurs et un remplissage IOC."""
+        # ... (inchangé) ...
         comment = f"KasperBot-{pattern_name}"[:31]
         request = {
             "action": mt5.TRADE_ACTION_DEAL,
             "symbol": symbol,
-            "volume": float(volume),
+            "volume": float(volume), # Conversion en float ici
             "type": order_type,
             "price": float(price),
             "sl": float(sl),
@@ -108,10 +109,17 @@ class MT5Executor:
             return result
         else:
             self.log.error(f"Échec de l'envoi de l'ordre: retcode={result.retcode}, commentaire={result.comment}")
+            # Log spécifique pour l'erreur de volume
+            if result.retcode == 10014:
+                 symbol_info_debug = self._mt5.symbol_info(symbol)
+                 if symbol_info_debug:
+                     self.log.error(f"DEBUG VOLUME {symbol}: Reçu 10014. Volume envoyé={volume}. Infos Broker: Min={symbol_info_debug.volume_min}, Max={symbol_info_debug.volume_max}, Step={symbol_info_debug.volume_step}, Digits={symbol_info_debug.volume_digits}")
+                 else:
+                     self.log.error(f"DEBUG VOLUME {symbol}: Reçu 10014. Volume envoyé={volume}. Impossible de récupérer les infos symbole.")
             return None
 
     def check_for_closed_trades(self, magic_number: int):
-        """Vérifie et archive les trades fermés en se basant sur l'historique."""
+        # ... (inchangé) ...
         try:
             from_date = datetime.utcnow() - timedelta(days=7)
             history_deals = self._mt5.history_deals_get(from_date, datetime.utcnow())
@@ -150,7 +158,7 @@ class MT5Executor:
 
 
     def _archive_trade(self, trade_record: dict):
-        """Archive un trade dans un fichier CSV."""
+        # ... (inchangé) ...
         try:
             df = pd.DataFrame([trade_record])
             file_exists = os.path.exists(self.history_file)
@@ -160,6 +168,7 @@ class MT5Executor:
             self.log.error(f"Erreur d'écriture lors de l'archivage du trade #{trade_record['ticket']}: {e}")
 
     def get_account_info(self):
+        # ... (inchangé) ...
         try:
             return self._mt5.account_info()
         except Exception as e:
@@ -167,7 +176,7 @@ class MT5Executor:
             return None
     
     def modify_position(self, ticket, sl, tp):
-        """Modifie le SL/TP d'une position ouverte."""
+        # ... (inchangé) ...
         request = {
             "action": mt5.TRADE_ACTION_SLTP,
             "position": ticket,

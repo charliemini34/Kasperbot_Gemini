@@ -1,7 +1,7 @@
 # Fichier: src/risk/risk_manager.py
-# Version: 17.0.4 (Final-Volume-Rounding)
+# Version: 17.0.5 (SMC-TP-Validation)
 # Dépendances: MetaTrader5, pandas, numpy, logging, pytz, src.constants
-# Description: Restaure l'arrondi correct au volume_step dans _calculate_volume.
+# Description: Valide la position du TP SMC par rapport à l'entrée et corrige l'offset SELL.
 
 import MetaTrader5 as mt5
 import logging
@@ -16,8 +16,8 @@ from src.constants import BUY, SELL
 
 class RiskManager:
     """
-    Gère le risque avec une stratégie de TP configurable et arrondi de volume correct.
-    v17.0.4: Assure l'arrondi correct au volume_step pour tous les actifs.
+    Gère le risque avec validation du TP SMC et arrondi de volume correct.
+    v17.0.5: Assure que le TP SMC est toujours du côté profitable de l'entrée.
     """
     def __init__(self, config: dict, executor, symbol: str):
         self.log = logging.getLogger(self.__class__.__name__)
@@ -36,6 +36,7 @@ class RiskManager:
         self.digits: int = self.symbol_info.digits
 
     def is_daily_loss_limit_reached(self) -> Tuple[bool, float]:
+        # ... (inchangé) ...
         risk_settings = self._config.get('risk_management', {})
         loss_limit_percent = risk_settings.get('daily_loss_limit_percent', 2.0)
         if loss_limit_percent <= 0:
@@ -63,6 +64,7 @@ class RiskManager:
             return False, 0.0
 
     def calculate_trade_parameters(self, equity: float, price: float, ohlc_data: pd.DataFrame, trade_signal: dict) -> Tuple[float, float, float]:
+        # ... (inchangé jusqu'à la vérification du volume final) ...
         try:
             if not isinstance(trade_signal, dict) or 'direction' not in trade_signal:
                 self.log.error(f"Signal de trade invalide reçu: {trade_signal}. 'direction' manquante.")
@@ -72,28 +74,25 @@ class RiskManager:
             
             ideal_sl, ideal_tp = self._calculate_initial_sl_tp(price, ohlc_data, trade_signal)
             
-            if ideal_sl == 0 or ideal_tp == 0 or abs(price - ideal_sl) < self.symbol_info.point * 2:
-                self.log.error(f"SL/TP invalide ou trop serré. SL: {ideal_sl}, TP: {ideal_tp}. Trade annulé.")
+            # Vérification renforcée : SL et TP doivent être valides ET différents du prix
+            if ideal_sl <= 0 or ideal_tp <= 0 or abs(price - ideal_sl) < self.symbol_info.point * 2 or abs(price - ideal_tp) < self.symbol_info.point * 2 :
+                self.log.error(f"SL/TP invalide ou trop proche du prix. SL: {ideal_sl}, TP: {ideal_tp}, Prix: {price}. Trade annulé.")
                 return 0.0, 0.0, 0.0
 
-            # Calcul du volume, correctement arrondi au step par _calculate_volume
             final_volume = self._calculate_volume(equity, risk_percent, price, ideal_sl)
 
             vol_min_from_api = self.symbol_info.volume_min
             vol_step_from_api = self.symbol_info.volume_step
             self.log.debug(f"DEBUG VOLUME pour {self._symbol}: Vol Final={final_volume:.4f}, Vol Min API={vol_min_from_api}, Vol Step API={vol_step_from_api}")
             
-            # Vérification finale par rapport au minimum API
             if final_volume < vol_min_from_api:
-                # Vérification spéciale pour 0.0 car math.floor peut donner 0 si vol < step
                 if final_volume == 0.0 and vol_min_from_api > 0:
                      self.log.warning(f"Le volume calculé ({final_volume:.4f}), après ajustement au step ({vol_step_from_api}), est inférieur au min API ({vol_min_from_api}). Trade annulé.")
                      return 0.0, 0.0, 0.0
-                elif final_volume != 0.0 : # Si non nul mais < min (cas rare)
+                elif final_volume != 0.0 : 
                      self.log.warning(f"Le volume final ({final_volume:.4f}) est inférieur au min API ({vol_min_from_api}). Trade annulé.")
                      return 0.0, 0.0, 0.0
 
-            # Vérification que le volume n'est pas nul (peut arriver si floor ramène à 0)
             if final_volume <= 0:
                  self.log.warning(f"Le volume final calculé pour {self._symbol} est zéro. Trade annulé.")
                  return 0.0, 0.0, 0.0
@@ -105,6 +104,7 @@ class RiskManager:
             return 0.0, 0.0, 0.0
     
     def _calculate_volume(self, equity: float, risk_percent: float, entry_price: float, sl_price: float) -> float:
+        # ... (inchangé) ...
         self.log.debug("--- DÉBUT DU CALCUL DE VOLUME ---")
         
         risk_amount_account_currency = equity * risk_percent
@@ -141,13 +141,11 @@ class RiskManager:
         volume_step = self.symbol_info.volume_step
         if volume_step <= 0:
              self.log.warning("Volume step invalide (<= 0). Utilisation du volume brut.")
-             adjusted_volume = raw_volume # Pas d'ajustement possible
+             adjusted_volume = raw_volume 
         else:
-             # --- MODIFICATION : Arrondi correct au step ---
              adjusted_volume = math.floor(raw_volume / volume_step) * volume_step
              self.log.debug(f"6. Volume Ajusté au Step ({volume_step}): {adjusted_volume:.6f}")
         
-        # Application des limites min/max du broker APRES l'arrondi au step
         final_volume = max(0, min(self.symbol_info.volume_max, adjusted_volume))
         
         self.log.debug(f"7. Volume Final (après min/max): {final_volume:.4f} (Min API: {self.symbol_info.volume_min}, Max API: {self.symbol_info.volume_max})")
@@ -160,6 +158,7 @@ class RiskManager:
         strategy = rm_settings.get('sl_tp_strategy', 'ATR_MULTIPLE')
         direction = trade_signal['direction']
 
+        # Calcul SL (commun et basé sur ATR)
         atr_settings = rm_settings.get('atr_settings', {}).get('default', {})
         atr = self.calculate_atr(ohlc_data, atr_settings.get('period', 14))
         if atr is None or atr <= 0:
@@ -170,29 +169,47 @@ class RiskManager:
         sl_distance = atr * sl_multiple
         sl = price - sl_distance if direction == BUY else price + sl_distance
         
+        # Initialisation TP
         tp = 0.0
-        if strategy == "SMC_LIQUIDITY_TARGET":
-            tp = trade_signal.get('target_price')
-            if not tp:
-                self.log.error("Stratégie SMC choisie mais aucune cible de liquidité trouvée dans le signal.")
-                return 0.0, 0.0
-            # Petite marge de sécurité pour le TP SMC (ex: 1 pip)
-            tp_offset = self.symbol_info.point * 10
-            tp = tp - tp_offset if direction == BUY else tp + tp_offset
-            self.log.debug(f"Stratégie SMC: Cible liquidité ajustée à {tp:.{self.digits}f}")
+        tp_calculated = False # Flag pour savoir si on a calculé un TP
 
-        elif strategy == "ATR_MULTIPLE":
+        # Calcul TP basé sur Stratégie SMC
+        if strategy == "SMC_LIQUIDITY_TARGET":
+            target_price = trade_signal.get('target_price')
+            if target_price:
+                # --- MODIFICATION : Validation de la cible SMC ---
+                is_target_valid = False
+                if direction == BUY and target_price > price:
+                    is_target_valid = True
+                elif direction == SELL and target_price < price:
+                    is_target_valid = True
+                
+                if is_target_valid:
+                    # Appliquer un offset pour ne pas viser exactement le niveau
+                    tp_offset = self.symbol_info.point * 10 # Ex: 1 pip de marge
+                    tp = target_price - tp_offset if direction == BUY else target_price + tp_offset # Correction offset SELL
+                    self.log.debug(f"Stratégie SMC: Cible liquidité valide ({target_price:.{self.digits}f}), TP ajusté à {tp:.{self.digits}f}")
+                    tp_calculated = True
+                else:
+                    self.log.warning(f"Stratégie SMC: Cible liquidité ({target_price:.{self.digits}f}) invalide par rapport au prix ({price:.{self.digits}f}). Passage en mode ATR.")
+            else:
+                self.log.warning("Stratégie SMC choisie mais aucune cible de liquidité trouvée. Passage en mode ATR.")
+
+        # Calcul TP basé sur Stratégie ATR (si SMC échoue ou si ATR est choisi)
+        if not tp_calculated: # S'exécute si strategy == "ATR_MULTIPLE" OU si la cible SMC était invalide/manquante
             tp_multiple = atr_settings.get('tp_multiple', 3.0)
             tp_distance = atr * tp_multiple
             tp = price + tp_distance if direction == BUY else price - tp_distance
-            self.log.debug(f"Stratégie ATR: TP calculé à {tp:.{self.digits}f}")
+            self.log.debug(f"Stratégie ATR utilisée: TP calculé à {tp:.{self.digits}f}")
+            tp_calculated = True # Marquer comme calculé
 
-        else:
-            self.log.error(f"La stratégie SL/TP '{strategy}' n'est pas reconnue.")
-            return 0.0, 0.0
-        
-        # Validation Ratio R/R seulement si TP > 0 et SL > 0
-        if tp > 0 and sl > 0 and abs(tp - price) < abs(sl - price):
+        # Vérification finale si aucun TP n'a pu être calculé
+        if not tp_calculated or tp <= 0:
+             self.log.error("Impossible de calculer un TP valide.")
+             return 0.0, 0.0 # Retourne 0 pour SL et TP pour annuler le trade
+
+        # Validation Ratio R/R
+        if sl > 0 and abs(tp - price) < abs(sl - price):
             self.log.warning(f"Le TP ({tp:.{self.digits}f}) est plus proche que le SL ({sl:.{self.digits}f}) (Ratio < 1).")
 
         return round(sl, self.digits), round(tp, self.digits)
@@ -234,7 +251,6 @@ class RiskManager:
         if not all(col in ohlc_data.columns for col in required_cols):
              self.log.error(f"Colonnes manquantes pour calculer l'ATR: {required_cols}")
              return None
-        # Créer une copie pour éviter SettingWithCopyWarning
         df_copy = ohlc_data.copy()
         df_copy[required_cols] = df_copy[required_cols].apply(pd.to_numeric, errors='coerce')
         df_copy.dropna(subset=required_cols, inplace=True)
@@ -250,7 +266,6 @@ class RiskManager:
         
         atr_series = true_range.ewm(span=period, adjust=False).mean()
         
-        # Vérifier si la dernière valeur est NaN
         last_atr = atr_series.iloc[-1]
         if pd.isna(last_atr):
             self.log.warning(f"Calcul ATR a retourné NaN pour la dernière valeur.")

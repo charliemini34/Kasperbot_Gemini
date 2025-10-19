@@ -19,6 +19,7 @@ trading_settings:
   magic_number: 13579
   symbols:
   - XAUUSD
+  - XAGUSD
   - EURUSD
   - GBPUSD
   - NZDUSD
@@ -43,7 +44,7 @@ trading_settings:
 
 risk_management:
   risk_per_trade: 0.01
-  daily_loss_limit_percent: 2.0
+  daily_loss_limit_percent: 20.0
   
   # Choisissez entre "ATR_MULTIPLE" (basé sur la volatilité) 
   # et "SMC_LIQUIDITY_TARGET" (basé sur la structure du marché)
