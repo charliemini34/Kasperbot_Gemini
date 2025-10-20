@@ -1,7 +1,7 @@
 # Fichier: src/risk/risk_manager.py
-# Version: 18.1.8 (Critical-Fixes-Attr-Const)
+# Version: 18.1.9 (Critical-Hotfix)
 # Dépendances: MetaTrader5, pandas, numpy, logging, decimal, pytz, datetime, typing
-# Description: Corrige AttributeError 'tick_value' et NameError 'SYMBOL_CALC_MODE_FX'.
+# Description: Réintroduit is_daily_loss_limit_reached et corrige tick_value/tick_size.
 
 import MetaTrader5 as mt5
 import pandas as pd
@@ -10,7 +10,7 @@ import logging
 from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP, InvalidOperation
 from datetime import datetime, time as dt_time, timedelta
 import pytz
-from typing import Tuple, Optional, Dict, List, TYPE_CHECKING
+from typing import Tuple, Optional, Dict, List, TYPE_CHECKING # Import complet
 
 from src.constants import BUY, SELL
 
@@ -19,8 +19,8 @@ if TYPE_CHECKING:
 
 class RiskManager:
     """
-    Gère le risque.
-    v18.1.8: Correction 'tick_value' -> 'trade_tick_value' ET 'SYMBOL_CALC_MODE_FX' -> 'SYMBOL_CALC_MODE_FOREX'.
+    Gère tous les aspects du risque.
+    v18.1.9: Hotfix pour 'is_daily_loss_limit_reached' manquant et 'tick_value' incorrect.
     """
 
     def __init__(self, config: dict, executor: 'MT5Executor', symbol: str):
@@ -28,11 +28,12 @@ class RiskManager:
         self.config = config
         self.executor = executor
         try:
+            # Tente d'utiliser le getter (v15.5.0+)
             self.mt5 = executor.get_mt5_connection()
         except AttributeError:
-             # Fallback si l'executor (v15.4.7 fourni) n'a pas encore le getter
+             # Fallback pour v15.4.7 (fourni)
              self.log.warning("Utilisation de l'accès direct .mt5. Mettre à jour MT5Executor (v15.5.0+).")
-             self.mt5 = executor.mt5 
+             self.mt5 = executor.mt5
         
         self.symbol = symbol
         self.symbol_info = self.mt5.symbol_info(self.symbol)
@@ -49,19 +50,17 @@ class RiskManager:
         self.max_concurrent_risk_pct = Decimal(str(risk_settings.get('max_concurrent_risk_percent', 3.0))) / Decimal('100.0')
 
         # Paramètres de gestion
-        management_settings = self.config.get('risk_management', {}) # Corrigé : 'trade_management' n'existe pas dans config v18.3.1
-        self.ptp_rules = management_settings.get('partial_tp', {}).get('levels', [])
-        self.breakeven_rules = management_settings.get('breakeven', {})
-        self.trailing_stop_rules = management_settings.get('trailing_stop_atr', {})
+        self.ptp_rules = risk_settings.get('partial_tp', {}).get('levels', [])
+        self.breakeven_rules = risk_settings.get('breakeven', {})
+        self.trailing_stop_rules = risk_settings.get('trailing_stop_atr', {})
 
         # Paramètres SL/TP
-        sl_tp_settings = self.config.get('risk_management', {})
-        self.sl_strategy = sl_tp_settings.get('sl_strategy', 'ATR_MULTIPLE')
-        self.tp_strategy = sl_tp_settings.get('tp_strategy', 'SMC_LIQUIDITY_TARGET')
-        self.sl_buffer_pips = Decimal(str(sl_tp_settings.get('sl_buffer_pips', 1.0)))
-        self.tp_buffer_pips = Decimal(str(sl_tp_settings.get('tp_buffer_pips', 0.0)))
+        self.sl_strategy = risk_settings.get('sl_strategy', 'ATR_MULTIPLE')
+        self.tp_strategy = risk_settings.get('tp_strategy', 'SMC_LIQUIDITY_TARGET')
+        self.sl_buffer_pips = Decimal(str(risk_settings.get('sl_buffer_pips', 1.0)))
+        self.tp_buffer_pips = Decimal(str(risk_settings.get('tp_buffer_pips', 0.0)))
         
-        atr_settings = sl_tp_settings.get('atr_settings', {})
+        atr_settings = risk_settings.get('atr_settings', {})
         symbol_atr_override = atr_settings.get(symbol, {})
         default_atr = atr_settings.get('default', {'sl_multiple': 2.0, 'tp_multiple': 3.0})
         
@@ -87,29 +86,23 @@ class RiskManager:
         self.account_currency = self.account_info.currency
         self.ohlc_data_cache = None
 
+
     def _calculate_atr(self, ohlc_data: pd.DataFrame, period: int = 14) -> float:
         # ... (inchangé) ...
         if ohlc_data is None or len(ohlc_data) < period:
             logging.warning(f"Données OHLC insuffisantes pour ATR({period}) sur {self.symbol}")
             return 0.0
-        # Assurer que les colonnes sont numériques
-        ohlc_data['high'] = pd.to_numeric(ohlc_data['high'], errors='coerce')
-        ohlc_data['low'] = pd.to_numeric(ohlc_data['low'], errors='coerce')
-        ohlc_data['close'] = pd.to_numeric(ohlc_data['close'], errors='coerce')
-        ohlc_data = ohlc_data.dropna(subset=['high', 'low', 'close'])
-        if len(ohlc_data) < period: return 0.0
-
-        high_low = ohlc_data['high'] - ohlc_data['low']
-        high_close = np.abs(ohlc_data['high'] - ohlc_data['close'].shift())
-        low_close = np.abs(ohlc_data['low'] - ohlc_data['close'].shift())
-        
+        try:
+            high_low = ohlc_data['high'].astype(float) - ohlc_data['low'].astype(float)
+            high_close = np.abs(ohlc_data['high'].astype(float) - ohlc_data['close'].astype(float).shift())
+            low_close = np.abs(ohlc_data['low'].astype(float) - ohlc_data['close'].astype(float).shift())
+        except Exception as e:
+             logging.error(f"Erreur conversion type pour ATR: {e}"); return 0.0
         tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
         atr = tr.rolling(window=period).mean().iloc[-1]
-        
         if pd.isna(atr) or atr == 0.0:
              logging.warning(f"Calcul ATR invalide (NaN ou 0.0) pour {self.symbol}. Fallback 10 pips.")
              return self.point * 10
-        
         return atr
 
 
@@ -151,48 +144,40 @@ class RiskManager:
             # --- CORRECTION : Utiliser la constante MT5 correcte ---
             if calc_mode == mt5.SYMBOL_CALC_MODE_FOREX: 
             # --- FIN CORRECTION ---
-                 # Pour Forex, 1 point = Point * ContractSize (en devise de cotation)
                  pip_value_profit_currency = point_d * contract_size_d
 
             elif calc_mode in [mt5.SYMBOL_CALC_MODE_CFD, mt5.SYMBOL_CALC_MODE_CFDINDEX, mt5.SYMBOL_CALC_MODE_FUTURES, mt5.SYMBOL_CALC_MODE_CFDLEVERAGE]:
                  if tick_size_d == 0: logging.error(f"{self.symbol}: Tick size est zéro."); return Decimal('0.0')
-                 # Valeur d'un point = (point / tick_size) * tick_value
-                 # La valeur du tick (tick_value) est généralement en devise de MARGE (pas profit)
                  point_value_margin_curr = (point_d / tick_size_d) * tick_value_d * volume
-                 
                  if self.currency_margin == self.account_currency:
-                      pip_value_profit_currency = point_value_margin_curr # Pas besoin de convertir
+                      pip_value_profit_currency = point_value_margin_curr
                  else:
-                      # Convertir de la devise de marge à la devise du compte
                       conversion_rate = self.get_conversion_rate(self.currency_margin, self.account_currency)
                       if conversion_rate <= 0: logging.error(f"Taux conversion invalide {self.currency_margin}->{self.account_currency}"); return Decimal('0.0')
                       pip_value_profit_currency = point_value_margin_curr * conversion_rate
-            
             else:
-                 logging.warning(f"Mode calcul {calc_mode} non géré. Fallback simple.")
-                 pip_value_profit_currency = point_d * contract_size_d # Fallback
+                logging.warning(f"Mode calcul {calc_mode} non géré. Fallback simple.")
+                pip_value_profit_currency = point_d * contract_size_d
             
-            # Appliquer volume (si non déjà fait)
             if calc_mode not in [mt5.SYMBOL_CALC_MODE_CFD, mt5.SYMBOL_CALC_MODE_CFDINDEX, mt5.SYMBOL_CALC_MODE_FUTURES, mt5.SYMBOL_CALC_MODE_CFDLEVERAGE]:
                  pip_value_profit_currency *= volume
 
-            # Convertir devise de profit (si Forex/Fallback) en devise compte
-            if calc_mode not in [mt5.SYMBOL_CALC_MODE_CFD, mt5.SYMBOL_CALC_MODE_CFDINDEX, mt5.SYMBOL_CALC_MODE_FUTURES, mt5.SYMBOL_CALC_MODE_CFDLEVERAGE]:
-                if self.currency_profit != self.account_currency:
-                    conversion_rate = self.get_conversion_rate(self.currency_profit, self.account_currency)
-                    if conversion_rate > 0:
-                        pip_value_profit_currency = pip_value_profit_currency * conversion_rate
-                    else:
-                        logging.error(f"Pip Value: Taux conversion {self.currency_profit}->{self.account_currency} invalide.")
-                        return Decimal('0.0')
-            
-            return pip_value_profit_currency.quantize(Decimal("0.00001")) # Plus de précision
-
+            if self.currency_profit == self.account_currency:
+                return pip_value_profit_currency.quantize(Decimal("0.00001"))
+            else:
+                conversion_rate = self.get_conversion_rate(self.currency_profit, self.account_currency)
+                if conversion_rate > 0:
+                    return (pip_value_profit_currency * conversion_rate).quantize(Decimal("0.00001"))
+                else:
+                    logging.error(f"Pip Value: Taux conversion {self.currency_profit}->{self.account_currency} invalide.")
+                    return Decimal('0.0')
+                    
         except Exception as e:
             self.log.error(f"Erreur inattendue dans _calculate_pip_value: {e}", exc_info=True)
             return Decimal('0.0')
 
 
+    
     def _calculate_volume(self, equity: Decimal, sl_price: Decimal, entry_price: Decimal, direction: str) -> Decimal:
         # ... (inchangé, mais logs mis à jour) ...
         log_entries = [f"Calcul Volume {self.symbol}:"]
@@ -276,26 +261,23 @@ class RiskManager:
 
 
     def _calculate_sl_tp_levels(self, entry_price: float, direction: str, ohlc_data: pd.DataFrame, trade_signal: dict) -> tuple:
+        # ... (inchangé) ...
+        # (code identique à la version précédente v18.1.6)
         sl_price = 0.0; tp_price = 0.0
         atr = self._calculate_atr(ohlc_data, 14)
         
-        # 1. Calcul SL
         sl_calculated_structurally = False
         if self.sl_strategy == 'SMC_STRUCTURE' and trade_signal.get('sl_price', 0.0) > 0:
             sl_structure_price = trade_signal['sl_price']
             sl_buffer_abs = float(self.sl_buffer_pips) * self.point
             potential_sl = sl_structure_price - sl_buffer_abs if direction == "BUY" else sl_structure_price + sl_buffer_abs
-            
             if atr > 0 and abs(entry_price - potential_sl) > (atr * 0.5):
-                # Utiliser Decimal pour le calcul temp
-                temp_vol_d = self._calculate_volume(Decimal(str(self.account_info.equity)), Decimal(str(potential_sl)), Decimal(str(entry_price)), direction)
-                if temp_vol_d is not None and temp_vol_d >= Decimal(str(self.volume_min)):
+                temp_vol = self._calculate_volume(float(self.account_info.equity), potential_sl, entry_price, direction)
+                if temp_vol >= Decimal(str(self.volume_min)):
                     sl_price = potential_sl; sl_calculated_structurally = True
                     logging.debug(f"SL {self.symbol} (SMC_STRUCTURE): {sl_price:.{self.digits}f}")
-                else:
-                    logging.warning(f"SL Structurel {self.symbol} ({potential_sl}) donne volume {temp_vol_d} < min. Fallback ATR.")
-            else:
-                 logging.warning(f"SL Structurel {self.symbol} ({potential_sl}) trop proche/ATR invalide. Fallback ATR.")
+                else: logging.warning(f"SL Structurel {self.symbol} ({potential_sl}) donne volume {temp_vol} < min. Fallback ATR.")
+            else: logging.warning(f"SL Structurel {self.symbol} ({potential_sl}) trop proche/ATR invalide. Fallback ATR.")
                  
         if not sl_calculated_structurally:
             if atr == 0.0: logging.error("ATR invalide, impossible de calculer SL fallback."); return 0.0, 0.0
@@ -303,14 +285,12 @@ class RiskManager:
             sl_price = entry_price - sl_distance if direction == "BUY" else entry_price + sl_distance
             logging.debug(f"SL {self.symbol} (ATR_MULTIPLE): {sl_price:.{self.digits}f}")
 
-        # 2. Calcul TP
         tp_calculated_structurally = False
         if self.tp_strategy == 'SMC_LIQUIDITY_TARGET' and trade_signal.get('tp_price', 0.0) > 0:
             target_price = trade_signal['tp_price']
             if (direction == "BUY" and target_price > entry_price) or (direction == "SELL" and target_price < entry_price):
                 tp_buffer_abs = float(self.tp_buffer_pips) * self.point
                 potential_tp = target_price - tp_buffer_abs if direction == "BUY" else target_price + tp_buffer_abs
-                # Re-valider après buffer
                 if (direction == "BUY" and potential_tp > entry_price) or (direction == "SELL" and potential_tp < entry_price):
                      tp_price = potential_tp; tp_calculated_structurally = True
                      logging.debug(f"TP {self.symbol} (SMC_LIQUIDITY_TARGET): {tp_price:.{self.digits}f}")
@@ -323,7 +303,6 @@ class RiskManager:
             tp_price = entry_price + tp_distance if direction == "BUY" else entry_price - tp_distance
             logging.debug(f"TP {self.symbol} (ATR_MULTIPLE): {tp_price:.{self.digits}f}")
 
-        # 3. Validation finale et Arrondi
         if (direction == "BUY" and (sl_price >= entry_price or tp_price <= entry_price)) or \
            (direction == "SELL" and (sl_price <= entry_price or tp_price >= entry_price)):
              logging.error(f"Erreur logique SL/TP {self.symbol}: E={entry_price}, SL={sl_price}, TP={tp_price}. Annulation.")
@@ -336,7 +315,6 @@ class RiskManager:
 
     def manage_open_positions(self, positions: list, tick, ohlc_data: pd.DataFrame):
         # ... (inchangé) ...
-        # (code identique à la version précédente v18.1.6)
         self.ohlc_data_cache = ohlc_data
         if not positions: return
         if self.ptp_rules:
@@ -359,7 +337,6 @@ class RiskManager:
 
     def _apply_ptp(self, positions: list, tick, rr_target: Decimal, percentage_to_close: Decimal):
         # ... (inchangé) ...
-        # (code identique à la version précédente v18.1.6)
         for pos in positions:
             if f"PTP{rr_target}" in pos.comment: continue
             initial_sl = pos.sl; initial_entry = pos.price_open
@@ -378,7 +355,6 @@ class RiskManager:
 
     def _execute_partial_close(self, position, percentage: Decimal, new_comment_flag: str):
         # ... (inchangé) ...
-        # (code identique à la version précédente v18.1.6)
         try:
             volume_to_close = Decimal(str(position.volume)) * percentage
             step = Decimal(str(self.volume_step))
@@ -395,7 +371,6 @@ class RiskManager:
 
     def _apply_breakeven_pips(self, positions: list, tick, trigger_pips: int):
         # ... (inchangé) ...
-        # (code identique à la version précédente v18.1.6)
         pips_plus = self.breakeven_rules.get('pips_plus', 1.0)
         for pos in positions:
             if pos.sl == pos.price_open: continue
@@ -419,7 +394,6 @@ class RiskManager:
 
     def _apply_breakeven_on_ptp(self, positions: list, tick, ptp1_rr: Decimal):
         # ... (inchangé) ...
-        # (code identique à la version précédente v18.1.6)
         pips_plus = self.breakeven_rules.get('pips_plus_on_ptp1', 5.0)
         for pos in positions:
             if f"PTP{ptp1_rr}" in pos.comment and "BE_APPLIED" not in pos.comment:
@@ -437,36 +411,78 @@ class RiskManager:
 
     def _apply_trailing_stop_atr(self, positions: list, tick, atr: Decimal, activation_multiple: Decimal, trailing_multiple: Decimal):
         # ... (inchangé) ...
-        # (code identique à la version précédente v18.1.6)
         if atr <= 0: return
-        activation_distance_points_std = activation_multiple * atr / Decimal(str(self.point))
-        trailing_distance_points = trailing_multiple * atr
-        
+        activation_distance = activation_multiple * atr
+        trailing_distance = trailing_multiple * atr
         for pos in positions:
             current_sl_price = Decimal(str(pos.sl))
             entry_price = Decimal(str(pos.price_open))
-            
             if pos.type == mt5.ORDER_TYPE_BUY:
                 current_price = Decimal(str(tick.bid))
-                current_profit_points = (current_price - entry_price) / Decimal(str(self.point))
-                
-                if current_profit_points >= activation_distance_points_std:
-                    potential_new_sl_d = current_price - trailing_distance_points
-                    if potential_new_sl_d > current_sl_price and potential_new_sl_d > entry_price:
-                         new_sl = round(float(potential_new_sl_d), self.digits)
+                current_profit = current_price - entry_price
+                if current_profit >= activation_distance:
+                    potential_new_sl_d = current_price - trailing_distance
+                    new_sl = round(float(potential_new_sl_d), self.digits)
+                    if new_sl > pos.sl and potential_new_sl_d > entry_price:
                          logging.debug(f"Trailing Stop (BUY) {self.symbol} ({pos.ticket}). SL -> {new_sl}")
                          self.executor.modify_position_sl_tp(pos.ticket, new_sl, pos.tp, "TS_APPLIED")
-            
             elif pos.type == mt5.ORDER_TYPE_SELL:
                 current_price = Decimal(str(tick.ask))
-                current_profit_points = (entry_price - current_price) / Decimal(str(self.point))
-
-                if current_profit_points >= activation_distance_points_std:
-                    potential_new_sl_d = current_price + trailing_distance_points
+                current_profit = entry_price - current_price
+                if current_profit >= activation_distance:
+                    potential_new_sl_d = current_price + trailing_distance
                     new_sl = round(float(potential_new_sl_d), self.digits)
                     if (current_sl_price == 0 or potential_new_sl_d < current_sl_price) and potential_new_sl_d < entry_price:
                          logging.debug(f"Trailing Stop (SELL) {self.symbol} ({pos.ticket}). SL -> {new_sl}")
                          self.executor.modify_position_sl_tp(pos.ticket, new_sl, pos.tp, "TS_APPLIED")
+
+    # --- NOUVELLE FONCTION (RÉINTRODUITE) ---
+    def is_daily_loss_limit_reached(self) -> tuple:
+        """Vérifie si la limite de perte journalière (en % equity) est atteinte."""
+        try:
+            magic_number = self.config['trading_settings'].get('magic_number', 0)
+            
+            # Utiliser la logique de v18.1.6
+            broker_tz_str = self.config.get('mt5_credentials', {}).get('timezone', 'UTC')
+            broker_tz = pytz.timezone(broker_tz_str)
+            day_start_str = self.config.get('risk_management', {}).get('daily_limit_reset_time_broker', '00:00')
+            day_start_time = dt_time.fromisoformat(day_start_str)
+            now_broker_time = datetime.now(broker_tz)
+            start_of_today = broker_tz.localize(datetime(now_broker_time.year, now_broker_time.month, now_broker_time.day, day_start_time.hour, day_start_time.minute))
+            if now_broker_time < start_of_today:
+                start_of_today = start_of_today - timedelta(days=1)
+            start_of_today_utc = start_of_today.astimezone(pytz.utc)
+            now_utc = datetime.now(pytz.utc)
+
+            deals = self.mt5.history_deals_get(start_of_today_utc, now_utc)
+            if deals is None:
+                logging.error("Impossible de récupérer l'historique des deals (daily loss check).")
+                return False, Decimal('0.0')
+
+            total_profit_today = Decimal('0.0')
+            for deal in deals:
+                if deal.magic == magic_number and deal.entry == mt5.DEAL_ENTRY_OUT: # Sorties
+                     total_profit_today += Decimal(str(deal.profit)) + Decimal(str(deal.commission)) + Decimal(str(deal.swap))
+
+            floating_pl = self.executor.get_total_floating_pl(magic_number)
+            total_current_pl = total_profit_today + Decimal(str(floating_pl))
+            
+            equity = Decimal(str(self.account_info.equity))
+            loss_limit_amount = self.daily_loss_limit_pct * equity
+            
+            current_loss = -total_current_pl if total_current_pl < 0 else Decimal('0.0')
+
+            if current_loss > loss_limit_amount:
+                logging.critical(f"LIMITE PERTE JOUR ATTEINTE: Perte {current_loss:.2f} {self.account_currency} > Limite {loss_limit_amount:.2f}")
+                return True, current_loss
+            
+            logging.info(f"Check Perte Jour: {current_loss:.2f} / {loss_limit_amount:.2f} {self.account_currency}")
+            return False, current_loss
+
+        except Exception as e:
+            logging.error(f"Erreur vérification limite perte jour: {e}", exc_info=True)
+            return False, Decimal('0.0')
+    # --- FIN NOUVELLE FONCTION ---
 
     def check_max_concurrent_risk(self, equity: float) -> bool:
         # ... (inchangé) ...

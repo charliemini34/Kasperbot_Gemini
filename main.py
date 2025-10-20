@@ -1,7 +1,7 @@
 # Fichier: main.py
-# Version: 17.0.6 (Pass-Digits-To-Detector)
+# Version: 17.0.7 (Digits-Inject & Log-Fix)
 # Dépendances: MetaTrader5, pytz, PyYAML, Flask, playsound, time, threading, logging, webbrowser, os, datetime
-# Description: Passe le 'digits' du RiskManager au PatternDetector.
+# Description: Injecte 'digits' dans PatternDetector et corrige log version.
 
 import time
 import threading
@@ -26,10 +26,10 @@ from src.api.server import start_api_server
 from src.shared_state import SharedState, LogHandler
 from src.analysis.performance_analyzer import PerformanceAnalyzer
 
-# Version du Bot
-BOT_VERSION = "v19.0.3-patch" # Basé sur la version de pattern_detector corrigée
+# --- MODIFICATION : Définir la version ici ---
+BOT_VERSION = "v19.0.4-patch" # Basé sur la version de pattern_detector corrigée
+# --- FIN MODIFICATION ---
 
-# --- Fonctions utilitaires (inchangées) ---
 def setup_logging(state: SharedState):
     # ... (inchangé) ...
     log_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
@@ -156,10 +156,12 @@ def check_risk_limits(state: SharedState, config: dict, executor: MT5Executor, s
     if not symbols_to_trade: return False
     try:
         main_rm = RiskManager(config, executor, symbols_to_trade[0])
+        # --- MODIFICATION : Appel fonction corrigée ---
+        # (La v18.1.9 de risk_manager a 'is_daily_loss_limit_reached')
         limit_reached, _ = main_rm.is_daily_loss_limit_reached()
+        # --- FIN MODIFICATION ---
         if limit_reached:
             state.update_status("Arrêt Urgence", "Limite perte jour atteinte.", is_emergency=True)
-            # Pas de log critique ici, is_daily_loss_limit_reached le fait déjà
             return True
     except ValueError as e: logging.error(f"Erreur init RiskManager check limite perte: {e}")
     except Exception as e: logging.error(f"Erreur check limite perte: {e}", exc_info=True)
@@ -167,28 +169,26 @@ def check_risk_limits(state: SharedState, config: dict, executor: MT5Executor, s
 
 # --- MODIFICATION : analyze_and_trade_symbol ---
 def analyze_and_trade_symbol(symbol: str, state: SharedState, config: dict, connector: MT5Connector, executor: MT5Executor, account_info, is_first_cycle: bool):
-    """Analyse un symbole et exécute un trade si les conditions sont remplies."""
+    """Analyse un symbole et exécute un trade."""
     magic_number = config['trading_settings'].get('magic_number', 0)
     
-    # Vérifier positions ouvertes
     try:
         all_bot_positions = executor.get_open_positions(magic=magic_number)
         if any(pos.symbol == symbol for pos in all_bot_positions):
             return
     except Exception as e:
-         logging.error(f"Erreur get_open_positions dans analyze_and_trade_symbol pour {symbol}: {e}")
-         return # Ne pas trader si on ne peut pas vérifier
+         logging.error(f"Erreur get_open_positions dans analyze_symbol {symbol}: {e}")
+         return
 
     if not is_within_trading_session(symbol, config): return
 
     try:
-        # Initialiser RiskManager d'abord pour obtenir les 'digits'
         risk_manager = RiskManager(config, executor, symbol)
         
         timeframe = config['trading_settings'].get('timeframe', 'M15')
         ohlc_data = connector.get_ohlc(symbol, timeframe, 300)
         if ohlc_data is None or ohlc_data.empty or len(ohlc_data) < 50:
-            logging.warning(f"Données OHLC insuffisantes/indisponibles pour {symbol} {timeframe}.")
+            logging.warning(f"Données OHLC insuffisantes {symbol} {timeframe}.")
             state.update_symbol_patterns(symbol, {})
             return
 
@@ -205,21 +205,19 @@ def analyze_and_trade_symbol(symbol: str, state: SharedState, config: dict, conn
 
             last_close_price = ohlc_data['close'].iloc[-1]
             
-            # Utiliser l'instance de risk_manager déjà créée
             volume, sl, tp = risk_manager.calculate_trade_parameters(
                 account_info.equity, last_close_price, ohlc_data, trade_signal
             )
 
             if volume > 0 and sl > 0 and tp > 0:
                 if config['trading_settings'].get('live_trading_enabled', False):
-                    logging.info(f"Exécution ordre LIVE: {trade_signal['direction']} {volume:.{risk_manager.symbol_info.volume_digits}f} lots {symbol}")
+                    logging.info(f"Exécution ordre LIVE: {trade_signal['direction']} {volume:.4f} lots {symbol}")
                     executor.execute_trade(
                         account_info, risk_manager, symbol, trade_signal['direction'],
                         volume, sl, tp,
                         trade_signal['pattern'], magic_number
                     )
                 else:
-                    # Utiliser risk_manager.digits pour l'affichage (plus fiable)
                     logging.info(f"DRY RUN: Ordre {trade_signal['direction']} {volume:.4f} lots {symbol} @ ~{last_close_price:.{risk_manager.digits}f} (SL={sl:.{risk_manager.digits}f}, TP={tp:.{risk_manager.digits}f}) non envoyé. Pattern: {trade_signal['pattern']}")
             else:
                 logging.warning(f"Volume calculé ({volume}) ou SL/TP ({sl}/{tp}) invalide pour {symbol}. Trade basé sur signal [{trade_signal['pattern']}] annulé.")
@@ -241,7 +239,10 @@ def wait_for_next_candle(config: dict) -> float:
 
 # --- Boucle principale (inchangée) ---
 def main_trading_loop(state: SharedState):
+    # --- MODIFICATION : Log de version corrigé ---
     logging.info(f"Démarrage de la boucle de trading {BOT_VERSION}...")
+    # --- FIN MODIFICATION ---
+    
     is_first_cycle = True
     config = None; connector = None; executor = None; symbols_to_trade = []
 
@@ -306,6 +307,7 @@ def main_trading_loop(state: SharedState):
 
 
 if __name__ == "__main__":
+    # ... (inchangé) ...
     shared_state = SharedState()
     setup_logging(shared_state)
     try:
