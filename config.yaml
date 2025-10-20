@@ -1,5 +1,5 @@
 # Fichier: config.yaml
-# Version: 17.0.0 (SMC-Targeting-Config)
+# Version: 18.2.0 (Partial-TP-Config)
 
 api:
   host: 127.0.0.1
@@ -14,11 +14,10 @@ professional_journal:
   enabled: true
   file_path_template: "Journal_Trading_{month_name}_{year}.csv"
 
-# --- NOUVELLE SECTION ---
 sound_alerts:
-  enabled: true                 # Activer (true) ou désactiver (false) les alertes sonores
-  sound_file: "./alert.wav"     # Chemin vers le fichier son (.wav ou .mp3 recommandé)
-  
+  enabled: true
+  sound_file: "./alert.wav"
+
 trading_settings:
   live_trading_enabled: false
   magic_number: 13579
@@ -33,101 +32,64 @@ trading_settings:
   - USOIL
   - BTCUSD
   - ETHUSD
-  
+
   crypto_symbols:
   - BTCUSD
   - ETHUSD
 
   timeframe: M15
-  
+
   trading_sessions:
-  - "1-07:00-20:00" # Lundi
-  - "2-07:00-20:00" # Mardi
-  - "3-07:00-20:00" # Mercredi
-  - "4-07:00-20:00" # Jeudi
-  - "5-07:00-20:00" # Vendredi
+  - "1-00:00-23:59"
+  - "2-00:00-23:59"
+  - "3-00:00-23:59"
+  - "4-00:00-23:59"
+  - "5-00:00-21:00"
 
 risk_management:
   risk_per_trade: 0.01
-  daily_loss_limit_percent: 20.0
-  
+  daily_loss_limit_percent: 2.0
 
-  # --- MODIFICATION ---
-  # Stratégie de placement du Stop Loss
-  # Options: "ATR_MULTIPLE", "SMC_STRUCTURE"
   sl_strategy: "SMC_STRUCTURE"
-
-  # Buffer (marge) ajouté au SL structurel (en pips)
   sl_buffer_pips: 5
+  tp_strategy: "SMC_LIQUIDITY_TARGET" # Nom de stratégie TP (ancien sl_tp_strategy)
 
-  # Stratégie de placement du Take Profit
-  # Options: "ATR_MULTIPLE", "SMC_LIQUIDITY_TARGET"
-  sl_tp_strategy: "SMC_LIQUIDITY_TARGET" # Renommé sl_tp_strategy -> tp_strategy pour clarté ? Non, gardons sl_tp_strategy pour l'instant
-
-  atr_settings: # Toujours utilisé pour le fallback SL et/ou si stratégie ATR choisie
+  atr_settings:
     default:
       period: 14
       sl_multiple: 1.5 # Utilisé si sl_strategy=ATR ou en fallback
-      tp_multiple: 3.0 # Utilisé si sl_tp_strategy=ATR ou en fallback
-    XAUUSD:
-      sl_multiple: 1.8
-      tp_multiple: 3.5
-    BTCUSD: # Exemple de configuration spécifique (peut être ajusté)
-      sl_multiple: 1.2
-      tp_multiple: 2.5
-    ETHUSD:
-      sl_multiple: 1.2
-      tp_multiple: 2.5
+      tp_multiple: 3.0 # Utilisé si tp_strategy=ATR ou en fallback
+    XAUUSD: { sl_multiple: 1.8, tp_multiple: 3.5 }
+    BTCUSD: { sl_multiple: 1.2, tp_multiple: 2.5 }
+    ETHUSD: { sl_multiple: 1.2, tp_multiple: 2.5 }
 
-  breakeven:
+  # --- NOUVELLE SECTION : Take Profits Partiels ---
+  partial_tp:
     enabled: true
-    trigger_pips: 100 # Seuil en pips pour déclencher le BE
-    pips_plus: 10   # Combien de pips au-dessus/en dessous de l'entrée placer le SL BE
+    # Déplace automatiquement le SL à BE+ après le premier PTP réussi
+    move_sl_to_be_after_tp1: true
+    be_pips_plus_after_tp1: 5 # Combien de pips au-dessus/en dessous de l'entrée après TP1
 
-  trailing_stop_atr:
-    enabled: true
-    activation_multiple: 2.0 # Multiple ATR de gain requis pour activer TSL
-    trailing_multiple: 1.8   # Multiple ATR pour suivre le prix
+    # Liste des niveaux de PTP
+    # Chaque niveau définit le ratio Risque/Récompense (rr) à atteindre
+    # et le pourcentage du volume *initial* à clôturer.
+    # L'ordre est important (du plus proche au plus lointain).
+    levels:
+      - rr: 1.0        # Niveau 1: RR de 1:1
+        percentage: 50 # Clôturer 50% de la position initiale
+      - rr: 2.0        # Niveau 2: RR de 1:2
+        percentage: 30 # Clôturer 30% de la position initiale (total 80%)
+      # Le reste (20%) ira au TP final défini par tp_strategy
 
-pattern_detection:
-  ORDER_BLOCK: true
-  CHANGE_OF_CHARACTER: true
-  INBALANCE: true
-  LIQUIDITY_GRAB: true
-  SMC_AMD_SESSION: true # Renommé pour clarté, était PATTERN_AMD
-
-trend_filter:
-  enabled: true
-  higher_timeframe: H4
-  ema_period: 200 # Sera remplacé par analyse structurelle si Optimisation 2 réalisée
-
-learning:
-  enabled: false
-  min_trades_for_analysis: 10
-
-backtest_settings:
-  simulated_spread_pips: 1.5
-  commission_per_lot: 7.0
-  # Choisissez entre "ATR_MULTIPLE" (basé sur la volatilité) 
-  # et "SMC_LIQUIDITY_TARGET" (basé sur la structure du marché)
-  sl_tp_strategy: "SMC_LIQUIDITY_TARGET" 
-  
-  atr_settings: # Toujours utilisé pour le SL
-    default:
-      period: 14
-      sl_multiple: 1.5
-      tp_multiple: 3.0 # Utilisé seulement si sl_tp_strategy est "ATR_MULTIPLE"
-    XAUUSD:
-      sl_multiple: 1.8
-      tp_multiple: 3.5
-  breakeven:
+  breakeven: # Le BE "normal" peut toujours s'appliquer si les PTP ne sont pas atteints
     enabled: true
     trigger_pips: 100
     pips_plus: 10
-  trailing_stop_atr:
+
+  trailing_stop_atr: # Le TSL peut aussi s'appliquer sur le volume restant
     enabled: true
     activation_multiple: 2.0
-    trailing_multiple: 1
+    trailing_multiple: 1.8
 
 pattern_detection:
   ORDER_BLOCK: true
