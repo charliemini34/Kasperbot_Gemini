@@ -1,7 +1,7 @@
 # Fichier: src/patterns/pattern_detector.py
-# Version: 19.0.2 (SMC-DocStrings - Corrigé)
+# Version: 19.0.3 (Patch-Digits-FutureWarning)
 # Dépendances: MetaTrader5, pandas, numpy, logging
-# Description: Correction du NameError 'PREMIUM_THRESHOLD' et du Lookahead Bias.
+# Description: Correction AttributeError (df.digits) et FutureWarning (fillna/downcasting).
 
 import MetaTrader5 as mt5
 import pandas as pd
@@ -198,9 +198,10 @@ class PatternDetector:
         df['is_swing_low'] = is_swing_low_non_causal.shift(n)
         
         # 3. Remplir les NaN créés par le décalage (nécessaire pour .tail())
-        df['is_swing_high'] = df['is_swing_high'].fillna(False)
-        df['is_swing_low'] = df['is_swing_low'].fillna(False)
-        # --- FIN CORRECTION ---
+        # --- PATCH v19.0.3: Ajout de .infer_objects(copy=False) pour corriger FutureWarning ---
+        df['is_swing_high'] = df['is_swing_high'].fillna(False).infer_objects(copy=False)
+        df['is_swing_low'] = df['is_swing_low'].fillna(False).infer_objects(copy=False)
+        # --- FIN PATCH ---
         
         recent_swings_high = df[df['is_swing_high']]['high'].tail(5).to_list()
         recent_swings_low = df[df['is_swing_low']]['low'].tail(5).to_list()
@@ -449,7 +450,9 @@ class PatternDetector:
                 # Le prix (last_low) a-t-il touché la POI ?
                 if last_low <= poi_top:
                      # Oui, contact.
-                     logging.debug(f"Contact POI Achat {poi['type']} @ {poi_top:.{df.digits.iloc[0]}f} (Index {poi['candle_index']})")
+                     # --- PATCH v19.0.3: Correction AttributeError (df.digits) ---
+                     logging.debug(f"Contact POI Achat {poi['type']} @ {poi_top} (Index {poi['candle_index']})")
+                     # --- FIN PATCH ---
                      
                      # SL: En dessous du bas de la POI (ou structure)
                      # TP: Prochaine liquidité (ex: last_swing_high)
@@ -478,7 +481,9 @@ class PatternDetector:
                 
                 # Le prix (last_high) a-t-il touché la POI ?
                 if last_high >= poi_bottom:
-                     logging.debug(f"Contact POI Vente {poi['type']} @ {poi_bottom:.{df.digits.iloc[0]}f} (Index {poi['candle_index']})")
+                     # --- PATCH v19.0.3: Correction AttributeError (df.digits) ---
+                     logging.debug(f"Contact POI Vente {poi['type']} @ {poi_bottom} (Index {poi['candle_index']})")
+                     # --- FIN PATCH ---
                      
                      sl_price = poi_top # SL basé sur la POI
                      tp_price = structure.get('last_swing_low', 0.0) # Target
