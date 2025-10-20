@@ -31,7 +31,6 @@ BOT_VERSION = "v19.0.4-patch" # Basé sur la version de pattern_detector corrig�
 # --- FIN MODIFICATION ---
 
 def setup_logging(state: SharedState):
-    # ... (inchangé) ...
     log_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
     if not os.path.exists('logs'): os.makedirs('logs')
     file_handler = logging.FileHandler("logs/trading_bot.log", mode='w', encoding='utf-8')
@@ -47,7 +46,6 @@ def setup_logging(state: SharedState):
     logging.getLogger('werkzeug').setLevel(logging.ERROR)
 
 def load_yaml(filepath: str) -> dict:
-    # ... (inchangé) ...
     try:
         with open(filepath, 'r', encoding='utf-8') as f: return yaml.safe_load(f)
     except FileNotFoundError: logging.critical(f"FATAL: Fichier config '{filepath}' introuvable."); exit()
@@ -55,14 +53,12 @@ def load_yaml(filepath: str) -> dict:
     return {}
 
 def get_timeframe_seconds(timeframe_str: str) -> int:
-    # ... (inchangé) ...
     if 'M' in timeframe_str: return int(timeframe_str.replace('M', '')) * 60
     if 'H' in timeframe_str: return int(timeframe_str.replace('H', '')) * 3600
     if 'D' in timeframe_str: return int(timeframe_str.replace('D', '')) * 86400
     logging.warning(f"Timeframe '{timeframe_str}' non reconnu, utilisation 60s."); return 60
 
 def validate_symbols(symbols_list, mt5_connection):
-    # ... (inchangé) ...
     valid_symbols = []
     if not symbols_list: logging.warning("Liste symboles config vide."); return []
     for symbol in symbols_list:
@@ -71,7 +67,6 @@ def validate_symbols(symbols_list, mt5_connection):
     return valid_symbols
 
 def is_within_trading_session(symbol: str, config: dict) -> bool:
-    # ... (inchangé) ...
     sessions_config = config.get('trading_settings', {}).get('trading_sessions', [])
     crypto_symbols = config.get('trading_settings', {}).get('crypto_symbols', [])
     if symbol in crypto_symbols: return True
@@ -91,7 +86,6 @@ def is_within_trading_session(symbol: str, config: dict) -> bool:
     return False
 
 def play_alert_sound(config: dict):
-    # ... (inchangé) ...
     if playsound is None: return
     sound_config = config.get('sound_alerts', {})
     if sound_config.get('enabled', False):
@@ -104,25 +98,25 @@ def play_alert_sound(config: dict):
             except Exception as e: logging.error(f"Impossible de jouer son '{sound_file}': {e}")
         else: logging.warning(f"Fichier son '{sound_file}' introuvable.")
 
-# --- Fonctions refactorisées (inchangées) ---
-
 def check_connection_and_config(state: SharedState, connector: MT5Connector, executor: MT5Executor) -> tuple:
-    # ... (inchangé) ...
     config = state.get_config()
-    symbols_to_trade = validate_symbols(config['trading_settings'].get('symbols', []), connector.get_connection())
+    # Utiliser la connexion de l'executor pour valider les symboles
+    symbols_to_trade = validate_symbols(config['trading_settings'].get('symbols', []), executor.get_mt5_connection())
     if not connector.check_connection():
         state.update_status("Déconnecté", "Connexion MT5 perdue...", is_emergency=True)
         if not connector.connect():
             time.sleep(20)
             return None, None, None
         state.update_status("Connecté", "Reconnexion MT5 OK.")
-        symbols_to_trade = validate_symbols(config['trading_settings'].get('symbols', []), connector.get_connection())
+        # Mettre à jour la connexion dans l'executor après reconnexion
+        executor = MT5Executor(connector.get_connection(), config)
+        symbols_to_trade = validate_symbols(config['trading_settings'].get('symbols', []), executor.get_mt5_connection())
     if state.config_changed_flag:
         logging.info("Rechargement configuration...")
         config = load_yaml('config.yaml')
         state.update_config(config)
         executor = MT5Executor(connector.get_connection(), config)
-        symbols_to_trade = validate_symbols(config['trading_settings'].get('symbols', []), connector.get_connection())
+        symbols_to_trade = validate_symbols(config['trading_settings'].get('symbols', []), executor.get_mt5_connection())
         state.clear_config_changed_flag()
         logging.info("Configuration rechargée.")
         if not symbols_to_trade:
@@ -131,7 +125,6 @@ def check_connection_and_config(state: SharedState, connector: MT5Connector, exe
     return config, executor, symbols_to_trade
 
 def process_open_positions(state: SharedState, config: dict, connector: MT5Connector, executor: MT5Executor):
-    # ... (inchangé) ...
     magic_number = config['trading_settings'].get('magic_number', 0)
     executor.check_for_closed_trades(magic_number)
     all_bot_positions = executor.get_open_positions(magic=magic_number)
@@ -152,12 +145,10 @@ def process_open_positions(state: SharedState, config: dict, connector: MT5Conne
         except Exception as e: logging.error(f"Erreur gestion pos {symbol}: {e}", exc_info=True)
 
 def check_risk_limits(state: SharedState, config: dict, executor: MT5Executor, symbols_to_trade: list) -> bool:
-    # ... (inchangé) ...
     if not symbols_to_trade: return False
     try:
         main_rm = RiskManager(config, executor, symbols_to_trade[0])
         # --- MODIFICATION : Appel fonction corrigée ---
-        # (La v18.1.9 de risk_manager a 'is_daily_loss_limit_reached')
         limit_reached, _ = main_rm.is_daily_loss_limit_reached()
         # --- FIN MODIFICATION ---
         if limit_reached:
@@ -167,7 +158,6 @@ def check_risk_limits(state: SharedState, config: dict, executor: MT5Executor, s
     except Exception as e: logging.error(f"Erreur check limite perte: {e}", exc_info=True)
     return False
 
-# --- MODIFICATION : analyze_and_trade_symbol ---
 def analyze_and_trade_symbol(symbol: str, state: SharedState, config: dict, connector: MT5Connector, executor: MT5Executor, account_info, is_first_cycle: bool):
     """Analyse un symbole et exécute un trade."""
     magic_number = config['trading_settings'].get('magic_number', 0)
@@ -183,6 +173,7 @@ def analyze_and_trade_symbol(symbol: str, state: SharedState, config: dict, conn
     if not is_within_trading_session(symbol, config): return
 
     try:
+        # --- MODIFICATION : Initialiser RM avant PD ---
         risk_manager = RiskManager(config, executor, symbol)
         
         timeframe = config['trading_settings'].get('timeframe', 'M15')
@@ -208,17 +199,21 @@ def analyze_and_trade_symbol(symbol: str, state: SharedState, config: dict, conn
             volume, sl, tp = risk_manager.calculate_trade_parameters(
                 account_info.equity, last_close_price, ohlc_data, trade_signal
             )
-
+            
+            # Re-vérifier le volume (converti en float par calculate_trade_parameters)
             if volume > 0 and sl > 0 and tp > 0:
                 if config['trading_settings'].get('live_trading_enabled', False):
-                    logging.info(f"Exécution ordre LIVE: {trade_signal['direction']} {volume:.4f} lots {symbol}")
+                    # Trouver le nombre de décimales du volume pour log propre
+                    vol_digits = abs(Decimal(str(risk_manager.volume_step)).as_tuple().exponent) if risk_manager.volume_step > 0 else 2
+                    logging.info(f"Exécution ordre LIVE: {trade_signal['direction']} {volume:.{vol_digits}f} lots {symbol}")
                     executor.execute_trade(
                         account_info, risk_manager, symbol, trade_signal['direction'],
                         volume, sl, tp,
                         trade_signal['pattern'], magic_number
                     )
                 else:
-                    logging.info(f"DRY RUN: Ordre {trade_signal['direction']} {volume:.4f} lots {symbol} @ ~{last_close_price:.{risk_manager.digits}f} (SL={sl:.{risk_manager.digits}f}, TP={tp:.{risk_manager.digits}f}) non envoyé. Pattern: {trade_signal['pattern']}")
+                    vol_digits = abs(Decimal(str(risk_manager.volume_step)).as_tuple().exponent) if risk_manager.volume_step > 0 else 2
+                    logging.info(f"DRY RUN: Ordre {trade_signal['direction']} {volume:.{vol_digits}f} lots {symbol} @ ~{last_close_price:.{risk_manager.digits}f} (SL={sl:.{risk_manager.digits}f}, TP={tp:.{risk_manager.digits}f}) non envoyé. Pattern: {trade_signal['pattern']}")
             else:
                 logging.warning(f"Volume calculé ({volume}) ou SL/TP ({sl}/{tp}) invalide pour {symbol}. Trade basé sur signal [{trade_signal['pattern']}] annulé.")
 
@@ -227,7 +222,6 @@ def analyze_and_trade_symbol(symbol: str, state: SharedState, config: dict, conn
 
 
 def wait_for_next_candle(config: dict) -> float:
-    # ... (inchangé) ...
     timeframe_str = config['trading_settings'].get('timeframe', 'M15')
     timeframe_seconds = get_timeframe_seconds(timeframe_str)
     now_utc_ts = datetime.now(pytz.utc).timestamp()
@@ -237,7 +231,6 @@ def wait_for_next_candle(config: dict) -> float:
     time.sleep(sleep_duration)
     return sleep_duration
 
-# --- Boucle principale (inchangée) ---
 def main_trading_loop(state: SharedState):
     # --- MODIFICATION : Log de version corrigé ---
     logging.info(f"Démarrage de la boucle de trading {BOT_VERSION}...")
@@ -307,7 +300,6 @@ def main_trading_loop(state: SharedState):
 
 
 if __name__ == "__main__":
-    # ... (inchangé) ...
     shared_state = SharedState()
     setup_logging(shared_state)
     try:

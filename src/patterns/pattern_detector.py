@@ -1,21 +1,20 @@
 # Fichier: src/patterns/pattern_detector.py
 # Version: 19.0.4 (Digits-Fix & Imports)
 # Dépendances: MetaTrader5, pandas, numpy, logging, typing, src.constants
-# Description: Corrige AttributeError 'digits' et ajoute import typing.
+# Description: Corrige AttributeError 'digits' et ajoute import typing manquant.
 
 import MetaTrader5 as mt5
 import pandas as pd
 import numpy as np
 import logging
 from src.constants import *
-# --- MODIFICATION : Ajout imports ---
-from typing import Tuple, Optional, Dict, List
-# --- FIN MODIFICATION ---
+from typing import Tuple, Optional, Dict, List # Import complet
 
 # Constantes P/D
 PREMIUM = "Premium"
 DISCOUNT = "Discount"
 EQUILIBRIUM = "Equilibrium"
+
 
 class PatternDetector:
     """
@@ -23,13 +22,11 @@ class PatternDetector:
     v19.0.4: Corrige l'AttributeError 'digits' en le recevant à l'init.
     """
 
-    # --- MODIFICATION : Ajout 'digits' à __init__ ---
-    def __init__(self, config: dict, digits: int):
+    def __init__(self, config: dict, digits: int): # Ajout de digits
         self.config = config
         self.digits = digits # Stocker le nombre de décimales du symbole
-        # --- FIN MODIFICATION ---
         
-        self.pattern_settings = config.get('pattern_detection', {}) # Utiliser le bon nom de section
+        self.pattern_settings = config.get('pattern_detection', {}) # Utilise le bon nom de section
         self.use_trend_filter = config.get('trend_filter', {}).get('enabled', True)
         self.ema_period = config.get('trend_filter', {}).get('ema_period', 200)
         self.htf_timeframe = config.get('trend_filter', {}).get('higher_timeframe', 'H4')
@@ -44,8 +41,8 @@ class PatternDetector:
     def get_detected_patterns_info(self) -> dict:
         return self.detected_patterns_info.copy()
 
+
     def detect_patterns(self, ohlc_data: pd.DataFrame, connector, symbol: str) -> Optional[Dict]:
-        # ... (inchangé, sauf appel _check_pullback_to_poi) ...
         if ohlc_data is None or len(ohlc_data) < 50:
              logging.warning(f"Données insuffisantes pour détection SMC {symbol}.")
              return None
@@ -60,22 +57,32 @@ class PatternDetector:
              else:
                  logging.error("OHLC n'a ni DatetimeIndex ni colonne 'time'."); return None
 
+        # 1. Filtre de Tendance
         main_trend = "NEUTRAL"
         if self.use_trend_filter:
             htf_data = connector.get_ohlc(symbol, self.htf_timeframe, self.ema_period + 50)
             if htf_data is not None and not htf_data.empty:
-                htf_data[f'ema_{self.ema_period}'] = htf_data['close'].ewm(span=self.ema_period, adjust=False).mean()
-                last_close_htf = htf_data['close'].iloc[-1]
-                last_ema_htf = htf_data[f'ema_{self.ema_period}'].iloc[-1]
-                if last_close_htf > last_ema_htf: main_trend = "BULLISH"
-                elif last_close_htf < last_ema_htf: main_trend = "BEARISH"
-                self.detected_patterns_info['main_trend'] = f"{main_trend} (HTF {self.htf_timeframe})"
+                # S'assurer que les données HTF sont numériques
+                try:
+                    htf_data['close'] = pd.to_numeric(htf_data['close'])
+                    htf_data[f'ema_{self.ema_period}'] = htf_data['close'].ewm(span=self.ema_period, adjust=False).mean()
+                    last_close_htf = htf_data['close'].iloc[-1]
+                    last_ema_htf = htf_data[f'ema_{self.ema_period}'].iloc[-1]
+                    if last_close_htf > last_ema_htf: main_trend = "BULLISH"
+                    elif last_close_htf < last_ema_htf: main_trend = "BEARISH"
+                    self.detected_patterns_info['main_trend'] = f"{main_trend} (HTF {self.htf_timeframe})"
+                except Exception as e:
+                     logging.error(f"Erreur calcul filtre tendance HTF pour {symbol}: {e}")
+                     self.detected_patterns_info['main_trend'] = "ERREUR HTF"
             else:
                  logging.warning(f"Impossible charger données HTF {self.htf_timeframe}.")
                  self.detected_patterns_info['main_trend'] = "ERREUR HTF"
 
+        # 2. Identification Structure
         structure = self._get_market_structure(df)
         self.detected_patterns_info['structure'] = structure
+
+        # 3. Détection POI (Zones Premium/Discount)
         premium_discount = self._get_premium_discount_zones(structure)
         self.detected_patterns_info.update(premium_discount)
 
@@ -83,27 +90,31 @@ class PatternDetector:
         fvgs = self._detect_fvg(df, structure, premium_discount)
         self.detected_patterns_info['pois'] = {"order_blocks": f"Found {len(order_blocks)}", "fvgs": f"Found {len(fvgs)}"}
 
+        # 4. Détection Triggers
         signal = None
         
-        # Logique de détection (inchangée depuis v19.0.2 mais corrigée)
+        # Scénario 1: Pullback Achat (Priorité si tendance haussière)
         if main_trend != "BEARISH" and self.pattern_settings.get('ORDER_BLOCK', True):
             signal = self._check_pullback_to_poi(df, order_blocks, fvgs, "BUY", structure)
             if signal:
                 logging.info(f"Signal détecté sur {symbol}: {signal['pattern']}")
                 return signal
 
+        # Scénario 2: Pullback Vente (Priorité si tendance baissière)
         if main_trend != "BULLISH" and self.pattern_settings.get('ORDER_BLOCK', True):
             signal = self._check_pullback_to_poi(df, order_blocks, fvgs, "SELL", structure)
             if signal:
                  logging.info(f"Signal détecté sur {symbol}: {signal['pattern']}")
                  return signal
 
+        # Scénario 3: CHoCH
         if self.pattern_settings.get('CHANGE_OF_CHARACTER', True):
             signal = self._detect_choch(df, structure, main_trend)
             if signal:
                  logging.info(f"Signal détecté sur {symbol}: {signal['pattern']}")
                  return signal
         
+        # Scénario 4: Liquidity Grab
         if self.pattern_settings.get('LIQUIDITY_GRAB', True):
              signal = self._detect_liquidity_grab(df, structure, main_trend)
              if signal:
@@ -124,25 +135,19 @@ class PatternDetector:
         df_copy = df.copy()
         n_fractal = max(2, n // 2)
         
-        # --- CORRECTION : FutureWarning Pandas ---
-        # Utiliser .rolling() pour trouver les max/min locaux
-        # Causal (non-centré)
-        df_copy['is_swing_high'] = df_copy['high'] == df_copy['high'].rolling(n*2+1, center=False).max()
-        df_copy['is_swing_low'] = df_copy['low'] == df_copy['low'].rolling(n*2+1, center=False).min()
+        # --- CORRECTION : FutureWarning Pandas + Logique Lookahead ---
+        # Cette méthode (shift(-n)) regarde dans le futur, elle n'est pas causale
+        # df_copy['is_swing_high_raw'] = (df_copy['high'] > df_copy['high'].shift(i) for i in range(1, n_fractal + 1)) & \
+        #                                (df_copy['high'] > df_copy['high'].shift(-i) for i in range(1, n_fractal + 1))
         
-        # Décaler pour causalité (on ne sait que N bougies plus tard) - C'est trop lent.
-        # Revenir à la méthode fractal simple (v19.0.2) mais corriger le fillna
+        # Méthode causale simple: rolling max/min sur N bougies passées
+        df_copy['high_shifted'] = df_copy['high'].shift(1)
+        df_copy['low_shifted'] = df_copy['low'].shift(1)
         
-        df_copy['is_swing_high_raw'] = (df_copy['high'] > df_copy['high'].shift(i) for i in range(1, n_fractal + 1)) & \
-                                     (df_copy['high'] > df_copy['high'].shift(-i) for i in range(1, n_fractal + 1))
-        df_copy['is_swing_low_raw'] = (df_copy['low'] < df_copy['low'].shift(i) for i in range(1, n_fractal + 1)) & \
-                                     (df_copy['low'] < df_copy['low'].shift(-i) for i in range(1, n_fractal + 1))
+        df_copy['is_swing_high'] = (df_copy['high_shifted'] == df_copy['high_shifted'].rolling(window=n, center=False, min_periods=n_fractal).max())
+        df_copy['is_swing_low'] = (df_copy['low_shifted'] == df_copy['low_shifted'].rolling(window=n, center=False, min_periods=n_fractal).min())
 
-        # Rendre causal
-        df_copy['is_swing_high'] = df_copy['is_swing_high_raw'].shift(n_fractal)
-        df_copy['is_swing_low'] = df_copy['is_swing_low_raw'].shift(n_fractal)
-        
-        # Corriger FutureWarning
+        # Remplir les NaN créés par rolling/shift
         df_copy['is_swing_high'] = df_copy['is_swing_high'].fillna(False).infer_objects(copy=False)
         df_copy['is_swing_low'] = df_copy['is_swing_low'].fillna(False).infer_objects(copy=False)
         # --- FIN CORRECTION ---
@@ -159,7 +164,6 @@ class PatternDetector:
 
 
     def _get_premium_discount_zones(self, structure: dict) -> dict:
-        # ... (inchangé) ...
         # (code identique à la version précédente v19.0.2)
         low = structure.get('last_swing_low', 0.0)
         high = structure.get('last_swing_high', 0.0)
@@ -174,7 +178,6 @@ class PatternDetector:
 
 
     def _detect_fvg(self, df: pd.DataFrame, structure: dict, pd_zones: dict) -> list:
-        # ... (inchangé) ...
         # (code identique à la version précédente v19.0.2)
         fvgs = []
         for i in range(len(df) - 50, len(df) - 1):
@@ -198,7 +201,6 @@ class PatternDetector:
 
 
     def _detect_order_block(self, df: pd.DataFrame, structure: dict, pd_zones: dict) -> list:
-        # ... (inchangé) ...
         # (code identique à la version précédente v19.0.2)
         order_blocks = []
         for i in range(len(df) - 50, len(df) - 2):
@@ -222,7 +224,6 @@ class PatternDetector:
 
 
     def _detect_choch(self, df: pd.DataFrame, structure: dict, main_trend: str) -> Optional[Dict]:
-        # ... (inchangé) ...
         # (code identique à la version précédente v19.0.2)
         last_candle = df.iloc[-1]
         last_internal_low = structure.get('last_swing_low')
@@ -238,7 +239,6 @@ class PatternDetector:
         return None
     
     def _detect_liquidity_grab(self, df: pd.DataFrame, structure: dict, main_trend: str) -> Optional[Dict]:
-        # ... (inchangé) ...
         # (code identique à la version précédente v19.0.2)
         if len(df) < 3: return None
         last_candle = df.iloc[-1]; prev_candle = df.iloc[-2]
@@ -272,10 +272,8 @@ class PatternDetector:
             pois.sort(key=lambda x: x['top'], reverse=True)
             for poi in pois:
                 poi_top = poi['top']; poi_bottom = poi['bottom']
-                if last_low <= poi_top and last_high >= poi_bottom:
-                     # --- CORRECTION Log ---
+                if last_low <= poi_top and last_high >= poi_bottom: # Contact avec la zone
                      logging.debug(f"Contact POI Achat {poi['type']} @ {poi_top:.{digits_fmt}f} (Index {poi['candle_index']})")
-                     # --- FIN CORRECTION ---
                      sl_price = poi_bottom
                      tp_price = structure.get('last_swing_high', 0.0)
                      return {"pattern": f"POI_PULLBACK ({poi['type']})", "direction": "BUY", "sl_price": sl_price, "tp_price": tp_price}
@@ -288,9 +286,7 @@ class PatternDetector:
             for poi in pois:
                 poi_top = poi['top']; poi_bottom = poi['bottom']
                 if last_high >= poi_bottom and last_low <= poi_top:
-                     # --- CORRECTION Log ---
                      logging.debug(f"Contact POI Vente {poi['type']} @ {poi_bottom:.{digits_fmt}f} (Index {poi['candle_index']})")
-                     # --- FIN CORRECTION ---
                      sl_price = poi_top
                      tp_price = structure.get('last_swing_low', 0.0)
                      return {"pattern": f"POI_PULLBACK ({poi['type']})", "direction": "SELL", "sl_price": sl_price, "tp_price": tp_price}
