@@ -1,23 +1,24 @@
 # Fichier: src/risk/risk_manager.py
-# Version: 18.1.1 (SMC-TP-Offset-Fix)
+# Version: 18.1.2 (Volume-Digits-Fix)
 # Dépendances: MetaTrader5, pandas, numpy, logging, pytz, math, src.constants
-# Description: Corrige l'offset du TP SMC pour les ordres SELL.
+# Description: Corrige l'AttributeError pour volume_digits et affine l'arrondi du volume.
 
 import MetaTrader5 as mt5
 import logging
 import math
 import pandas as pd
 import numpy as np
+from decimal import Decimal, ROUND_DOWN # Pour un arrondi précis au step
 from datetime import datetime
 import pytz
-from typing import Tuple, Optional, Dict, List # Ajout List pour type hint
+from typing import Tuple, Optional, Dict, List
 
 from src.constants import BUY, SELL
 
 class RiskManager:
     """
     Gère le risque avec SL/TP configurables et PTP.
-    v18.1.1: Correction offset TP SMC pour SELL.
+    v18.1.2: Correction AttributeError volume_digits et arrondi volume.
     """
     def __init__(self, config: dict, executor, symbol: str):
         self.log = logging.getLogger(self.__class__.__name__)
@@ -33,7 +34,7 @@ class RiskManager:
             raise ValueError("Infos MT5 manquantes.")
 
         self.point: float = self.symbol_info.point
-        self.digits: int = self.symbol_info.digits
+        self.digits: int = self.symbol_info.digits # Pour les prix
         self.risk_settings = self._config.get('risk_management', {})
         self.sl_strategy = self.risk_settings.get('sl_strategy', 'ATR_MULTIPLE')
         self.sl_buffer_pips = self.risk_settings.get('sl_buffer_pips', 5)
@@ -77,6 +78,7 @@ class RiskManager:
                  self.log.warning(f"Volume final ({final_volume:.4f}) < Min API ({vol_min_from_api}). Trade annulé.")
                  return 0.0, 0.0, 0.0
             elif final_volume <= 0:
+                 # Ce log est redondant avec celui dans _calculate_volume mais garde par sécurité
                  self.log.warning(f"Volume final calculé <= 0 pour {self._symbol}. Trade annulé.")
                  return 0.0, 0.0, 0.0
             return final_volume, ideal_sl, ideal_tp
@@ -85,7 +87,6 @@ class RiskManager:
             return 0.0, 0.0, 0.0
 
     def _calculate_volume(self, equity: float, risk_percent: float, entry_price: float, sl_price: float) -> float:
-        # ... (inchangé) ...
         self.log.debug("--- DÉBUT CALCUL VOLUME ---")
         risk_amount = equity * risk_percent
         sl_distance = abs(entry_price - sl_price)
@@ -99,23 +100,56 @@ class RiskManager:
             loss_per_lot_account *= rate
         if loss_per_lot_account <= 0: self.log.error("Perte/lot nulle ou négative."); return 0.0
         raw_volume = risk_amount / loss_per_lot_account
+        self.log.debug(f"Volume Brut: {raw_volume:.8f} lots") # Afficher plus de décimales
+
         volume_step = self.symbol_info.volume_step
-        if volume_step <= 0: self.log.warning("Volume step invalide."); adjusted_volume = raw_volume
-        else: adjusted_volume = math.floor(raw_volume / volume_step) * volume_step
-        final_volume = max(0, min(self.symbol_info.volume_max, adjusted_volume))
-        self.log.debug(f"Volume Calculé: {raw_volume:.6f} -> Ajusté Step: {adjusted_volume:.6f} -> Final: {final_volume:.4f}")
+        if volume_step <= 0:
+            self.log.warning(f"Volume step invalide ({volume_step}). Arrondi impossible.")
+            # On ne peut pas arrondir, on retourne 0 si c'est < min, sinon le brut clampé au max
+            final_volume = max(0, min(self.symbol_info.volume_max, raw_volume))
+            if final_volume < self.symbol_info.volume_min:
+                 final_volume = 0.0
+        else:
+            # --- CORRECTION : Arrondi précis au step en utilisant Decimal ---
+            # Convertir en Decimal pour éviter les erreurs de floating point
+            raw_volume_d = Decimal(str(raw_volume))
+            volume_step_d = Decimal(str(volume_step))
+            # Calculer le nombre de steps et arrondir vers le bas (floor)
+            num_steps = (raw_volume_d / volume_step_d).to_integral_value(rounding=ROUND_DOWN)
+            # Recalculer le volume ajusté
+            adjusted_volume_d = num_steps * volume_step_d
+            adjusted_volume = float(adjusted_volume_d) # Reconvertir en float
+            # --- FIN CORRECTION ---
+            self.log.debug(f"Volume Ajusté au Step ({volume_step}): {adjusted_volume:.8f}")
+
+            # Appliquer les limites min/max du broker APRES l'arrondi au step
+            final_volume = max(0, min(self.symbol_info.volume_max, adjusted_volume))
+            # Assurer que si c'est très proche de 0 mais pas exactement 0, on met 0
+            if abs(final_volume) < volume_step / 2: # Seuil arbitraire
+                 final_volume = 0.0
+
+
+        self.log.debug(f"Volume Final (après min/max/step): {final_volume:.4f} (Min API: {self.symbol_info.volume_min}, Max API: {self.symbol_info.volume_max})")
         self.log.debug("--- FIN CALCUL VOLUME ---")
-        return final_volume
+        
+        # Retourner 0.0 explicitement si le résultat final est inférieur au minimum requis
+        if final_volume < self.symbol_info.volume_min and final_volume > 0:
+             self.log.warning(f"Volume final ({final_volume:.4f}) < Min API ({self.symbol_info.volume_min}) après arrondi. Volume mis à 0.")
+             return 0.0
+        elif final_volume <= 0:
+             return 0.0
+        else:
+            # Retourner le volume final, mais SANS l'arrondir à un nombre fixe de décimales ici.
+            # L'arrondi pertinent est celui au step, déjà fait. MT5 gère le format final.
+             return final_volume
+
 
     def _calculate_initial_sl_tp(self, price: float, ohlc_data: pd.DataFrame, trade_signal: dict) -> Tuple[float, float]:
-        sl = 0.0
-        tp = 0.0
-        direction = trade_signal['direction']
-        tp_strategy = self.risk_settings.get('tp_strategy', 'ATR_MULTIPLE') # Utilisation correcte du nom de paramètre
+        # ... (inchangé) ...
+        sl = 0.0; tp = 0.0; direction = trade_signal['direction']
+        tp_strategy = self.risk_settings.get('tp_strategy', 'ATR_MULTIPLE') # Nom corrigé
         atr = self.calculate_atr(ohlc_data, self.risk_settings.get('atr_settings', {}).get('default', {}).get('period', 14))
         sl_calculated_structurally = False
-
-        # --- Calcul du SL (Logique inchangée) ---
         if self.sl_strategy == "SMC_STRUCTURE":
             sl_structure_price = trade_signal.get('sl_structure_price')
             if sl_structure_price and atr and atr > 0:
@@ -123,65 +157,46 @@ class RiskManager:
                 potential_sl = sl_structure_price - sl_buffer if direction == BUY else sl_structure_price + sl_buffer
                 min_sl_dist = atr * 0.5
                 if abs(price - potential_sl) >= min_sl_dist:
-                    temp_volume = self._calculate_volume(self.account_info.equity, self.risk_settings.get('risk_per_trade', 0.01), price, potential_sl)
-                    # Vérifier aussi que temp_volume > 0 (cas où _calculate_volume retourne 0.0)
-                    if temp_volume > 0 and temp_volume >= self.symbol_info.volume_min:
-                        sl = potential_sl
-                        sl_calculated_structurally = True
-                        self.log.debug(f"Stratégie SL Structurelle: SL={sl:.{self.digits}f} (basé sur {sl_structure_price:.{self.digits}f})")
-                    else:
-                        self.log.warning(f"SL Structurel ({potential_sl:.{self.digits}f}) -> volume ({temp_volume:.4f}) <= min ({self.symbol_info.volume_min}). Fallback ATR.")
-                else:
-                    self.log.warning(f"SL Structurel ({potential_sl:.{self.digits}f}) trop proche du prix ({price:.{self.digits}f}). Fallback ATR.")
-            else:
-                 self.log.warning("SL Structurel invalide/manquant ou ATR invalide. Fallback ATR.")
-
+                    # Utiliser Decimal pour le calcul temporaire pour précision
+                    temp_volume_f = self._calculate_volume(self.account_info.equity, self.risk_settings.get('risk_per_trade', 0.01), price, potential_sl)
+                    if temp_volume_f > 0 and temp_volume_f >= self.symbol_info.volume_min: # Vérifie > 0 explicitement
+                        sl = potential_sl; sl_calculated_structurally = True
+                        self.log.debug(f"Stratégie SL Structurelle: SL={sl:.{self.digits}f}")
+                    else: self.log.warning(f"SL Structurel ({potential_sl:.{self.digits}f}) -> volume ({temp_volume_f:.4f}) <= min ({self.symbol_info.volume_min}). Fallback ATR.")
+                else: self.log.warning(f"SL Structurel ({potential_sl:.{self.digits}f}) trop proche du prix ({price:.{self.digits}f}). Fallback ATR.")
+            else: self.log.warning("SL Structurel invalide/manquant ou ATR invalide. Fallback ATR.")
         if not sl_calculated_structurally:
-            if atr is None or atr <= 0: return 0.0, 0.0 # Impossible de calculer SL
+            if atr is None or atr <= 0: return 0.0, 0.0
             sl_multiple = self.risk_settings.get('atr_settings', {}).get('default', {}).get('sl_multiple', 1.5)
             sl = price - (atr * sl_multiple) if direction == BUY else price + (atr * sl_multiple)
             self.log.debug(f"Stratégie SL ATR utilisée: SL={sl:.{self.digits}f}")
-
-        # --- Calcul du TP ---
         tp_calculated = False
         if tp_strategy == "SMC_LIQUIDITY_TARGET":
             target_price = trade_signal.get('target_price')
             if target_price:
-                is_target_valid = (direction == BUY and target_price > price) or \
-                                  (direction == SELL and target_price < price)
-                if is_target_valid:
+                is_valid = (direction == BUY and target_price > price) or (direction == SELL and target_price < price)
+                if is_valid:
                     tp_offset = self.point * 10
-                    # --- CORRECTION OFFSET SELL ---
                     tp = target_price - tp_offset if direction == BUY else target_price + tp_offset
-                    # --- FIN CORRECTION ---
-                    # Vérification supplémentaire: le TP ajusté doit rester du bon côté
                     if (direction == BUY and tp > price) or (direction == SELL and tp < price):
                          self.log.debug(f"Stratégie TP SMC: Cible {target_price:.{self.digits}f} -> TP={tp:.{self.digits}f}")
                          tp_calculated = True
-                    else:
-                         self.log.warning(f"TP SMC: Cible {target_price:.{self.digits}f} mais offset a rendu TP ({tp:.{self.digits}f}) invalide vs Prix {price:.{self.digits}f}. Fallback ATR.")
+                    else: self.log.warning(f"TP SMC: Cible {target_price:.{self.digits}f} mais offset a rendu TP ({tp:.{self.digits}f}) invalide vs Prix {price:.{self.digits}f}. Fallback ATR.")
                 else: self.log.warning(f"TP SMC: Cible {target_price:.{self.digits}f} invalide vs Prix {price:.{self.digits}f}. Fallback ATR.")
             else: self.log.warning("TP SMC choisi mais cible manquante. Fallback ATR.")
-
         if not tp_calculated:
-            if atr is None or atr <= 0: return sl, 0.0 # Garde SL mais TP invalide
+            if atr is None or atr <= 0: return sl, 0.0
             tp_multiple = self.risk_settings.get('atr_settings', {}).get('default', {}).get('tp_multiple', 3.0)
             tp = price + (atr * tp_multiple) if direction == BUY else price - (atr * tp_multiple)
-            # Vérification que le TP ATR est valide (pas trop proche)
             if abs(price - tp) < self.point * 5:
                  self.log.error(f"TP ATR ({tp:.{self.digits}f}) trop proche du prix ({price:.{self.digits}f}). TP invalide.")
                  return sl, 0.0
             self.log.debug(f"Stratégie TP ATR utilisée: TP={tp:.{self.digits}f}")
-
-        # Validation Ratio R/R
         if sl > 0 and tp > 0 and abs(tp - price) < abs(sl - price):
             self.log.warning(f"TP final ({tp:.{self.digits}f}) plus proche que SL final ({sl:.{self.digits}f}) (Ratio < 1).")
-
-        # Retourne 0 si l'une des valeurs est invalide après tous les calculs
         if sl <= 0 or tp <= 0:
              self.log.error(f"Calcul final SL/TP invalide. SL={sl}, TP={tp}")
              return 0.0, 0.0
-
         return round(sl, self.digits), round(tp, self.digits)
 
     def get_conversion_rate(self, from_currency: str, to_currency: str) -> Optional[float]:
@@ -222,7 +237,7 @@ class RiskManager:
             self._apply_trailing_stop_atr(positions, current_tick, ohlc_data, self.risk_settings)
 
     def _apply_partial_take_profit(self, positions: list, tick):
-        # ... (inchangé) ...
+        # ... (inchangé - utilise Decimal pour calcul volume partiel) ...
         levels = self.partial_tp_config.get('levels', [])
         if not levels: return
         for pos in positions:
@@ -248,19 +263,38 @@ class RiskManager:
                         absolute_volume_to_close = initial_volume * (percentage_to_close / 100.0)
                         symbol_info = self._executor._mt5.symbol_info(pos.symbol)
                         if not symbol_info: continue
-                        vol_step = symbol_info.volume_step; vol_min = symbol_info.volume_min; vol_digits = symbol_info.volume_digits
-                        if vol_step > 0: volume_to_close_adjusted = math.floor(absolute_volume_to_close / vol_step) * vol_step
-                        else: volume_to_close_adjusted = absolute_volume_to_close
-                        volume_to_close_final = round(min(volume_to_close_adjusted, remaining_volume), vol_digits)
+                        vol_step = symbol_info.volume_step; vol_min = symbol_info.volume_min;
+
+                        # Utiliser Decimal pour l'arrondi au step
+                        if vol_step > 0:
+                            vol_to_close_d = Decimal(str(absolute_volume_to_close))
+                            vol_step_d = Decimal(str(vol_step))
+                            num_steps = (vol_to_close_d / vol_step_d).to_integral_value(rounding=ROUND_DOWN)
+                            volume_to_close_adjusted = float(num_steps * vol_step_d)
+                        else:
+                            volume_to_close_adjusted = absolute_volume_to_close
+
+                        # S'assurer de ne pas fermer plus que ce qui reste
+                        volume_to_close_final = min(volume_to_close_adjusted, remaining_volume)
+                        # Re-vérifier vs min après ajustement final
+                        if volume_to_close_final < vol_min and volume_to_close_final > 0:
+                             self.log.warning(f"Vol PTP #{i+1} ({volume_to_close_final:.4f}) < min ({vol_min}). PTP ignoré.")
+                             continue # Passer au niveau suivant ou sortir
+
                         self.log.debug(f"PTP #{i+1} #{pos.ticket}: Init={initial_volume}, Restant={remaining_volume}, %={percentage_to_close}, Abs={absolute_volume_to_close:.6f}, Adj={volume_to_close_adjusted:.6f}, Final={volume_to_close_final:.4f}")
-                        if volume_to_close_final >= vol_min:
+
+                        if volume_to_close_final > 0: # Vérifier > 0 avant d'envoyer
                             if self._executor.close_partial_position(current_pos, volume_to_close_final):
-                                context['remaining_volume'] = round(remaining_volume - volume_to_close_final, vol_digits)
+                                # Recalcul précis du volume restant avec Decimal si possible
+                                remaining_volume_d = Decimal(str(remaining_volume)) - Decimal(str(volume_to_close_final))
+                                context['remaining_volume'] = float(remaining_volume_d)
                                 context['partial_tp_state'][i] = True
                                 self.log.info(f"PTP #{i+1} exécuté #{pos.ticket}. Restant: {context['remaining_volume']:.4f}")
                                 if i == 0 and self.partial_tp_config.get('move_sl_to_be_after_tp1', False): first_ptp_hit_this_cycle = True
                             else: self.log.error(f"Échec exécution PTP #{i+1} #{pos.ticket}."); break
-                        else: self.log.warning(f"Vol PTP #{i+1} ({volume_to_close_final:.4f}) < min ({vol_min}). Ignoré.")
+                        else:
+                             self.log.warning(f"Volume final PTP #{i+1} pour #{pos.ticket} est 0. Ignoré.")
+
             if first_ptp_hit_this_cycle:
                  pips_plus = self.partial_tp_config.get('be_pips_plus_after_tp1', 5)
                  be_sl_price = (pos.price_open + (pips_plus * self.point)) if pos.type == mt5.ORDER_TYPE_BUY else (pos.price_open - (pips_plus * self.point))

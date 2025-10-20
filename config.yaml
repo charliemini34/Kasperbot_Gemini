@@ -70,6 +70,7 @@ trading_settings:
   magic_number: 13579
   symbols:
   - XAUUSD
+  - XAGUSD
   - EURUSD
   - GBPUSD
   - NZDUSD
