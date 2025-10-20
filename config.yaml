@@ -65,7 +65,7 @@ risk_management:
   trailing_stop_atr:
     enabled: true
     activation_multiple: 2.0
-    trailing_multiple: 1.8
+    trailing_multiple: 1
 
 pattern_detection:
   ORDER_BLOCK: true
