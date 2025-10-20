@@ -1,5 +1,4 @@
-# Fichier listant les librairies Python nécessaires.
-# Installez-les avec la commande : pip install -r requirements.txt
+# Fichier: requirements.txt
 
 pandas
 numpy
@@ -9,4 +8,4 @@ PyYAML
 Flask
 matplotlib
 google-generativeai
-
+playsound==1.2.2 # <--- Ligne ajoutée
