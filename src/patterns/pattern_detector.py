@@ -1,7 +1,7 @@
 # Fichier: src/patterns/pattern_detector.py
-# Version: 19.0.1 (SMC-DocStrings)
+# Version: 19.0.2 (SMC-DocStrings - Corrigé)
 # Dépendances: MetaTrader5, pandas, numpy, logging
-# Description: Ajout de docstrings détaillés pour les définitions SMC.
+# Description: Correction du NameError 'PREMIUM_THRESHOLD' et du Lookahead Bias.
 
 import MetaTrader5 as mt5
 import pandas as pd
@@ -28,6 +28,9 @@ def get_swing_points(df, lookback=10):
     
     n = lookback # Fenêtre de chaque côté
     
+    # ATTENTION: center=True utilise les données futures (Lookahead Bias)
+    # Ne pas utiliser pour le trading réel ou backtest valide.
+    # Laissé ici pour compatibilité avec l'exemple, mais _get_market_structure est corrigé.
     df['is_swing_high'] = (df['high'] == df['high'].rolling(window=2*n+1, center=True).max())
     df['is_swing_low'] = (df['low'] == df['low'].rolling(window=2*n+1, center=True).min())
 
@@ -54,6 +57,12 @@ class PatternDetector:
         self.fvg_imbalance_ratio = self.pattern_settings.get('fvg_imbalance_ratio', 0.5) # Ratio min FVG
         self.ob_wick_ratio = self.pattern_settings.get('ob_wick_ratio', 0.3) # Ratio max mèche OB
         self.swing_lookback = self.pattern_settings.get('swing_lookback_periods', 10)
+        
+        # --- CORRECTION (NameError) ---
+        # Chargement du seuil Premium/Discount depuis la config, avec 0.5 (50%) par défaut.
+        self.premium_threshold = self.pattern_settings.get('premium_threshold', 0.5)
+        # --- FIN CORRECTION ---
+
 
         # Stockage des patterns détectés (pour l'API)
         self.detected_patterns_info = {}
@@ -169,10 +178,29 @@ class PatternDetector:
         les swings les plus récents pour le calcul P/D.
         """
         
-        # Utilisation d'une méthode rolling simple pour les swings
         n = self.swing_lookback
-        df['is_swing_high'] = (df['high'] == df['high'].rolling(window=2*n+1, center=True, min_periods=n//2).max())
-        df['is_swing_low'] = (df['low'] == df['low'].rolling(window=2*n+1, center=True, min_periods=n//2).min())
+
+        # --- CORRECTION (Lookahead Bias) ---
+        # L'ancienne méthode (center=True) utilisait les données futures.
+        # Cette nouvelle méthode est causale (n'utilise que le passé).
+
+        # 1. Calculer les swings "parfaits" (non-causals, utilisent le futur)
+        rolling_max = df['high'].rolling(window=2*n+1, center=True, min_periods=n//2).max()
+        rolling_min = df['low'].rolling(window=2*n+1, center=True, min_periods=n//2).min()
+        
+        is_swing_high_non_causal = (df['high'] == rolling_max)
+        is_swing_low_non_causal = (df['low'] == rolling_min)
+
+        # 2. Rendre le signal causal en le décalant de 'n'
+        # Un swing qui se produit à 'T' n'est confirmé (connu) qu'à 'T+n'.
+        # Donc, à l'instant 'T', nous regardons si un swing a été confirmé à 'T-n'.
+        df['is_swing_high'] = is_swing_high_non_causal.shift(n)
+        df['is_swing_low'] = is_swing_low_non_causal.shift(n)
+        
+        # 3. Remplir les NaN créés par le décalage (nécessaire pour .tail())
+        df['is_swing_high'] = df['is_swing_high'].fillna(False)
+        df['is_swing_low'] = df['is_swing_low'].fillna(False)
+        # --- FIN CORRECTION ---
         
         recent_swings_high = df[df['is_swing_high']]['high'].tail(5).to_list()
         recent_swings_low = df[df['is_swing_low']]['low'].tail(5).to_list()
@@ -204,7 +232,12 @@ class PatternDetector:
         equilibrium = low + (high - low) * 0.5
         
         # Définir les seuils stricts (optionnel, ex: 62% Fibo)
-        premium_threshold = PREMIUM_THRESHOLD # ex: 0.5
+        
+        # --- CORRECTION (NameError) ---
+        # Utilisation de la variable chargée depuis la config (self)
+        premium_threshold = self.premium_threshold # ex: 0.5
+        # --- FIN CORRECTION ---
+        
         discount_threshold = 1.0 - premium_threshold # ex: 0.5
         
         premium_start = low + (high - low) * premium_threshold

@@ -10,3 +10,7 @@ PATTERN_AMD = "SMC_AMD_SESSION" # Ajout du pattern AMD
 # --- Directions de Trade ---
 BUY = "BUY"
 SELL = "SELL"
+
+# Constante pour les zones Premium/Discount (SMC)
+# 0.5 représente l'équilibre (50%)
+PREMIUM_THRESHOLD = 0.5
