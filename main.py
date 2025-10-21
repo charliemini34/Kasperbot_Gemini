@@ -1,8 +1,7 @@
-
 # Fichier: main.py
-# Version: 17.0.1 (SMC-Targeting-Fix)
+# Version: 17.0.3 (Executor-Call-Fix) # <-- Version mise à jour
 # Dépendances: MetaTrader5, pytz, PyYAML, Flask
-# Description: Corrige l'appel à calculate_trade_parameters.
+# Description: Ajuste l'appel à execute_trade pour passer trade_signal.
 
 import time
 import threading
@@ -22,13 +21,14 @@ from src.api.server import start_api_server
 from src.shared_state import SharedState, LogHandler
 from src.analysis.performance_analyzer import PerformanceAnalyzer
 
+# ... (le reste des fonctions setup_logging, load_yaml, etc. reste inchangé) ...
 def setup_logging(state: SharedState):
     """Configure la journalisation pour la console, les fichiers et l'interface utilisateur."""
     log_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
-    
+
     if not os.path.exists('logs'):
         os.makedirs('logs')
-        
+
     file_handler = logging.FileHandler("logs/trading_bot.log", mode='w', encoding='utf-8')
     console_handler = logging.StreamHandler()
     ui_handler = LogHandler(state)
@@ -89,7 +89,9 @@ def is_within_trading_session(symbol: str, config: dict) -> bool:
         return True
 
     now_utc = datetime.now(pytz.utc)
-    current_weekday = (now_utc.weekday() + 1) % 7
+    # Utiliser isoweekday() où Lundi=1 ... Dimanche=7 pour correspondre au format courant dans config
+    current_weekday_config_format = now_utc.isoweekday()
+
     current_time = now_utc.time()
 
     for session in sessions_config:
@@ -99,19 +101,21 @@ def is_within_trading_session(symbol: str, config: dict) -> bool:
             start_time = dt_time.fromisoformat(start_str)
             end_time = dt_time.fromisoformat(end_str)
 
-            if day == current_weekday and start_time <= current_time < end_time:
+            if day == current_weekday_config_format and start_time <= current_time < end_time:
                 return True
         except (ValueError, TypeError):
             logging.error(f"Format de session invalide: '{session}'")
             continue
+    # Si aucune session ne correspond, retourner False (en dehors des heures de trading)
+    # logging.debug(f"{symbol} est en dehors des sessions de trading définies.") # Optionnel
     return False
 
 def main_trading_loop(state: SharedState):
     """Boucle principale qui orchestre le bot de trading."""
-    logging.info("Démarrage de la boucle de trading v17.0.1 (SMC-Targeting-Fix)...")
+    logging.info("Démarrage de la boucle de trading v17.0.3 (Executor-Call-Fix)...") # Version mise à jour
     config = load_yaml('config.yaml')
     state.update_config(config)
-    
+
     connector = MT5Connector(config['mt5_credentials'])
     if not connector.connect():
         state.update_status("Déconnecté", "La connexion initiale à MT5 a échoué.", is_emergency=True)
@@ -126,10 +130,13 @@ def main_trading_loop(state: SharedState):
         state.update_status("Arrêté", "Aucun symbole valide.", is_emergency=True)
         return
 
+    state.initialize_symbol_data(symbols_to_trade)
+
     is_first_cycle = True
-    
+
     while not state.is_shutdown():
         try:
+            # 1. Vérifier connexion & Recharger config
             if not connector.check_connection():
                 state.update_status("Déconnecté", "Connexion MT5 perdue. Tentative de reconnexion...", is_emergency=True)
                 if not connector.connect():
@@ -143,40 +150,47 @@ def main_trading_loop(state: SharedState):
                 state.update_config(config)
                 executor = MT5Executor(connector.get_connection(), config)
                 symbols_to_trade = validate_symbols(config['trading_settings'].get('symbols', []), connector.get_connection())
+                state.initialize_symbol_data(symbols_to_trade)
                 state.clear_config_changed_flag()
                 logging.info("Configuration rechargée.")
+                if not symbols_to_trade:
+                     logging.critical("Aucun symbole valide à trader après rechargement. Arrêt du bot.")
+                     state.update_status("Arrêté", "Aucun symbole valide après rechargement.", is_emergency=True)
+                     break
 
+            # 2. Infos compte
             account_info = executor.get_account_info()
             if not account_info:
                 logging.warning("Impossible de récupérer les informations du compte.")
                 time.sleep(10)
                 continue
-            
             state.update_status("Connecté", f"Solde: {account_info.balance:.2f} {account_info.currency}")
-            
+
+            # 3. Gérer trades fermés et positions ouvertes
             magic_number = config['trading_settings'].get('magic_number', 0)
             executor.check_for_closed_trades(magic_number)
             all_bot_positions = executor.get_open_positions(magic=magic_number)
             state.update_positions(all_bot_positions)
-            
+
             if all_bot_positions:
                 positions_by_symbol = {}
                 for pos in all_bot_positions:
                     positions_by_symbol.setdefault(pos.symbol, []).append(pos)
-                
+
                 for symbol, positions in positions_by_symbol.items():
                     try:
                         rm_pos = RiskManager(config, executor, symbol)
                         timeframe = config['trading_settings'].get('timeframe', 'M15')
                         ohlc_data_for_pos = connector.get_ohlc(symbol, timeframe, 200)
                         tick = connector.get_tick(symbol)
-                        if tick and ohlc_data_for_pos is not None:
+                        if tick and ohlc_data_for_pos is not None and not ohlc_data_for_pos.empty:
                             rm_pos.manage_open_positions(positions, tick, ohlc_data_for_pos)
                     except ValueError as e:
                         logging.error(f"Erreur de validation pour la gestion des positions sur {symbol}: {e}")
                     except Exception as e:
                         logging.error(f"Erreur lors de la gestion des positions sur {symbol}: {e}", exc_info=True)
 
+            # 4. Vérifier limites de risque globales
             if symbols_to_trade:
                 try:
                     main_rm = RiskManager(config, executor, symbols_to_trade[0])
@@ -185,25 +199,23 @@ def main_trading_loop(state: SharedState):
                         state.update_status("Arrêt d'Urgence", "Limite de perte journalière atteinte.", is_emergency=True)
                         time.sleep(60)
                         continue
-                except ValueError:
-                    pass
-            
-            if is_first_cycle:
-                logging.info("Premier cycle d'analyse : le trading est désactivé pour synchronisation.")
+                except ValueError: pass # Ignorer si premier symbole invalide
+                except Exception as e: logging.error(f"Erreur vérification limite de perte: {e}", exc_info=True)
+
+            # 5. Boucle d'analyse et de trading
+            if is_first_cycle: logging.info("Premier cycle: trading désactivé pour synchro.")
 
             for symbol in symbols_to_trade:
                 try:
-                    if not is_within_trading_session(symbol, config):
-                        continue
+                    if not is_within_trading_session(symbol, config): continue
+                    if any(pos.symbol == symbol for pos in all_bot_positions): continue
 
-                    if any(pos.symbol == symbol for pos in all_bot_positions):
-                        continue
-                    
                     risk_manager = RiskManager(config, executor, symbol)
                     timeframe = config['trading_settings'].get('timeframe', 'M15')
                     ohlc_data = connector.get_ohlc(symbol, timeframe, 300)
-                    
+
                     if ohlc_data is None or ohlc_data.empty:
+                        logging.warning(f"Données OHLC non dispo pour {symbol} sur {timeframe}.")
                         continue
 
                     detector = PatternDetector(config)
@@ -211,66 +223,84 @@ def main_trading_loop(state: SharedState):
                     state.update_symbol_patterns(symbol, detector.get_detected_patterns_info())
 
                     if trade_signal and not is_first_cycle:
-                        logging.info(f"SIGNAL VALIDE sur {symbol}: [{trade_signal['pattern']}] en direction de {trade_signal['direction']}.")
-                        
-                        volume, sl, tp = risk_manager.calculate_trade_parameters(
-                            account_info.equity, ohlc_data['close'].iloc[-1], ohlc_data, trade_signal
+                        logging.info(f"SIGNAL VALIDE sur {symbol}: [{trade_signal['pattern']}] direction {trade_signal['direction']}.")
+
+                        # Recalcul des params via RiskManager est fait DANS execute_trade maintenant
+                        # On passe directement à l'exécution si signal valide
+
+                        # --- AJUSTEMENT DE L'APPEL ---
+                        # Passer le trade_signal à execute_trade
+                        executor.execute_trade(
+                            account_info, risk_manager, symbol, trade_signal['direction'],
+                            ohlc_data, trade_signal['pattern'], magic_number,
+                            trade_signal # <-- Ajout du dictionnaire trade_signal complet
                         )
-                        
-                        if volume > 0:
-                            executor.execute_trade(
-                                account_info, risk_manager, symbol, trade_signal['direction'], ohlc_data, 
-                                trade_signal['pattern'], magic_number
-                            )
-                        else:
-                            logging.warning(f"Le volume calculé pour {symbol} est de 0 ou SL/TP invalide. Le trade est annulé.")
-                
-                except ValueError as e:
-                    logging.error(f"Impossible de traiter le symbole '{symbol}': {e}.")
-                except Exception as e:
-                    logging.error(f"Erreur d'analyse sur {symbol}: {e}", exc_info=True)
-            
+                        # --- FIN AJUSTEMENT ---
+
+                except ValueError as e: logging.error(f"Impossible de traiter '{symbol}': {e}.")
+                except Exception as e: logging.error(f"Erreur analyse sur {symbol}: {e}", exc_info=True)
+
+            # 6. Attendre prochaine bougie
             timeframe_str = config['trading_settings'].get('timeframe', 'M15')
             timeframe_seconds = get_timeframe_seconds(timeframe_str)
-            now_utc = datetime.now(pytz.utc).timestamp()
-            next_candle_epoch = (now_utc // timeframe_seconds + 1) * timeframe_seconds
-            sleep_duration = max(1, next_candle_epoch - now_utc)
-            
+            now_utc_ts = datetime.now(pytz.utc).timestamp()
+            next_candle_epoch = (now_utc_ts // timeframe_seconds + 1) * timeframe_seconds
+            sleep_duration = max(1, next_candle_epoch - now_utc_ts)
+
             if is_first_cycle:
-                logging.info("Fin du cycle de synchronisation. Le trading sera activé au prochain cycle.")
+                logging.info("Fin cycle synchro. Trading activé.")
                 is_first_cycle = False
-            
-            logging.info(f"Cycle terminé. Attente de {sleep_duration:.0f} secondes.")
+
+            logging.info(f"Cycle terminé. Attente de {sleep_duration:.1f}s.")
             time.sleep(sleep_duration)
 
-        except (ConnectionError, BrokenPipeError) as e:
-            logging.error(f"Erreur de connexion critique: {e}", exc_info=True)
-            state.update_status("Déconnecté", f"Erreur de connexion: {e}", is_emergency=True)
+        except (ConnectionError, BrokenPipeError, TimeoutError) as conn_err:
+            logging.error(f"Erreur connexion critique: {conn_err}", exc_info=False)
+            state.update_status("Déconnecté", f"Erreur connexion: {conn_err}", is_emergency=True)
             time.sleep(30)
-        except Exception as e:
-            logging.critical(f"ERREUR CRITIQUE non gérée dans la boucle principale: {e}", exc_info=True)
-            state.update_status("ERREUR CRITIQUE", str(e), is_emergency=True)
+        except KeyboardInterrupt:
+             logging.info("Arrêt manuel demandé (Ctrl+C).")
+             state.shutdown()
+             break
+        except Exception as loop_err:
+            logging.critical(f"ERREUR CRITIQUE boucle principale: {loop_err}", exc_info=True)
+            state.update_status("ERREUR CRITIQUE", str(loop_err), is_emergency=True)
             time.sleep(60)
-    
-    connector.disconnect()
-    logging.info("Boucle de trading terminée proprement.")
 
+    connector.disconnect()
+    logging.info("Boucle de trading terminée.")
+
+
+# ... (le bloc if __name__ == "__main__": reste inchangé) ...
 if __name__ == "__main__":
     shared_state = SharedState()
     setup_logging(shared_state)
-    config = load_yaml('config.yaml')
-    
-    host = config.get('api', {}).get('host', '127.0.0.1')
-    port = config.get('api', {}).get('port', 5000)
-    url = f"http://{host}:{port}"
 
-    api_thread = threading.Thread(target=start_api_server, args=(shared_state,), daemon=True)
-    api_thread.start()
-    logging.info(f"L'interface web a démarré sur {url}")
-    
     try:
-        webbrowser.open(url)
-    except Exception:
-        logging.warning("Impossible d'ouvrir le navigateur web automatiquement.")
-        
-    main_trading_loop(shared_state)
+        config = load_yaml('config.yaml')
+
+        host = config.get('api', {}).get('host', '127.0.0.1')
+        port = config.get('api', {}).get('port', 5000)
+        url = f"http://{host}:{port}"
+
+        api_thread = threading.Thread(target=start_api_server, args=(shared_state,), daemon=True)
+        api_thread.start()
+        logging.info(f"Interface web démarrée sur {url}")
+
+        try:
+            time.sleep(1) # Laisse le temps au serveur de démarrer
+            webbrowser.open(url)
+        except Exception:
+            logging.warning("Impossible d'ouvrir le navigateur web automatiquement.")
+
+        main_trading_loop(shared_state)
+
+    except Exception as startup_err:
+         logging.critical(f"ERREUR FATALE au démarrage: {startup_err}", exc_info=True)
+         shared_state.update_status("ERREUR FATALE", str(startup_err), is_emergency=True)
+         # Maintenir l'API active si possible
+         if 'api_thread' in locals() and api_thread.is_alive():
+              logging.info("Tentative de maintien de l'API active...")
+              while True: time.sleep(3600)
+
+    logging.info("Programme principal terminé.")

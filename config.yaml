@@ -10,7 +10,7 @@ learning:
   enabled: false
   min_trades_for_analysis: 10
 mt5_credentials:
-  login: 10004952
+  login: 10008432
   password: jsne80aX!
   server: Axi-US50-Demo
 pattern_detection:
