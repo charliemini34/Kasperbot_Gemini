@@ -1,7 +1,7 @@
 # Fichier: main.py
-# Version: 19.0.5 (Patch-Hotfix-Execution)
+# Version: 20.0.0 (Build Stabilisé)
 # Dépendances: MetaTrader5, pytz, PyYAML, Flask, playsound, time, threading, logging, webbrowser, os, datetime, decimal
-# Description: Corrige l'appel P1.1 (calculate_trade_parameters) et P1.2 (Float/Decimal).
+# Description: Version stable intégrant P1-P6 et corrections proactives (Appel Risk Concurrent P-Proactif 1).
 
 import time
 import threading
@@ -11,7 +11,7 @@ import webbrowser
 import os
 from datetime import datetime, time as dt_time
 import pytz
-from decimal import Decimal # Import requis pour P1.2
+from decimal import Decimal
 
 try:
     from playsound import playsound
@@ -28,9 +28,7 @@ from src.api.server import start_api_server
 from src.shared_state import SharedState, LogHandler
 from src.analysis.performance_analyzer import PerformanceAnalyzer
 
-# --- MODIFICATION : Définir la version ici ---
-BOT_VERSION = "v19.0.5-patch" # Basé sur la version de pattern_detector corrigée + Hotfix
-# --- FIN MODIFICATION ---
+BOT_VERSION = "v20.0.0-stable"
 
 def setup_logging(state: SharedState):
     log_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
@@ -102,7 +100,6 @@ def play_alert_sound(config: dict):
 
 def check_connection_and_config(state: SharedState, connector: MT5Connector, executor: MT5Executor) -> tuple:
     config = state.get_config()
-    # Utiliser la connexion de l'executor pour valider les symboles
     symbols_to_trade = validate_symbols(config['trading_settings'].get('symbols', []), executor.get_mt5_connection())
     if not connector.check_connection():
         state.update_status("Déconnecté", "Connexion MT5 perdue...", is_emergency=True)
@@ -110,7 +107,6 @@ def check_connection_and_config(state: SharedState, connector: MT5Connector, exe
             time.sleep(20)
             return None, None, None
         state.update_status("Connecté", "Reconnexion MT5 OK.")
-        # Mettre à jour la connexion dans l'executor après reconnexion
         executor = MT5Executor(connector.get_connection(), config)
         symbols_to_trade = validate_symbols(config['trading_settings'].get('symbols', []), executor.get_mt5_connection())
     if state.config_changed_flag:
@@ -150,9 +146,7 @@ def check_risk_limits(state: SharedState, config: dict, executor: MT5Executor, s
     if not symbols_to_trade: return False
     try:
         main_rm = RiskManager(config, executor, symbols_to_trade[0])
-        # --- MODIFICATION : Appel fonction corrigée ---
         limit_reached, _ = main_rm.is_daily_loss_limit_reached()
-        # --- FIN MODIFICATION ---
         if limit_reached:
             state.update_status("Arrêt Urgence", "Limite perte jour atteinte.", is_emergency=True)
             return True
@@ -175,7 +169,6 @@ def analyze_and_trade_symbol(symbol: str, state: SharedState, config: dict, conn
     if not is_within_trading_session(symbol, config): return
 
     try:
-        # --- MODIFICATION : Initialiser RM avant PD ---
         risk_manager = RiskManager(config, executor, symbol)
         
         timeframe = config['trading_settings'].get('timeframe', 'M15')
@@ -185,9 +178,7 @@ def analyze_and_trade_symbol(symbol: str, state: SharedState, config: dict, conn
             state.update_symbol_patterns(symbol, {})
             return
 
-        # --- MODIFICATION : Passer 'digits' au PatternDetector ---
         detector_instance = PatternDetector(config, risk_manager.digits)
-        # --- FIN MODIFICATION ---
         
         trade_signal = detector_instance.detect_patterns(ohlc_data, connector, symbol)
         state.update_symbol_patterns(symbol, detector_instance.get_detected_patterns_info())
@@ -198,34 +189,33 @@ def analyze_and_trade_symbol(symbol: str, state: SharedState, config: dict, conn
 
             last_close_price = ohlc_data['close'].iloc[-1]
             
-            # --- MODIFICATION P1.1 & P1.2 : Appel des fonctions réelles _calculate_sl_tp_levels et _calculate_volume ---
-            # 1. Calculer SL/TP (basé sur float)
+            # --- MODIFICATION (P-Proactif 1) : Ajout vérification risque concurrent ---
+            if not risk_manager.check_max_concurrent_risk(account_info.equity):
+                logging.warning(f"Trade {symbol} annulé: Limite de risque concurrent atteinte.")
+                return
+            # --- FIN MODIFICATION ---
+
             sl, tp = risk_manager._calculate_sl_tp_levels(
                 last_close_price, trade_signal['direction'], ohlc_data, trade_signal
             )
             
-            # 2. Calculer Volume (basé sur Decimal) - Assurer la conversion
             if sl > 0 and tp > 0:
                 try:
-                    # Utiliser Decimal(str(float)) pour une conversion sécurisée
                     volume_decimal = risk_manager._calculate_volume(
                         Decimal(str(account_info.equity)), 
                         Decimal(str(sl)), 
                         Decimal(str(last_close_price)), 
                         trade_signal['direction']
                     )
-                    volume = float(volume_decimal) # Reconvertir en float pour l'exécution
+                    volume = float(volume_decimal)
                 except Exception as e:
                     logging.error(f"Erreur conversion Decimal/Calcul Volume {symbol}: {e}", exc_info=True)
-                    volume = 0.0 # Annuler le trade
+                    volume = 0.0
             else:
-                volume = 0.0 # SL/TP invalides (déjà loggué par _calculate_sl_tp_levels)
-            # --- FIN MODIFICATION ---
+                volume = 0.0
             
-            # Re-vérifier le volume
             if volume > 0 and sl > 0 and tp > 0:
                 if config['trading_settings'].get('live_trading_enabled', False):
-                    # Trouver le nombre de décimales du volume pour log propre
                     vol_digits = abs(Decimal(str(risk_manager.volume_step)).as_tuple().exponent) if risk_manager.volume_step > 0 else 2
                     logging.info(f"Exécution ordre LIVE: {trade_signal['direction']} {volume:.{vol_digits}f} lots {symbol}")
                     executor.execute_trade(
@@ -254,9 +244,7 @@ def wait_for_next_candle(config: dict) -> float:
     return sleep_duration
 
 def main_trading_loop(state: SharedState):
-    # --- MODIFICATION : Log de version corrigé ---
     logging.info(f"Démarrage de la boucle de trading {BOT_VERSION}...")
-    # --- FIN MODIFICATION ---
     
     is_first_cycle = True
     config = None; connector = None; executor = None; symbols_to_trade = []
@@ -269,12 +257,17 @@ def main_trading_loop(state: SharedState):
             state.update_status("Déconnecté", "Connexion initiale MT5 échouée.", is_emergency=True); return
 
         executor = MT5Executor(connector.get_connection(), config)
-        # analyzer = PerformanceAnalyzer(state) # Optionnel
 
         while not state.is_shutdown():
             try:
                 config, executor, symbols_to_trade = check_connection_and_config(state, connector, executor)
                 if config is None: continue
+                
+                # --- MODIFICATION (P3.1) : Initialiser l'état des symboles pour l'UI ---
+                if symbols_to_trade:
+                    state.initialize_symbol_data(symbols_to_trade)
+                # --- FIN MODIFICATION ---
+
                 if not symbols_to_trade:
                      logging.warning("Aucun symbole valide à trader.")
                      time.sleep(30); continue

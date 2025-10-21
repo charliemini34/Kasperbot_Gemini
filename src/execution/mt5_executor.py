@@ -1,14 +1,14 @@
 # Fichier: src/execution/mt5_executor.py
-# Version: 15.8.0 (Hotfix-Comment-Sanitization-Final)
+# Version: 20.0.1 (Hotfix-Circular-Import)
 # Dépendances: MetaTrader5, pandas, logging, math, re, src.journal.professional_journal, decimal
-# Description: Implémente un assainissement robuste des commentaires sur toutes les fonctions d'ordre.
+# Description: Supprime l'importation circulaire fatale (ImportError).
 
 import MetaTrader5 as mt5
 import logging
 import pandas as pd
 import os
 import math
-import re # Import requis pour l'assainissement
+import re
 from datetime import datetime, timedelta
 from decimal import Decimal, ROUND_DOWN
 from src.constants import BUY, SELL
@@ -83,12 +83,16 @@ class MT5Executor:
 
                 partial_tp_levels = self.config.get('risk_management', {}).get('partial_tp', {}).get('levels', [])
                 num_partial_levels = len(partial_tp_levels)
+                
                 self._trade_context[result.order] = {
                     'ticket': result.order, 'symbol': symbol, 'direction': direction,
                     'open_time': datetime.utcnow().isoformat(), 'pattern_trigger': pattern_name,
                     'initial_volume': volume, 'remaining_volume': volume,
-                    'partial_tp_state': [False] * num_partial_levels, 'sl_initial': sl,
-                    'volatility_atr': atr_value
+                    'partial_tp_state': [False] * num_partial_levels, 
+                    'sl_initial': sl,
+                    'volatility_atr': atr_value,
+                    'be_applied': False, 
+                    'be_triggered_by_ptp1': False 
                 }
                 self.log.debug(f"Contexte créé pour trade #{result.order}: {self._trade_context[result.order]}")
         else:
@@ -96,10 +100,8 @@ class MT5Executor:
 
 
     def place_order(self, symbol, order_type, volume, price, sl, tp, magic_number, pattern_name):
-        # --- MODIFICATION P6.1 : Assainissement robuste du commentaire ---
         sanitized_pattern = re.sub(r'[^a-zA-Z0-9_]', '', pattern_name.replace(" ", "_"))
         comment = f"KasperBot-{sanitized_pattern}"[:31]
-        # --- FIN MODIFICATION ---
         
         request = {
             "action": mt5.TRADE_ACTION_DEAL, "symbol": symbol, "volume": float(volume),
@@ -141,9 +143,7 @@ class MT5Executor:
         if not price_info: return False
         price = price_info.bid if order_type == mt5.ORDER_TYPE_SELL else price_info.ask
         
-        # --- MODIFICATION P6.1 : Assainissement du commentaire ---
         comment = f"Partial_TP_{volume_to_close:.{vol_digits}f}_lots"
-        # --- FIN MODIFICATION ---
 
         request = {
             "action": mt5.TRADE_ACTION_DEAL, "position": position.ticket, "symbol": position.symbol,
@@ -209,25 +209,13 @@ class MT5Executor:
             self.log.error(f"Erreur récupération infos compte: {e}")
             return None
 
-    def modify_position_sl_tp(self, ticket, sl, tp, comment_flag):
+    def modify_position_sl_tp(self, ticket, sl, tp):
         positions = self._mt5.positions_get(ticket=ticket)
         if not positions:
             self.log.warning(f"Tentative de modifier la position #{ticket} qui n'existe plus.")
             return
 
-        current_comment = positions[0].comment
-        new_comment = current_comment
-        # --- MODIFICATION P6.1 : Assainissement du commentaire ---
-        if comment_flag and comment_flag not in current_comment:
-            new_comment = f"{current_comment}_{comment_flag}" if current_comment else comment_flag
-            new_comment = new_comment[:31]
-        # --- FIN MODIFICATION ---
-
         request = {"action": mt5.TRADE_ACTION_SLTP, "position": ticket, "sl": float(sl), "tp": float(tp)}
-        
-        # Le champ 'comment' n'est pas standard pour une requête TRADE_ACTION_SLTP, sa modification
-        # doit se faire via une requête dédiée si le broker le permet, ce qui est rare.
-        # On n'inclut pas le commentaire ici pour maximiser la compatibilité.
         
         result = self._mt5.order_send(request)
         if not result or result.retcode != mt5.TRADE_RETCODE_DONE:
