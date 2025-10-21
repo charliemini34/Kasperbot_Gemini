@@ -1,7 +1,7 @@
 # Fichier: main.py
-# Version: 17.0.7 (Digits-Inject & Log-Fix)
-# Dépendances: MetaTrader5, pytz, PyYAML, Flask, playsound, time, threading, logging, webbrowser, os, datetime
-# Description: Injecte 'digits' dans PatternDetector et corrige log version.
+# Version: 19.0.5 (Patch-Hotfix-Execution)
+# Dépendances: MetaTrader5, pytz, PyYAML, Flask, playsound, time, threading, logging, webbrowser, os, datetime, decimal
+# Description: Corrige l'appel P1.1 (calculate_trade_parameters) et P1.2 (Float/Decimal).
 
 import time
 import threading
@@ -11,6 +11,8 @@ import webbrowser
 import os
 from datetime import datetime, time as dt_time
 import pytz
+from decimal import Decimal # Import requis pour P1.2
+
 try:
     from playsound import playsound
 except ImportError:
@@ -27,7 +29,7 @@ from src.shared_state import SharedState, LogHandler
 from src.analysis.performance_analyzer import PerformanceAnalyzer
 
 # --- MODIFICATION : Définir la version ici ---
-BOT_VERSION = "v19.0.4-patch" # Basé sur la version de pattern_detector corrigée
+BOT_VERSION = "v19.0.5-patch" # Basé sur la version de pattern_detector corrigée + Hotfix
 # --- FIN MODIFICATION ---
 
 def setup_logging(state: SharedState):
@@ -196,11 +198,31 @@ def analyze_and_trade_symbol(symbol: str, state: SharedState, config: dict, conn
 
             last_close_price = ohlc_data['close'].iloc[-1]
             
-            volume, sl, tp = risk_manager.calculate_trade_parameters(
-                account_info.equity, last_close_price, ohlc_data, trade_signal
+            # --- MODIFICATION P1.1 & P1.2 : Appel des fonctions réelles _calculate_sl_tp_levels et _calculate_volume ---
+            # 1. Calculer SL/TP (basé sur float)
+            sl, tp = risk_manager._calculate_sl_tp_levels(
+                last_close_price, trade_signal['direction'], ohlc_data, trade_signal
             )
             
-            # Re-vérifier le volume (converti en float par calculate_trade_parameters)
+            # 2. Calculer Volume (basé sur Decimal) - Assurer la conversion
+            if sl > 0 and tp > 0:
+                try:
+                    # Utiliser Decimal(str(float)) pour une conversion sécurisée
+                    volume_decimal = risk_manager._calculate_volume(
+                        Decimal(str(account_info.equity)), 
+                        Decimal(str(sl)), 
+                        Decimal(str(last_close_price)), 
+                        trade_signal['direction']
+                    )
+                    volume = float(volume_decimal) # Reconvertir en float pour l'exécution
+                except Exception as e:
+                    logging.error(f"Erreur conversion Decimal/Calcul Volume {symbol}: {e}", exc_info=True)
+                    volume = 0.0 # Annuler le trade
+            else:
+                volume = 0.0 # SL/TP invalides (déjà loggué par _calculate_sl_tp_levels)
+            # --- FIN MODIFICATION ---
+            
+            # Re-vérifier le volume
             if volume > 0 and sl > 0 and tp > 0:
                 if config['trading_settings'].get('live_trading_enabled', False):
                     # Trouver le nombre de décimales du volume pour log propre

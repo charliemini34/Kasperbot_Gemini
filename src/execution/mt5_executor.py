@@ -1,7 +1,7 @@
 # Fichier: src/execution/mt5_executor.py
-# Version: 15.4.1 (MT5-Connection-Getter)
-# Dépendances: MetaTrader5, pandas, logging, math, src.journal.professional_journal
-# Description: Ajoute une méthode get_mt5_connection().
+# Version: 15.5.0 (Hotfix-Floating-PnL)
+# Dépendances: MetaTrader5, pandas, logging, math, src.journal.professional_journal, decimal
+# Description: Ajoute la méthode get_total_floating_pl pour corriger AttributeError.
 
 import MetaTrader5 as mt5
 import logging
@@ -9,6 +9,7 @@ import pandas as pd
 import os
 import math
 from datetime import datetime, timedelta
+from decimal import Decimal, ROUND_DOWN
 from src.constants import BUY, SELL
 from src.journal.professional_journal import ProfessionalJournal
 
@@ -26,11 +27,9 @@ class MT5Executor:
         self.professional_journal = ProfessionalJournal(config)
         self.config = config
 
-    # --- NOUVELLE MÉTHODE ---
     def get_mt5_connection(self):
         """Retourne l'objet de connexion MetaTrader5."""
         return self._mt5
-    # --- FIN NOUVELLE MÉTHODE ---
 
     def get_open_positions(self, symbol: str = None, magic: int = 0) -> list:
         # Utilise self._mt5
@@ -43,6 +42,21 @@ class MT5Executor:
         except Exception as e:
             self.log.error(f"Erreur lors de la récupération des positions: {e}", exc_info=True)
             return []
+
+    # --- NOUVELLE MÉTHODE (CORRECTION P2.1) ---
+    def get_total_floating_pl(self, magic_number: int = 0) -> float:
+        """Calcule la somme des profits/pertes flottants pour les positions ouvertes."""
+        try:
+            open_positions = self.get_open_positions(magic=magic_number)
+            if not open_positions:
+                return 0.0
+            
+            total_floating_pl = sum(pos.profit for pos in open_positions)
+            return total_floating_pl
+        except Exception as e:
+            self.log.error(f"Erreur lors du calcul du PnL flottant: {e}", exc_info=True)
+            return 0.0
+    # --- FIN NOUVELLE MÉTHODE ---
 
     def execute_trade(self, account_info, risk_manager: 'RiskManager', symbol: str, direction: str,
                         volume: float, sl: float, tp: float, pattern_name: str, magic_number: int):
@@ -69,10 +83,10 @@ class MT5Executor:
                      df_atr = pd.DataFrame(ohlc_data_for_atr)
                      if not df_atr.empty:
                         # Assumer que risk_manager a la méthode calculate_atr
-                        if hasattr(risk_manager, 'calculate_atr'):
-                            atr_value = risk_manager.calculate_atr(df_atr, 14) or 0
+                        if hasattr(risk_manager, '_calculate_atr'): # Le nom de la méthode est _calculate_atr
+                            atr_value = risk_manager._calculate_atr(df_atr, 14) or 0
                         else:
-                            self.log.warning("RiskManager n'a pas la méthode calculate_atr.")
+                            self.log.warning("RiskManager n'a pas la méthode _calculate_atr.")
 
 
                 partial_tp_levels = self.config.get('risk_management', {}).get('partial_tp', {}).get('levels', [])
@@ -202,11 +216,26 @@ class MT5Executor:
             return None
 
     def modify_position(self, ticket, sl, tp):
+        self.modify_position_sl_tp(ticket, sl, tp, "") # Appeler la nouvelle fonction pour la consistance
+
+    def modify_position_sl_tp(self, ticket, sl, tp, comment_flag):
         # Utilise self._mt5
-        request = {"action": mt5.TRADE_ACTION_SLTP, "position": ticket, "sl": float(sl), "tp": float(tp)}
+        # Obtenir la position actuelle pour ne pas modifier le commentaire existant inutilement
+        positions = self._mt5.positions_get(ticket=ticket)
+        if not positions:
+            self.log.warning(f"Tentative de modifier la position #{ticket} qui n'existe plus.")
+            return
+
+        current_comment = positions[0].comment
+        new_comment = current_comment
+        if comment_flag and comment_flag not in current_comment:
+            new_comment = f"{current_comment}|{comment_flag}" if current_comment else comment_flag
+            new_comment = new_comment[:31] # S'assurer que le commentaire ne dépasse pas la limite
+
+        request = {"action": mt5.TRADE_ACTION_SLTP, "position": ticket, "sl": float(sl), "tp": float(tp), "comment": new_comment}
         result = self._mt5.order_send(request)
         if not result or result.retcode != mt5.TRADE_RETCODE_DONE:
             error_comment = result.comment if result else "Résultat vide"
             self.log.error(f"Échec modification pos #{ticket}: {error_comment}")
         else:
-            self.log.info(f"Position #{ticket} modifiée (SL: {sl}, TP: {tp}).")
+            self.log.info(f"Position #{ticket} modifiée (SL: {sl}, TP: {tp}, Comment: '{new_comment}').")
