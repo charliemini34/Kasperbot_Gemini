@@ -13,12 +13,7 @@ mt5_credentials:
   login: 10008432
   password: jsne80aX!
   server: Axi-US50-Demo
-pattern_detection:
-  CHANGE_OF_CHARACTER: true
-  INBALANCE: true
-  LIQUIDITY_GRAB: true
-  ORDER_BLOCK: true
-  SMC_AMD_SESSION: true
+
 professional_journal:
   enabled: true
   file_path_template: Journal_Trading_{month_name}_{year}.csv
@@ -90,3 +85,15 @@ trend_filter:
   ema_period: 200
   enabled: true
   higher_timeframe: H4
+trend_filter:
+  enabled: true # Activer/Désactiver le filtre MTF
+  higher_timeframe: H4 # Timeframe supérieur pour analyse de tendance
+  ema_period: 200 # Période de l'EMA sur le timeframe supérieur
+
+pattern_detection:
+  CHANGE_OF_CHARACTER: true
+  INBALANCE: true
+  LIQUIDITY_GRAB: true
+  ORDER_BLOCK: true
+  SMC_AMD_SESSION: true
+  # BREAK_OF_STRUCTURE n'est pas activable ici, il est informatif
