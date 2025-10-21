@@ -1,13 +1,14 @@
 # Fichier: src/execution/mt5_executor.py
-# Version: 15.5.0 (Hotfix-Floating-PnL)
-# Dépendances: MetaTrader5, pandas, logging, math, src.journal.professional_journal, decimal
-# Description: Ajoute la méthode get_total_floating_pl pour corriger AttributeError.
+# Version: 15.8.0 (Hotfix-Comment-Sanitization-Final)
+# Dépendances: MetaTrader5, pandas, logging, math, re, src.journal.professional_journal, decimal
+# Description: Implémente un assainissement robuste des commentaires sur toutes les fonctions d'ordre.
 
 import MetaTrader5 as mt5
 import logging
 import pandas as pd
 import os
 import math
+import re # Import requis pour l'assainissement
 from datetime import datetime, timedelta
 from decimal import Decimal, ROUND_DOWN
 from src.constants import BUY, SELL
@@ -19,7 +20,6 @@ if TYPE_CHECKING:
 
 class MT5Executor:
     def __init__(self, mt5_connection, config: dict):
-        # Utiliser _mt5 comme nom interne pour la connexion
         self._mt5 = mt5_connection
         self.log = logging.getLogger(self.__class__.__name__)
         self.history_file = 'trade_history.csv'
@@ -32,7 +32,6 @@ class MT5Executor:
         return self._mt5
 
     def get_open_positions(self, symbol: str = None, magic: int = 0) -> list:
-        # Utilise self._mt5
         try:
             positions = self._mt5.positions_get(symbol=symbol) if symbol else self._mt5.positions_get()
             if positions is None:
@@ -43,24 +42,20 @@ class MT5Executor:
             self.log.error(f"Erreur lors de la récupération des positions: {e}", exc_info=True)
             return []
 
-    # --- NOUVELLE MÉTHODE (CORRECTION P2.1) ---
     def get_total_floating_pl(self, magic_number: int = 0) -> float:
         """Calcule la somme des profits/pertes flottants pour les positions ouvertes."""
         try:
             open_positions = self.get_open_positions(magic=magic_number)
             if not open_positions:
                 return 0.0
-            
             total_floating_pl = sum(pos.profit for pos in open_positions)
             return total_floating_pl
         except Exception as e:
             self.log.error(f"Erreur lors du calcul du PnL flottant: {e}", exc_info=True)
             return 0.0
-    # --- FIN NOUVELLE MÉTHODE ---
 
     def execute_trade(self, account_info, risk_manager: 'RiskManager', symbol: str, direction: str,
                         volume: float, sl: float, tp: float, pattern_name: str, magic_number: int):
-        # Utilise self._mt5
         self.log.info(f"--- DÉBUT DE L'EXÉCUTION DU TRADE POUR {symbol} ---")
         price_info = self._mt5.symbol_info_tick(symbol)
         if not price_info:
@@ -76,18 +71,15 @@ class MT5Executor:
             result = self.place_order(symbol, trade_type, volume, price, sl, tp, magic_number, pattern_name)
 
             if result and result.order > 0:
-                # Utilise self._mt5
                 ohlc_data_for_atr = self._mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M15, 0, 100)
                 atr_value = 0
                 if ohlc_data_for_atr is not None:
                      df_atr = pd.DataFrame(ohlc_data_for_atr)
                      if not df_atr.empty:
-                        # Assumer que risk_manager a la méthode calculate_atr
-                        if hasattr(risk_manager, '_calculate_atr'): # Le nom de la méthode est _calculate_atr
+                        if hasattr(risk_manager, '_calculate_atr'):
                             atr_value = risk_manager._calculate_atr(df_atr, 14) or 0
                         else:
                             self.log.warning("RiskManager n'a pas la méthode _calculate_atr.")
-
 
                 partial_tp_levels = self.config.get('risk_management', {}).get('partial_tp', {}).get('levels', [])
                 num_partial_levels = len(partial_tp_levels)
@@ -104,8 +96,11 @@ class MT5Executor:
 
 
     def place_order(self, symbol, order_type, volume, price, sl, tp, magic_number, pattern_name):
-        # Utilise self._mt5
-        comment = f"KasperBot-{pattern_name}"[:31]
+        # --- MODIFICATION P6.1 : Assainissement robuste du commentaire ---
+        sanitized_pattern = re.sub(r'[^a-zA-Z0-9_]', '', pattern_name.replace(" ", "_"))
+        comment = f"KasperBot-{sanitized_pattern}"[:31]
+        # --- FIN MODIFICATION ---
+        
         request = {
             "action": mt5.TRADE_ACTION_DEAL, "symbol": symbol, "volume": float(volume),
             "type": order_type, "price": float(price), "sl": float(sl), "tp": float(tp),
@@ -121,20 +116,18 @@ class MT5Executor:
             return result
         else:
             self.log.error(f"Échec envoi ordre: retcode={result.retcode}, commentaire={result.comment}")
-            if result.retcode == 10014: # Invalid volume
+            if result.retcode == 10014:
                  symbol_info_debug = self._mt5.symbol_info(symbol)
                  if symbol_info_debug: self.log.error(f"DEBUG VOLUME {symbol}: Reçu 10014. Vol={volume}. Broker: Min={symbol_info_debug.volume_min}, Max={symbol_info_debug.volume_max}, Step={symbol_info_debug.volume_step}")
                  else: self.log.error(f"DEBUG VOLUME {symbol}: Reçu 10014. Vol={volume}. Infos symbole indisponibles.")
             return None
 
     def close_partial_position(self, position, volume_to_close: float) -> bool:
-        # Utilise self._mt5
         if volume_to_close <= 0: return False
         symbol_info = self._mt5.symbol_info(position.symbol)
         if not symbol_info: return False
         volume_step = symbol_info.volume_step
         if volume_step > 0:
-            # Utiliser Decimal pour précision
             vol_to_close_d = Decimal(str(volume_to_close))
             vol_step_d = Decimal(str(volume_step))
             num_steps = (vol_to_close_d / vol_step_d).to_integral_value(rounding=ROUND_DOWN)
@@ -147,10 +140,15 @@ class MT5Executor:
         price_info = self._mt5.symbol_info_tick(position.symbol)
         if not price_info: return False
         price = price_info.bid if order_type == mt5.ORDER_TYPE_SELL else price_info.ask
+        
+        # --- MODIFICATION P6.1 : Assainissement du commentaire ---
+        comment = f"Partial_TP_{volume_to_close:.{vol_digits}f}_lots"
+        # --- FIN MODIFICATION ---
+
         request = {
             "action": mt5.TRADE_ACTION_DEAL, "position": position.ticket, "symbol": position.symbol,
             "volume": volume_to_close, "type": order_type, "price": price, "deviation": 20,
-            "magic": position.magic, "comment": f"Partial TP {volume_to_close:.{vol_digits}f} lots",
+            "magic": position.magic, "comment": comment,
             "type_time": mt5.ORDER_TIME_GTC, "type_filling": mt5.ORDER_FILLING_IOC,
         }
         self.log.info(f"Tentative clôture partielle {volume_to_close:.{vol_digits}f} lots #{position.ticket}...")
@@ -166,7 +164,6 @@ class MT5Executor:
             return False
 
     def check_for_closed_trades(self, magic_number: int):
-        # Utilise self._mt5
         try:
             from_date = datetime.utcnow() - timedelta(days=7)
             history_deals = self._mt5.history_deals_get(from_date, datetime.utcnow())
@@ -190,7 +187,6 @@ class MT5Executor:
                             'volatility_atr': context.get('volatility_atr', 0)
                          }
                          self._archive_trade(trade_record)
-                         # Utilise self.get_account_info() qui utilise self._mt5
                          self.professional_journal.record_trade(trade_record, self.get_account_info())
                     else:
                          self.log.warning(f"Trade #{ticket} clôturé mais deal sortie introuvable.")
@@ -199,7 +195,6 @@ class MT5Executor:
 
 
     def _archive_trade(self, trade_record: dict):
-        # ... (inchangé) ...
         try:
             df = pd.DataFrame([trade_record])
             file_exists = os.path.exists(self.history_file)
@@ -209,18 +204,12 @@ class MT5Executor:
             self.log.error(f"Erreur archivage trade #{trade_record['ticket']}: {e}")
 
     def get_account_info(self):
-        # Utilise self._mt5
         try: return self._mt5.account_info()
         except Exception as e:
             self.log.error(f"Erreur récupération infos compte: {e}")
             return None
 
-    def modify_position(self, ticket, sl, tp):
-        self.modify_position_sl_tp(ticket, sl, tp, "") # Appeler la nouvelle fonction pour la consistance
-
     def modify_position_sl_tp(self, ticket, sl, tp, comment_flag):
-        # Utilise self._mt5
-        # Obtenir la position actuelle pour ne pas modifier le commentaire existant inutilement
         positions = self._mt5.positions_get(ticket=ticket)
         if not positions:
             self.log.warning(f"Tentative de modifier la position #{ticket} qui n'existe plus.")
@@ -228,14 +217,22 @@ class MT5Executor:
 
         current_comment = positions[0].comment
         new_comment = current_comment
+        # --- MODIFICATION P6.1 : Assainissement du commentaire ---
         if comment_flag and comment_flag not in current_comment:
-            new_comment = f"{current_comment}|{comment_flag}" if current_comment else comment_flag
-            new_comment = new_comment[:31] # S'assurer que le commentaire ne dépasse pas la limite
+            new_comment = f"{current_comment}_{comment_flag}" if current_comment else comment_flag
+            new_comment = new_comment[:31]
+        # --- FIN MODIFICATION ---
 
-        request = {"action": mt5.TRADE_ACTION_SLTP, "position": ticket, "sl": float(sl), "tp": float(tp), "comment": new_comment}
+        request = {"action": mt5.TRADE_ACTION_SLTP, "position": ticket, "sl": float(sl), "tp": float(tp)}
+        
+        # Le champ 'comment' n'est pas standard pour une requête TRADE_ACTION_SLTP, sa modification
+        # doit se faire via une requête dédiée si le broker le permet, ce qui est rare.
+        # On n'inclut pas le commentaire ici pour maximiser la compatibilité.
+        
         result = self._mt5.order_send(request)
         if not result or result.retcode != mt5.TRADE_RETCODE_DONE:
             error_comment = result.comment if result else "Résultat vide"
             self.log.error(f"Échec modification pos #{ticket}: {error_comment}")
         else:
-            self.log.info(f"Position #{ticket} modifiée (SL: {sl}, TP: {tp}, Comment: '{new_comment}').")
+            self.log.info(f"Position #{ticket} modifiée (SL: {sl}, TP: {tp}).")
+
