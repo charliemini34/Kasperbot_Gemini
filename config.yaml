@@ -74,7 +74,7 @@ trading_settings:
   - USOIL
   - BTCUSD
   - ETHUSD
-  timeframe: M15
+  timeframe: M5
   trading_sessions:
   - 1-00:00-23:59
   - 2-00:00-23:59
