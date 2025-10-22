@@ -1,5 +1,5 @@
 # Fichier: src/backtest/backtester.py
-# Version: 16.0.0 (Realistic-Simulation)
+# Version: 1.0.0 manuel
 # Dépendances: pandas, numpy, yaml, MetaTrader5
 # Description: Ajout de la simulation du spread et des commissions pour un réalisme accru.
 

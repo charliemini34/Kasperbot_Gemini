@@ -1,5 +1,5 @@
 # Fichier: src/shared_state.py
-# Version: 9.1.0 (UI-Init-Fix)
+# Version: 1.0.0 manuel
 # Dépendances: threading, logging, collections.deque
 # Description: Ajoute initialize_symbol_data et supprime l'ImportError (P5.1).
 

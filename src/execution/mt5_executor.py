@@ -1,6 +1,6 @@
 
 # Fichier: src/execution/mt5_executor.py
-# Version: 15.1.1 (RiskManager-Call-Fix-2) # <-- Version mise à jour
+# Version: 1.0.0 manuel
 # Dépendances: MetaTrader5, pandas, logging, src.journal.professional_journal
 
 import MetaTrader5 as mt5

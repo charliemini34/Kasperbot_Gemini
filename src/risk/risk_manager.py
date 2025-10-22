@@ -1,7 +1,7 @@
 
 
 # Fichier: src/risk/risk_manager.py
-# Version: 17.0.1 (Signal-Validation-Fix)
+# Version: 1.0.0 manuel
 # Dépendances: MetaTrader5, pandas, numpy, logging, pytz, src.constants
 
 import MetaTrader5 as mt5

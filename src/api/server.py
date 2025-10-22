@@ -1,5 +1,5 @@
 # Fichier: src/api/server.py
-# Version: 2.0.1 (UI Hotfix)
+# Version: 1.0.0 manuel
 
 from flask import Flask, jsonify, render_template_string, request
 import yaml

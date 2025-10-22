@@ -1,5 +1,5 @@
 # Fichier: src/journal/professional_journal.py
-# Version: 1.0.0 (Professional-Journaling)
+# Version: 1.0.0 manuel
 # Dépendances: pandas, os, logging, datetime
 
 import pandas as pd

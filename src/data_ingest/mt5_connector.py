@@ -1,6 +1,6 @@
 
 # Fichier: src/data_ingest/mt5_connector.py
-# Version: 14.1.0 (HTF-Data-Added) # <-- Version mise à jour
+# Version: 1.0.0 manuel
 # Dépendances: MetaTrader5, pandas, logging, time, datetime, pytz
 # Description: Ajout de get_ohlc_range pour récupérer des données HTF.
 

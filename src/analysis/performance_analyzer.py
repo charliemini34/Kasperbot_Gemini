@@ -1,5 +1,5 @@
 # Fichier: src/analysis/performance_analyzer.py
-# Version: 3.1.2 (AI-Prompt-Syntax-Fix-Final)
+# Version: 1.0.0 manuel
 # Dépendances: pandas, os, logging, numpy, yaml
 # Description: Corrige DÉFINITIVEMENT l'erreur de syntaxe dans la f-string du prompt IA.
 
