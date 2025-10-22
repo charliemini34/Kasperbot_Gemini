@@ -1,23 +1,15 @@
 
 # Fichier: src/execution/mt5_executor.py
-# Version: 20.0.1 (Hotfix-Circular-Import)
-# Dépendances: MetaTrader5, pandas, logging, math, re, src.journal.professional_journal, decimal
-# Description: Supprime l'importation circulaire fatale (ImportError).
+# Version: 15.1.1 (RiskManager-Call-Fix-2) # <-- Version mise à jour
+# Dépendances: MetaTrader5, pandas, logging, src.journal.professional_journal
 
 import MetaTrader5 as mt5
 import logging
 import pandas as pd
 import os
-import math
-import re
 from datetime import datetime, timedelta
-from decimal import Decimal, ROUND_DOWN
 from src.constants import BUY, SELL
 from src.journal.professional_journal import ProfessionalJournal
-
-from typing import TYPE_CHECKING
-if TYPE_CHECKING:
-    from src.risk.risk_manager import RiskManager
 
 class MT5Executor:
     def __init__(self, mt5_connection, config: dict):
@@ -26,11 +18,6 @@ class MT5Executor:
         self.history_file = 'trade_history.csv'
         self._trade_context = {}
         self.professional_journal = ProfessionalJournal(config)
-        self.config = config
-
-    def get_mt5_connection(self):
-        """Retourne l'objet de connexion MetaTrader5."""
-        return self._mt5
 
     def get_open_positions(self, symbol: str = None, magic: int = 0) -> list:
         try:
@@ -38,161 +25,165 @@ class MT5Executor:
             if positions is None:
                 self.log.warning(f"Impossible de récupérer les positions: {self._mt5.last_error()}")
                 return []
+
             return [pos for pos in positions if magic == 0 or pos.magic == magic]
         except Exception as e:
             self.log.error(f"Erreur lors de la récupération des positions: {e}", exc_info=True)
             return []
 
-    def get_total_floating_pl(self, magic_number: int = 0) -> float:
-        """Calcule la somme des profits/pertes flottants pour les positions ouvertes."""
-        try:
-            open_positions = self.get_open_positions(magic=magic_number)
-            if not open_positions:
-                return 0.0
-            total_floating_pl = sum(pos.profit for pos in open_positions)
-            return total_floating_pl
-        except Exception as e:
-            self.log.error(f"Erreur lors du calcul du PnL flottant: {e}", exc_info=True)
-            return 0.0
-
-    def execute_trade(self, account_info, risk_manager: 'RiskManager', symbol: str, direction: str,
-                        volume: float, sl: float, tp: float, pattern_name: str, magic_number: int):
+    # --- SIGNATURE MODIFIÉE ---
+    def execute_trade(self, account_info, risk_manager, symbol, direction, ohlc_data, pattern_name, magic_number, trade_signal: dict):
+        """Orchestre le placement d'un trade avec une journalisation détaillée."""
         self.log.info(f"--- DÉBUT DE L'EXÉCUTION DU TRADE POUR {symbol} ---")
+
+        trade_type = mt5.ORDER_TYPE_BUY if direction == BUY else mt5.ORDER_TYPE_SELL
         price_info = self._mt5.symbol_info_tick(symbol)
+
         if not price_info:
             self.log.error(f"Impossible d'obtenir le tick pour {symbol}. Ordre annulé.")
             return
 
         price = price_info.ask if direction == BUY else price_info.bid
 
+        # --- APPEL CORRIGÉ ---
+        # Utiliser directement calculate_trade_parameters avec tous les arguments requis
+        volume, sl, tp = risk_manager.calculate_trade_parameters(
+            account_info.equity,
+            price, # Utiliser le prix Ask/Bid actuel pour le calcul
+            ohlc_data,
+            trade_signal # Passer le dictionnaire complet du signal
+        )
+        # --- FIN CORRECTION APPEL ---
+
         if volume > 0:
-            self.log.info(f"Paramètres de l'ordre: {direction} {volume:.4f} lot(s) de {symbol} @ {price:.5f}, SL={sl:.5f}, TP={tp:.5f}")
-            trade_type = mt5.ORDER_TYPE_BUY if direction == BUY else mt5.ORDER_TYPE_SELL
-            self.log.debug(f"DEBUG VOLUME FINAL pour {symbol}: Tentative d'envoi avec volume = {volume}")
+            self.log.info(f"Paramètres de l'ordre: {direction} {volume:.2f} lot(s) de {symbol} @ {price:.5f}, SL={sl:.5f}, TP={tp:.5f}")
             result = self.place_order(symbol, trade_type, volume, price, sl, tp, magic_number, pattern_name)
 
             if result and result.order > 0:
-                ohlc_data_for_atr = self._mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M15, 0, 100)
-                atr_value = 0
-                if ohlc_data_for_atr is not None:
-                     df_atr = pd.DataFrame(ohlc_data_for_atr)
-                     if not df_atr.empty:
-                        if hasattr(risk_manager, '_calculate_atr'):
-                            atr_value = risk_manager._calculate_atr(df_atr, 14) or 0
-                        else:
-                            self.log.warning("RiskManager n'a pas la méthode _calculate_atr.")
+                atr_value = 0 # Default value
+                try:
+                    # Recalculer l'ATR basé sur les données ohlc_data fournies si nécessaire pour le contexte
+                    atr_value = risk_manager.calculate_atr(ohlc_data, risk_manager._config.get('risk_management', {}).get('atr_settings', {}).get('default', {}).get('period', 14)) or 0
+                except Exception as e:
+                    self.log.warning(f"Impossible de calculer l'ATR pour le contexte du trade {symbol}: {e}")
 
-                partial_tp_levels = self.config.get('risk_management', {}).get('partial_tp', {}).get('levels', [])
-                num_partial_levels = len(partial_tp_levels)
-                
                 self._trade_context[result.order] = {
-                    'ticket': result.order, 'symbol': symbol, 'direction': direction,
-                    'open_time': datetime.utcnow().isoformat(), 'pattern_trigger': pattern_name,
-                    'initial_volume': volume, 'remaining_volume': volume,
-                    'partial_tp_state': [False] * num_partial_levels, 
-                    'sl_initial': sl,
-                    'volatility_atr': atr_value,
-                    'be_applied': False, 
-                    'be_triggered_by_ptp1': False 
+                    'symbol': symbol, 'direction': direction,
+                    'open_time': datetime.utcnow().isoformat(),
+                    'pattern_trigger': pattern_name,
+                    'volatility_atr': atr_value
                 }
-                self.log.debug(f"Contexte créé pour trade #{result.order}: {self._trade_context[result.order]}")
         else:
-            self.log.warning(f"Execute_trade appelé avec volume 0 pour {symbol}.")
+            self.log.warning(f"Trade sur {symbol} annulé car le volume ({volume}) est de 0.0 ou SL/TP invalide ({sl}/{tp}).")
 
 
     def place_order(self, symbol, order_type, volume, price, sl, tp, magic_number, pattern_name):
-        sanitized_pattern = re.sub(r'[^a-zA-Z0-9_]', '', pattern_name.replace(" ", "_"))
-        comment = f"KasperBot-{sanitized_pattern}"[:31]
-        
+        """Place un ordre de marché avec une gestion robuste des erreurs et un remplissage IOC."""
+        comment = f"KasperBot-{pattern_name}"[:31]
         request = {
-            "action": mt5.TRADE_ACTION_DEAL, "symbol": symbol, "volume": float(volume),
-            "type": order_type, "price": float(price), "sl": float(sl), "tp": float(tp),
-            "deviation": 20, "magic": magic_number, "comment": comment,
-            "type_time": mt5.ORDER_TIME_GTC, "type_filling": mt5.ORDER_FILLING_IOC,
+            "action": mt5.TRADE_ACTION_DEAL,
+            "symbol": symbol,
+            "volume": float(volume),
+            "type": order_type,
+            "price": float(price),
+            "sl": float(sl),
+            "tp": float(tp),
+            "deviation": 20,
+            "magic": magic_number,
+            "comment": comment,
+            "type_time": mt5.ORDER_TIME_GTC,
+            "type_filling": mt5.ORDER_FILLING_IOC,
         }
-        self.log.debug(f"Envoi requête ordre: {request}")
-        try: result = self._mt5.order_send(request)
-        except Exception as e: self.log.critical(f"Exception envoi ordre : {e}", exc_info=True); return None
-        if result is None: self.log.error(f"Échec critique envoi order_send=None. Erreur MT5: {self._mt5.last_error()}"); return None
-        if result.retcode == mt5.TRADE_RETCODE_DONE:
-            self.log.info(f"Ordre placé OK: Ticket #{result.order}, Retcode: {result.retcode}")
-            return result
-        else:
-            self.log.error(f"Échec envoi ordre: retcode={result.retcode}, commentaire={result.comment}")
-            if result.retcode == 10014:
-                 symbol_info_debug = self._mt5.symbol_info(symbol)
-                 if symbol_info_debug: self.log.error(f"DEBUG VOLUME {symbol}: Reçu 10014. Vol={volume}. Broker: Min={symbol_info_debug.volume_min}, Max={symbol_info_debug.volume_max}, Step={symbol_info_debug.volume_step}")
-                 else: self.log.error(f"DEBUG VOLUME {symbol}: Reçu 10014. Vol={volume}. Infos symbole indisponibles.")
+
+        self.log.debug(f"Envoi de la requête d'ordre : {request}")
+        try:
+            result = self._mt5.order_send(request)
+        except Exception as e:
+            self.log.critical(f"Exception lors de l'envoi de l'ordre : {e}", exc_info=True)
             return None
 
-    def close_partial_position(self, position, volume_to_close: float) -> bool:
-        if volume_to_close <= 0: return False
-        symbol_info = self._mt5.symbol_info(position.symbol)
-        if not symbol_info: return False
-        volume_step = symbol_info.volume_step
-        if volume_step > 0:
-            vol_to_close_d = Decimal(str(volume_to_close))
-            vol_step_d = Decimal(str(volume_step))
-            num_steps = (vol_to_close_d / vol_step_d).to_integral_value(rounding=ROUND_DOWN)
-            volume_to_close = float(num_steps * vol_step_d)
-        vol_digits = int(abs(Decimal(str(volume_step)).log10())) if vol_step > 0 else 2
-        volume_to_close = round(min(volume_to_close, position.volume), vol_digits)
-        if volume_to_close < symbol_info.volume_min and volume_to_close > 0: return False
-        if volume_to_close <= 0: return False
-        order_type = mt5.ORDER_TYPE_SELL if position.type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY
-        price_info = self._mt5.symbol_info_tick(position.symbol)
-        if not price_info: return False
-        price = price_info.bid if order_type == mt5.ORDER_TYPE_SELL else price_info.ask
-        
-        comment = f"Partial_TP_{volume_to_close:.{vol_digits}f}_lots"
+        if result is None:
+            self.log.error(f"Échec critique de l'envoi. order_send a retourné None. Erreur MT5: {self._mt5.last_error()}")
+            return None
 
-        request = {
-            "action": mt5.TRADE_ACTION_DEAL, "position": position.ticket, "symbol": position.symbol,
-            "volume": volume_to_close, "type": order_type, "price": price, "deviation": 20,
-            "magic": position.magic, "comment": comment,
-            "type_time": mt5.ORDER_TIME_GTC, "type_filling": mt5.ORDER_FILLING_IOC,
-        }
-        self.log.info(f"Tentative clôture partielle {volume_to_close:.{vol_digits}f} lots #{position.ticket}...")
-        self.log.debug(f"Requête clôture partielle: {request}")
-        try: result = self._mt5.order_send(request)
-        except Exception as e: self.log.critical(f"Exception clôture partielle #{position.ticket} : {e}", exc_info=True); return False
-        if result and result.retcode == mt5.TRADE_RETCODE_DONE:
-            self.log.info(f"Clôture partielle {volume_to_close:.{vol_digits}f} lots #{position.ticket} OK. Ordre: #{result.order}")
-            return True
+        if result.retcode == mt5.TRADE_RETCODE_DONE:
+            self.log.info(f"Ordre placé avec succès: Ticket #{result.order}, Retcode: {result.retcode}")
+            return result
         else:
-            retcode = result.retcode if result else "None"; comment = result.comment if result else self._mt5.last_error()
-            self.log.error(f"Échec clôture partielle #{position.ticket}: retcode={retcode}, commentaire={comment}")
-            return False
+            self.log.error(f"Échec de l'envoi de l'ordre: retcode={result.retcode}, commentaire={result.comment}")
+            # Log plus détaillé pour certains échecs courants
+            if result.retcode == mt5.TRADE_RETCODE_INVALID_VOLUME:
+                 self.log.error(f"Volume invalide: {volume}. Min: {self._mt5.symbol_info(symbol).volume_min}, Max: {self._mt5.symbol_info(symbol).volume_max}, Step: {self._mt5.symbol_info(symbol).volume_step}")
+            elif result.retcode == mt5.TRADE_RETCODE_INVALID_STOPS:
+                 self.log.error(f"SL/TP Invalide: SL={sl}, TP={tp}. Freeze Level: {self._mt5.symbol_info(symbol).trade_freeze_level}")
+            return None
 
     def check_for_closed_trades(self, magic_number: int):
+        """Vérifie et archive les trades fermés en se basant sur l'historique."""
         try:
-            from_date = datetime.utcnow() - timedelta(days=7)
+            from_date = datetime.utcnow() - timedelta(days=7) # Regarder l'historique des 7 derniers jours
+            # Utiliser history_deals_get pour obtenir les transactions
             history_deals = self._mt5.history_deals_get(from_date, datetime.utcnow())
-            if history_deals is None: return
-            current_context_tickets = list(self._trade_context.keys())
-            mt5_open_positions = self._mt5.positions_get(magic=magic_number)
-            mt5_open_tickets = {pos.ticket for pos in mt5_open_positions} if mt5_open_positions else set()
-            for ticket in current_context_tickets:
-                if ticket not in mt5_open_tickets:
-                    context = self._trade_context.pop(ticket)
-                    exit_deals = [d for d in history_deals if d.position_id == ticket and d.entry == 1]
-                    if exit_deals:
-                         last_exit_deal = max(exit_deals, key=lambda d: d.time)
-                         total_pnl = sum(d.profit for d in exit_deals)
-                         trade_record = {
-                            'ticket': ticket, 'symbol': context['symbol'], 'direction': context['direction'],
+
+            if history_deals is None:
+                self.log.warning("Impossible de récupérer l'historique des transactions pour archivage.")
+                return
+
+            closed_tickets_order_ids = set() # Utiliser l'order ID lié au deal de sortie
+            deals_by_position_id = {}
+
+            for deal in history_deals:
+                if deal.magic == magic_number:
+                     # Regrouper les deals par ID de position
+                     if deal.position_id not in deals_by_position_id:
+                          deals_by_position_id[deal.position_id] = []
+                     deals_by_position_id[deal.position_id].append(deal)
+
+                     # Un deal de sortie (entry == 1) signifie que la position est fermée
+                     if deal.entry == mt5.DEAL_ENTRY_OUT or deal.entry == mt5.DEAL_ENTRY_INOUT: # DEAL_ENTRY_OUT = 1
+                         # Chercher le deal d'entrée correspondant pour trouver l'ID d'ordre d'ouverture
+                         entry_deal = next((d for d in history_deals if d.position_id == deal.position_id and (d.entry == mt5.DEAL_ENTRY_IN or d.entry == mt5.DEAL_ENTRY_INOUT)), None) # DEAL_ENTRY_IN = 0
+                         if entry_deal:
+                              closed_tickets_order_ids.add(entry_deal.order) # Ajouter l'ID d'ordre d'ouverture aux tickets fermés
+
+            # Maintenant, traiter les tickets fermés en utilisant les IDs d'ordre d'ouverture stockés dans _trade_context
+            for order_id in closed_tickets_order_ids:
+                if order_id in self._trade_context:
+                    context = self._trade_context.pop(order_id) # Retirer le contexte associé à cet ordre
+                    
+                    # Trouver la position ID associée à cet ordre d'ouverture
+                    entry_deal = next((d for d in history_deals if d.order == order_id and d.magic == magic_number and (d.entry == mt5.DEAL_ENTRY_IN or d.entry == mt5.DEAL_ENTRY_INOUT)), None)
+                    if not entry_deal:
+                         self.log.warning(f"Deal d'entrée manquant pour l'ordre fermé #{order_id}")
+                         continue
+                         
+                    position_id = entry_deal.position_id
+
+                    # Trouver le deal de sortie final pour cette position_id
+                    exit_deal = next((d for d in reversed(history_deals) if d.position_id == position_id and (d.entry == mt5.DEAL_ENTRY_OUT or d.entry == mt5.DEAL_ENTRY_INOUT)), None)
+
+                    if exit_deal:
+                        # Calculer le PnL total pour cette position_id (somme des profits/pertes de tous les deals associés)
+                        total_pnl = sum(d.profit for d in deals_by_position_id.get(position_id, []) if d.magic == magic_number)
+                        
+                        trade_record = {
+                            'ticket': order_id, # Utiliser l'order ID comme référence unique pour l'archivage/journal
+                            'position_id': position_id, # Garder aussi l'ID de position MT5
+                            'symbol': context['symbol'],
+                            'direction': context['direction'],
                             'open_time': context['open_time'],
-                            'close_time': datetime.fromtimestamp(last_exit_deal.time).isoformat(),
-                            'pnl': total_pnl,
+                            'close_time': datetime.fromtimestamp(exit_deal.time).isoformat(),
+                            'pnl': total_pnl, # Utiliser le PnL total calculé
                             'pattern_trigger': context['pattern_trigger'],
-                            'volatility_atr': context.get('volatility_atr', 0)
-                         }
-                         self._archive_trade(trade_record)
-                         self.professional_journal.record_trade(trade_record, self.get_account_info())
+                            'volatility_atr': context.get('volatility_atr', 0) # Utiliser .get avec valeur par défaut
+                        }
+                        self._archive_trade(trade_record)
+                        self.professional_journal.record_trade(trade_record, self.get_account_info())
                     else:
-                         self.log.warning(f"Trade #{ticket} clôturé mais deal sortie introuvable.")
+                         self.log.warning(f"Contexte trouvé pour l'ordre fermé #{order_id} (Position #{position_id}), mais le deal de sortie est manquant dans l'historique récent.")
+
         except Exception as e:
-            self.log.error(f"Erreur vérification trades fermés: {e}", exc_info=True)
+            self.log.error(f"Erreur lors de la vérification des trades fermés: {e}", exc_info=True)
 
 
     def _archive_trade(self, trade_record: dict):
@@ -200,27 +191,36 @@ class MT5Executor:
             df = pd.DataFrame([trade_record])
             file_exists = os.path.exists(self.history_file)
             df.to_csv(self.history_file, mode='a', header=not file_exists, index=False)
-            self.log.info(f"Trade #{trade_record['ticket']} (clôture finale) archivé avec PnL total {trade_record['pnl']:.2f}$.")
+            self.log.info(f"Trade (Ordre #{trade_record['ticket']}, Pos #{trade_record.get('position_id', 'N/A')}) archivé avec un PnL de {trade_record['pnl']:.2f}$.")
         except IOError as e:
-            self.log.error(f"Erreur archivage trade #{trade_record['ticket']}: {e}")
+            self.log.error(f"Erreur d'écriture lors de l'archivage du trade #{trade_record['ticket']}: {e}")
 
     def get_account_info(self):
-        try: return self._mt5.account_info()
+        try:
+            return self._mt5.account_info()
         except Exception as e:
-            self.log.error(f"Erreur récupération infos compte: {e}")
+            self.log.error(f"Erreur lors de la récupération des infos du compte: {e}")
             return None
 
-    def modify_position_sl_tp(self, ticket, sl, tp):
-        positions = self._mt5.positions_get(ticket=ticket)
-        if not positions:
-            self.log.warning(f"Tentative de modifier la position #{ticket} qui n'existe plus.")
-            return
-
-        request = {"action": mt5.TRADE_ACTION_SLTP, "position": ticket, "sl": float(sl), "tp": float(tp)}
-        
+    def modify_position(self, ticket, sl, tp):
+        """Modifie le SL/TP d'une position ouverte."""
+        request = {
+            "action": mt5.TRADE_ACTION_SLTP,
+            "position": ticket, # Utiliser l'ID de la position (ticket) pour la modification
+            "sl": float(sl),
+            "tp": float(tp)
+        }
         result = self._mt5.order_send(request)
+
         if not result or result.retcode != mt5.TRADE_RETCODE_DONE:
-            error_comment = result.comment if result else "Résultat vide"
-            self.log.error(f"Échec modification pos #{ticket}: {error_comment}")
+            error_comment = result.comment if result else "Résultat vide de order_send"
+            error_code = result.retcode if result else "N/A"
+            self.log.error(f"Échec de la modification de la position #{ticket}: Code={error_code}, Commentaire={error_comment}")
+            # Log specific error if SL/TP is invalid relative to current price or freeze level
+            if result and result.retcode == mt5.TRADE_RETCODE_INVALID_STOPS:
+                current_info = self._mt5.symbol_info_tick(self._mt5.positions_get(ticket=ticket)[0].symbol)
+                freeze_level = self._mt5.symbol_info(self._mt5.positions_get(ticket=ticket)[0].symbol).trade_freeze_level * self._mt5.symbol_info(self._mt5.positions_get(ticket=ticket)[0].symbol).point
+                self.log.error(f"Modify Position #{ticket}: SL={sl:.5f}, TP={tp:.5f}. Current Ask={current_info.ask:.5f}, Bid={current_info.bid:.5f}. Freeze Distance={freeze_level:.5f}")
+
         else:
-            self.log.info(f"Position #{ticket} modifiée (SL: {sl}, TP: {tp}).")
+            self.log.info(f"Position #{ticket} modifiée avec succès (SL: {sl:.5f}, TP: {tp:.5f}).")

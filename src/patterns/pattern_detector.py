@@ -1,278 +1,245 @@
 
-# Fichier: src/patterns/pattern_detector.py
-# Version: 20.0.0 (Build Stabilisé)
-# Dépendances: MetaTrader5, pandas, numpy, logging, typing, src.constants
-# Description: Version stable intégrant P1-P6 et corrections proactives (Logs INFO -> DEBUG P-Proactif 3).
 
-import MetaTrader5 as mt5
+# Fichier: src/patterns/pattern_detector.py
+# Version: 17.0.0 (SMC-Targeting)
+# Dépendances: pandas, numpy, logging, datetime, src.constants
+
 import pandas as pd
 import numpy as np
 import logging
-from src.constants import *
-from typing import Tuple, Optional, Dict, List
-
-# Constantes P/D
-PREMIUM = "Premium"
-DISCOUNT = "Discount"
-EQUILIBRIUM = "Equilibrium"
-
+from datetime import time
+from src.constants import (
+    PATTERN_ORDER_BLOCK, PATTERN_CHOCH, PATTERN_INBALANCE, PATTERN_LIQUIDITY_GRAB,
+    PATTERN_AMD, BUY, SELL
+)
 
 class PatternDetector:
     """
-    Détecte les patterns de trading SMC (Smart Money Concepts)
-    v20.0.0: Stable. Logs de signaux internes passés en DEBUG.
+    Module de reconnaissance de patterns SMC & ICT, avec ciblage de liquidité.
+    v17.0.0: Les signaux incluent désormais un 'target_price' basé sur les swing points.
     """
-
-    def __init__(self, config: dict, digits: int):
+    def __init__(self, config):
         self.config = config
-        self.digits = digits 
-        
-        self.pattern_settings = config.get('pattern_detection', {})
-        self.use_trend_filter = config.get('trend_filter', {}).get('enabled', True)
-        self.ema_period = config.get('trend_filter', {}).get('ema_period', 200)
-        self.htf_timeframe = config.get('trend_filter', {}).get('higher_timeframe', 'H4')
-
-        self.fvg_imbalance_ratio = self.pattern_settings.get('fvg_imbalance_ratio', 0.5)
-        self.ob_wick_ratio = self.pattern_settings.get('ob_wick_ratio', 0.3)
-        self.swing_lookback = self.pattern_settings.get('swing_lookback_periods', 10)
-        self.premium_threshold = self.pattern_settings.get('premium_threshold', 0.5)
-        
+        self.log = logging.getLogger(self.__class__.__name__)
         self.detected_patterns_info = {}
 
-    def get_detected_patterns_info(self) -> dict:
+    def get_detected_patterns_info(self):
         return self.detected_patterns_info.copy()
 
+    def _get_trend_filter_direction(self, connector, symbol: str) -> str:
+        filter_cfg = self.config.get('trend_filter', {})
+        if not filter_cfg.get('enabled', False):
+            self.detected_patterns_info['TREND_FILTER'] = {'status': 'Désactivé'}
+            return "ANY"
 
-    def detect_patterns(self, ohlc_data: pd.DataFrame, connector, symbol: str) -> Optional[Dict]:
-        if ohlc_data is None or len(ohlc_data) < 50:
-             logging.warning(f"Données insuffisantes pour détection SMC {symbol}.")
-             return None
+        higher_timeframe = filter_cfg.get('higher_timeframe', 'H4')
+        period = filter_cfg.get('ema_period', 200)
+        
+        try:
+            htf_data = connector.get_ohlc(symbol, higher_timeframe, period + 50)
+            if htf_data is None or htf_data.empty:
+                self.log.warning(f"Impossible de récupérer les données {higher_timeframe} pour le filtre de tendance.")
+                self.detected_patterns_info['TREND_FILTER'] = {'status': f'Erreur données {higher_timeframe}'}
+                return "ANY"
 
-        self.detected_patterns_info = {}
+            ema = htf_data['close'].ewm(span=period, adjust=False).mean()
+            current_price = htf_data['close'].iloc[-1]
+            
+            status = "HAUSSIÈRE" if current_price > ema.iloc[-1] else "BAISSIÈRE"
+            self.detected_patterns_info['TREND_FILTER'] = {'status': f"{status} ({higher_timeframe})"}
+            return BUY if status == "HAUSSIÈRE" else SELL
+        except Exception as e:
+            self.log.error(f"Erreur dans le filtre de tendance : {e}", exc_info=True)
+            return "ANY"
+
+    def detect_patterns(self, ohlc_data: pd.DataFrame, connector, symbol: str):
         df = ohlc_data.copy()
         
         if not isinstance(df.index, pd.DatetimeIndex):
-             if 'time' in df.columns:
-                 df['time'] = pd.to_datetime(df['time'], unit='s')
-                 df.set_index('time', inplace=True)
-             else:
-                 logging.error("OHLC n'a ni DatetimeIndex ni colonne 'time'."); return None
+            df['time'] = pd.to_datetime(df['time'], unit='s')
+            df.set_index('time', inplace=True)
+        if df.index.tz is None:
+            df.index = df.index.tz_localize('UTC')
 
-        # 1. Filtre de Tendance
-        main_trend = "NEUTRAL"
-        if self.use_trend_filter:
-            htf_data = connector.get_ohlc(symbol, self.htf_timeframe, self.ema_period + 50)
-            if htf_data is not None and not htf_data.empty:
-                try:
-                    htf_data['close'] = pd.to_numeric(htf_data['close'])
-                    htf_data[f'ema_{self.ema_period}'] = htf_data['close'].ewm(span=self.ema_period, adjust=False).mean()
-                    last_close_htf = htf_data['close'].iloc[-1]
-                    last_ema_htf = htf_data[f'ema_{self.ema_period}'].iloc[-1]
-                    if last_close_htf > last_ema_htf: main_trend = "BULLISH"
-                    elif last_close_htf < last_ema_htf: main_trend = "BEARISH"
-                    self.detected_patterns_info['main_trend'] = f"{main_trend} (HTF {self.htf_timeframe})"
-                except Exception as e:
-                     logging.error(f"Erreur calcul filtre tendance HTF pour {symbol}: {e}")
-                     self.detected_patterns_info['main_trend'] = "ERREUR HTF"
-            else:
-                 logging.warning(f"Impossible charger données HTF {self.htf_timeframe}.")
-                 self.detected_patterns_info['main_trend'] = "ERREUR HTF"
-
-        # 2. Identification Structure
-        structure = self._get_market_structure(df)
-        self.detected_patterns_info['structure'] = structure
-
-        # 3. Détection POI (Zones Premium/Discount)
-        premium_discount = self._get_premium_discount_zones(structure)
-        self.detected_patterns_info.update(premium_discount)
-
-        order_blocks = self._detect_order_block(df, structure, premium_discount)
-        fvgs = self._detect_fvg(df, structure, premium_discount)
-        self.detected_patterns_info['pois'] = {"order_blocks": f"Found {len(order_blocks)}", "fvgs": f"Found {len(fvgs)}"}
-
-        # 4. Détection Triggers
-        signal = None
+        allowed_direction = self._get_trend_filter_direction(connector, symbol)
         
-        # --- MODIFICATION (P-Proactif 3) : Logs INFO -> DEBUG ---
-        # Scénario 1: Pullback Achat (Priorité si tendance haussière)
-        if main_trend != "BEARISH" and self.pattern_settings.get('ORDER_BLOCK', True):
-            signal = self._check_pullback_to_poi(df, order_blocks, fvgs, "BUY", structure)
-            if signal:
-                logging.debug(f"Signal détecté (interne) sur {symbol}: {signal['pattern']}")
-                return signal
-
-        # Scénario 2: Pullback Vente (Priorité si tendance baissière)
-        if main_trend != "BULLISH" and self.pattern_settings.get('ORDER_BLOCK', True):
-            signal = self._check_pullback_to_poi(df, order_blocks, fvgs, "SELL", structure)
-            if signal:
-                 logging.debug(f"Signal détecté (interne) sur {symbol}: {signal['pattern']}")
-                 return signal
-
-        # Scénario 3: CHoCH
-        if self.pattern_settings.get('CHANGE_OF_CHARACTER', True):
-            signal = self._detect_choch(df, structure, main_trend)
-            if signal:
-                 logging.debug(f"Signal détecté (interne) sur {symbol}: {signal['pattern']}")
-                 return signal
-        
-        # Scénario 4: Liquidity Grab
-        if self.pattern_settings.get('LIQUIDITY_GRAB', True):
-             signal = self._detect_liquidity_grab(df, structure, main_trend)
-             if signal:
-                 logging.debug(f"Signal détecté (interne) sur {symbol}: {signal['pattern']}")
-                 return signal
-        # --- FIN MODIFICATION ---
-        
-        logging.debug(f"Aucun signal SMC valide trouvé pour {symbol} (Tendance: {main_trend})")
-        return None
-
-
-    def _get_market_structure(self, df: pd.DataFrame) -> dict:
-        n = self.swing_lookback
-        if len(df) < n * 2 + 1:
-             return {"last_swing_high": df['high'].iloc[-1], "last_swing_low": df['low'].iloc[-1], "internal_structure": "UNKNOWN"}
-
-        df_copy = df.copy()
-        n_fractal = max(2, n // 2)
-        
-        df_copy['high_shifted'] = df_copy['high'].shift(1)
-        df_copy['low_shifted'] = df_copy['low'].shift(1)
-        
-        df_copy['is_swing_high'] = (df_copy['high_shifted'] == df_copy['high_shifted'].rolling(window=n, center=False, min_periods=n_fractal).max())
-        df_copy['is_swing_low'] = (df_copy['low_shifted'] == df_copy['low_shifted'].rolling(window=n, center=False, min_periods=n_fractal).min())
-
-        df_copy['is_swing_high'] = df_copy['is_swing_high'].fillna(False).infer_objects(copy=False)
-        df_copy['is_swing_low'] = df_copy['is_swing_low'].fillna(False).infer_objects(copy=False)
-        
-        recent_swings_high_series = df_copy[df_copy['is_swing_high']]['high'].tail(5)
-        recent_swings_low_series = df_copy[df_copy['is_swing_low']]['low'].tail(5)
-
-        structure_info = {
-            "last_swing_high": recent_swings_high_series.iloc[-1] if not recent_swings_high_series.empty else df_copy['high'].iloc[-1],
-            "last_swing_low": recent_swings_low_series.iloc[-1] if not recent_swings_low_series.empty else df_copy['low'].iloc[-1],
-            "internal_structure": "UNKNOWN"
+        detection_functions = {
+            PATTERN_CHOCH: self._detect_choch,
+            PATTERN_ORDER_BLOCK: self._detect_order_block,
+            PATTERN_INBALANCE: self._detect_inbalance,
+            PATTERN_LIQUIDITY_GRAB: self._detect_liquidity_grab,
+            PATTERN_AMD: self._detect_amd_session,
         }
-        return structure_info
 
+        all_signals = []
+        for name, func in detection_functions.items():
+            if self.config.get('pattern_detection', {}).get(name, False):
+                try:
+                    signal = func(df.copy())
+                    if signal:
+                        all_signals.append(signal)
+                except Exception as e:
+                    self.log.error(f"Erreur lors de la détection du pattern '{name}': {e}", exc_info=True)
 
-    def _get_premium_discount_zones(self, structure: dict) -> dict:
-        low = structure.get('last_swing_low', 0.0)
-        high = structure.get('last_swing_high', 0.0)
-        if low == 0.0 or high == 0.0 or high <= low:
-            return {"equilibrium": 0.0, "premium_start": 0.0, "discount_start": 0.0}
-        equilibrium = low + (high - low) * 0.5
-        premium_threshold = self.premium_threshold
-        discount_threshold = 1.0 - premium_threshold
-        premium_start = low + (high - low) * premium_threshold
-        discount_start = low + (high - low) * discount_threshold
-        return {"equilibrium": equilibrium, "premium_start": premium_start, "discount_start": discount_start}
-
-
-    def _detect_fvg(self, df: pd.DataFrame, structure: dict, pd_zones: dict) -> list:
-        fvgs = []
-        for i in range(len(df) - 50, len(df) - 1):
-            if i < 1: continue
-            try:
-                prev_high = df['high'].iloc[i-1]; curr_high = df['high'].iloc[i]; curr_low = df['low'].iloc[i]; next_low = df['low'].iloc[i+1]
-                prev_low = df['low'].iloc[i-1]; next_high = df['high'].iloc[i+1]
-                is_bullish_candle = df['close'].iloc[i] > df['open'].iloc[i]
-                is_bearish_candle = df['close'].iloc[i] < df['open'].iloc[i]
-                if is_bullish_candle and curr_high > prev_high and next_low > prev_high:
-                     fvg_top = next_low; fvg_bottom = prev_high
-                     if fvg_bottom < pd_zones.get('discount_start', 0.0):
-                         fvgs.append({"type": "FVG_BULLISH", "top": fvg_top, "bottom": fvg_bottom, "candle_index": i})
-                if is_bearish_candle and curr_low < prev_low and next_high < prev_low:
-                     fvg_top = prev_low; fvg_bottom = next_high
-                     if fvg_top > pd_zones.get('premium_start', 0.0):
-                         fvgs.append({"type": "FVG_BEARISH", "top": fvg_top, "bottom": fvg_bottom, "candle_index": i})
-            except IndexError: break
-            except Exception as e: logging.warning(f"Erreur détection FVG index {i}: {e}")
-        return fvgs
-
-
-    def _detect_order_block(self, df: pd.DataFrame, structure: dict, pd_zones: dict) -> list:
-        order_blocks = []
-        for i in range(len(df) - 50, len(df) - 2):
-            try:
-                candle_n = df.iloc[i]; candle_n_plus_1 = df.iloc[i+1]
-                is_n_bullish = candle_n['close'] > candle_n['open']; is_n_bearish = candle_n['close'] < candle_n['open']
-                is_n1_bullish = candle_n_plus_1['close'] > candle_n_plus_1['open']; is_n1_bearish = candle_n_plus_1['close'] < candle_n_plus_1['open']
-                if is_n_bullish and is_n1_bearish:
-                    if candle_n_plus_1['close'] < candle_n['low']:
-                        ob_top = candle_n['high']; ob_bottom = candle_n['low']
-                        if ob_bottom > pd_zones.get('premium_start', 0.0):
-                             order_blocks.append({"type": "OB_BEARISH", "top": ob_top, "bottom": ob_bottom, "candle_index": i})
-                if is_n_bearish and is_n1_bullish:
-                     if candle_n_plus_1['close'] > candle_n['high']:
-                         ob_top = candle_n['high']; ob_bottom = candle_n['low']
-                         if ob_top < pd_zones.get('discount_start', 0.0):
-                             order_blocks.append({"type": "OB_BULLISH", "top": ob_top, "bottom": ob_bottom, "candle_index": i})
-            except IndexError: break
-            except Exception as e: logging.warning(f"Erreur détection OB index {i}: {e}")
-        return order_blocks
-
-
-    def _detect_choch(self, df: pd.DataFrame, structure: dict, main_trend: str) -> Optional[Dict]:
-        last_candle = df.iloc[-1]
-        last_internal_low = structure.get('last_swing_low')
-        if last_candle['close'] < last_internal_low:
-             logging.debug(f"CHoCH Baissier détecté {df.index[-1]}: Clôture {last_candle['close']} < Dernier Low {last_internal_low}")
-             sl_price = structure.get('last_swing_high', last_candle['high'] + (last_candle['high']-last_candle['low']))
-             return {"pattern": "CHANGE_OF_CHARACTER (Bearish)", "direction": "SELL", "sl_price": sl_price, "tp_price": 0.0 }
-        last_internal_high = structure.get('last_swing_high')
-        if last_candle['close'] > last_internal_high:
-             logging.debug(f"CHoCH Haussier détecté {df.index[-1]}: Clôture {last_candle['close']} > Dernier High {last_internal_high}")
-             sl_price = structure.get('last_swing_low', last_candle['low'] - (last_candle['high']-last_candle['low']))
-             return {"pattern": "CHANGE_OF_CHARACTER (Bullish)", "direction": "BUY", "sl_price": sl_price, "tp_price": 0.0 }
-        return None
-    
-    def _detect_liquidity_grab(self, df: pd.DataFrame, structure: dict, main_trend: str) -> Optional[Dict]:
-        if len(df) < 3: return None
-        last_candle = df.iloc[-1]; prev_candle = df.iloc[-2]
-        sl_price = 0.0; tp_price = 0.0
-        if last_candle['low'] < prev_candle['low'] and last_candle['close'] > prev_candle['low']:
-             logging.debug(f"Liquidity Grab (Haussier) détecté sur {df.index[-1]}")
-             sl_price = last_candle['low']
-             tp_price = structure.get('last_swing_high', 0.0)
-             return {"pattern": "LIQUIDITY_GRAB (Bullish)", "direction": "BUY", "sl_price": sl_price, "tp_price": tp_price}
-        if last_candle['high'] > prev_candle['high'] and last_candle['close'] < prev_candle['high']:
-             logging.debug(f"Liquidity Grab (Baissier) détecté sur {df.index[-1]}")
-             sl_price = last_candle['high']
-             tp_price = structure.get('last_swing_low', 0.0)
-             return {"pattern": "LIQUIDITY_GRAB (Bearish)", "direction": "SELL", "sl_price": sl_price, "tp_price": tp_price}
-        return None
-
-
-    def _check_pullback_to_poi(self, df: pd.DataFrame, order_blocks: list, fvgs: list, direction: str, structure: dict) -> Optional[Dict]:
-        last_candle = df.iloc[-1]
-        last_low = last_candle['low']
-        last_high = last_candle['high']
+        confirmed_trade_signal = None
+        for signal in all_signals:
+            name = signal['pattern']
+            direction = signal['direction']
+            if allowed_direction == "ANY" or direction == allowed_direction:
+                self.detected_patterns_info[name] = {'status': f"CONFIRMÉ ({direction})"}
+                if not confirmed_trade_signal:
+                    confirmed_trade_signal = signal
+            else:
+                self.detected_patterns_info[name] = {'status': f"INVALIDÉ ({direction} vs Tendance {allowed_direction})"}
         
-        digits_fmt = self.digits 
+        return confirmed_trade_signal
 
-        if direction == "BUY":
-            pois = [p for p in order_blocks if p['type'] == "OB_BULLISH"] + \
-                   [p for p in fvgs if p['type'] == "FVG_BULLISH"]
-            if not pois: return None
-            pois.sort(key=lambda x: x['top'], reverse=True)
-            for poi in pois:
-                poi_top = poi['top']; poi_bottom = poi['bottom']
-                if last_low <= poi_top and last_high >= poi_bottom:
-                     logging.debug(f"Contact POI Achat {poi['type']} @ {poi_top:.{digits_fmt}f} (Index {poi['candle_index']})")
-                     sl_price = poi_bottom
-                     tp_price = structure.get('last_swing_high', 0.0)
-                     return {"pattern": f"POI_PULLBACK ({poi['type']})", "direction": "BUY", "sl_price": sl_price, "tp_price": tp_price}
+    def _find_swing_points(self, df: pd.DataFrame, n: int = 2):
+        df.loc[:, 'is_swing_high'] = df['high'].rolling(window=2*n+1, center=True, min_periods=1).max() == df['high']
+        df.loc[:, 'is_swing_low'] = df['low'].rolling(window=2*n+1, center=True, min_periods=1).min() == df['low']
+        
+        swing_highs = df[df['is_swing_high']]
+        swing_lows = df[df['is_swing_low']]
+        
+        return swing_highs, swing_lows
 
-        if direction == "SELL":
-            pois = [p for p in order_blocks if p['type'] == "OB_BEARISH"] + \
-                   [p for p in fvgs if p['type'] == "FVG_BEARISH"]
-            if not pois: return None
-            pois.sort(key=lambda x: x['bottom'], reverse=False)
-            for poi in pois:
-                poi_top = poi['top']; poi_bottom = poi['bottom']
-                if last_high >= poi_bottom and last_low <= poi_top:
-                     logging.debug(f"Contact POI Vente {poi['type']} @ {poi_bottom:.{digits_fmt}f} (Index {poi['candle_index']})")
-                     sl_price = poi_top
-                     tp_price = structure.get('last_swing_low', 0.0)
-                     return {"pattern": f"POI_PULLBACK ({poi['type']})", "direction": "SELL", "sl_price": sl_price, "tp_price": tp_price}
+    def _detect_choch(self, df: pd.DataFrame):
+        self.detected_patterns_info[PATTERN_CHOCH] = {'status': 'Pas de signal'}
+        if len(df) < 20: return None
+
+        swing_highs, swing_lows = self._find_swing_points(df.iloc[-50:].copy(), n=3)
+
+        recent_lows = swing_lows['low'].tail(3).values
+        recent_highs = swing_highs['high'].tail(3).values
+        
+        if len(recent_lows) > 1 and len(swing_highs) > 0:
+            if recent_lows[-1] < recent_lows[-2]:
+                last_lower_high = swing_highs[swing_highs.index < swing_lows.index[-1]].tail(1)
+                if not last_lower_high.empty and df['close'].iloc[-1] > last_lower_high['high'].values[0]:
+                    target_liquidity = swing_highs.tail(2).iloc[0]['high']
+                    self.log.debug(f"CHoCH haussier détecté. Cible de liquidité: {target_liquidity}")
+                    return {'pattern': PATTERN_CHOCH, 'direction': BUY, 'target_price': target_liquidity}
+
+        if len(recent_highs) > 1 and len(swing_lows) > 0:
+            if recent_highs[-1] > recent_highs[-2]:
+                last_higher_low = swing_lows[swing_lows.index < swing_highs.index[-1]].tail(1)
+                if not last_higher_low.empty and df['close'].iloc[-1] < last_higher_low['low'].values[0]:
+                    target_liquidity = swing_lows.tail(2).iloc[0]['low']
+                    self.log.debug(f"CHoCH baissier détecté. Cible de liquidité: {target_liquidity}")
+                    return {'pattern': PATTERN_CHOCH, 'direction': SELL, 'target_price': target_liquidity}
+
+        return None
+        
+    def _detect_order_block(self, df: pd.DataFrame):
+        self.detected_patterns_info[PATTERN_ORDER_BLOCK] = {'status': 'Pas de signal'}
+        if len(df) < 50: return None
+        
+        swing_highs, swing_lows = self._find_swing_points(df.iloc[-50:].copy(), n=5)
+        
+        if len(swing_highs) >= 2:
+            last_high = swing_highs.iloc[-2]
+            if df['high'].iloc[-1] > last_high['high']:
+                impulse_start_index = df.index.get_loc(last_high.name)
+                down_candles = df.iloc[:impulse_start_index][(df.iloc[:impulse_start_index]['close'] < df.iloc[:impulse_start_index]['open'])]
+                if not down_candles.empty:
+                    bullish_ob = down_candles.iloc[-1]
+                    if df['close'].iloc[-1] <= bullish_ob['high'] and df['close'].iloc[-1] >= bullish_ob['low']:
+                        target_liquidity = swing_highs.iloc[-1]['high']
+                        self.log.debug(f"Order Block haussier détecté. Cible de liquidité: {target_liquidity}")
+                        return {'pattern': PATTERN_ORDER_BLOCK, 'direction': BUY, 'target_price': target_liquidity}
+
+        if len(swing_lows) >= 2:
+            last_low = swing_lows.iloc[-2]
+            if df['low'].iloc[-1] < last_low['low']:
+                impulse_start_index = df.index.get_loc(last_low.name)
+                up_candles = df.iloc[:impulse_start_index][(df.iloc[:impulse_start_index]['close'] > df.iloc[:impulse_start_index]['open'])]
+                if not up_candles.empty:
+                    bearish_ob = up_candles.iloc[-1]
+                    if df['close'].iloc[-1] >= bearish_ob['low'] and df['close'].iloc[-1] <= bearish_ob['high']:
+                        target_liquidity = swing_lows.iloc[-1]['low']
+                        self.log.debug(f"Order Block baissier détecté. Cible de liquidité: {target_liquidity}")
+                        return {'pattern': PATTERN_ORDER_BLOCK, 'direction': SELL, 'target_price': target_liquidity}
+                    
+        return None
+
+    def _detect_inbalance(self, df: pd.DataFrame):
+        self.detected_patterns_info[PATTERN_INBALANCE] = {'status': 'Pas de signal'}
+        if len(df) < 20: return None
+        swing_highs, swing_lows = self._find_swing_points(df.copy(), n=3)
+        
+        if df['low'].iloc[-2] > df['high'].iloc[-4]:
+            target_liquidity = swing_highs.tail(1)['high'].values[0] if not swing_highs.empty else None
+            if target_liquidity:
+                self.log.debug(f"Inbalance haussière détectée. Cible de liquidité: {target_liquidity}")
+                return {'pattern': PATTERN_INBALANCE, 'direction': BUY, 'target_price': target_liquidity}
+
+        if df['high'].iloc[-2] < df['low'].iloc[-4]:
+            target_liquidity = swing_lows.tail(1)['low'].values[0] if not swing_lows.empty else None
+            if target_liquidity:
+                self.log.debug(f"Inbalance baissière détectée. Cible de liquidité: {target_liquidity}")
+                return {'pattern': PATTERN_INBALANCE, 'direction': SELL, 'target_price': target_liquidity}
+            
+        return None
+        
+    def _detect_liquidity_grab(self, df: pd.DataFrame):
+        self.detected_patterns_info[PATTERN_LIQUIDITY_GRAB] = {'status': 'Pas de signal'}
+        if len(df) < 20: return None
+        
+        swing_highs, swing_lows = self._find_swing_points(df.iloc[:-1].copy(), n=3)
+        
+        if not swing_lows.empty:
+            last_low = swing_lows.iloc[-1]['low']
+            if df['low'].iloc[-1] < last_low and df['close'].iloc[-1] > last_low:
+                 target_liquidity = swing_highs.tail(1)['high'].values[0] if not swing_highs.empty else None
+                 if target_liquidity:
+                     self.log.debug(f"Prise de liquidité haussière. Cible: {target_liquidity}")
+                     return {'pattern': PATTERN_LIQUIDITY_GRAB, 'direction': BUY, 'target_price': target_liquidity}
+
+        if not swing_highs.empty:
+            last_high = swing_highs.iloc[-1]['high']
+            if df['high'].iloc[-1] > last_high and df['close'].iloc[-1] < last_high:
+                target_liquidity = swing_lows.tail(1)['low'].values[0] if not swing_lows.empty else None
+                if target_liquidity:
+                    self.log.debug(f"Prise de liquidité baissière. Cible: {target_liquidity}")
+                    return {'pattern': PATTERN_LIQUIDITY_GRAB, 'direction': SELL, 'target_price': target_liquidity}
+                
+        return None
+
+    def _detect_amd_session(self, df: pd.DataFrame):
+        self.detected_patterns_info[PATTERN_AMD] = {'status': 'En attente'}
+        asia_start, asia_end = time(0, 0), time(7, 0)
+        london_open = time(8, 0)
+        current_time_utc = df.index[-1].time()
+
+        if not (london_open <= current_time_utc < time(16,0)): return None
+
+        today_utc = df.index[-1].date()
+        asia_session_today = df.between_time(asia_start, asia_end)
+        asia_session_today = asia_session_today[asia_session_today.index.date == today_utc]
+        
+        if asia_session_today.empty:
+            self.detected_patterns_info[PATTERN_AMD] = {'status': 'Pas de données Asie'}
+            return None
+
+        asia_high = asia_session_today['high'].max()
+        asia_low = asia_session_today['low'].min()
+        self.detected_patterns_info[PATTERN_AMD] = {'status': f'Asie H:{asia_high:.5f} L:{asia_low:.5f}'}
+        
+        recent_market_data = df.loc[df.index.date == today_utc].between_time(asia_end, current_time_utc)
+        if recent_market_data.empty: return None
+
+        if recent_market_data['low'].min() < asia_low:
+            choch_signal = self._detect_choch(recent_market_data.copy())
+            if choch_signal and choch_signal['direction'] == BUY:
+                self.log.debug(f"Pattern AMD haussier détecté après manipulation sous le range asiatique.")
+                # Cible logique pour un AMD haussier : le sommet de la session asiatique
+                return {'pattern': PATTERN_AMD, 'direction': BUY, 'target_price': asia_high}
+
+        if recent_market_data['high'].max() > asia_high:
+            choch_signal = self._detect_choch(recent_market_data.copy())
+            if choch_signal and choch_signal['direction'] == SELL:
+                self.log.debug(f"Pattern AMD baissier détecté après manipulation au-dessus du range asiatique.")
+                # Cible logique pour un AMD baissier : le bas de la session asiatique
+                return {'pattern': PATTERN_AMD, 'direction': SELL, 'target_price': asia_low}
+                    
         return None
