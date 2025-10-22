@@ -1,3 +1,13 @@
+# Fichier: config.yaml
+# Version: 1.0.3
+
+# ATTENTION: Les credentials MT5 sont de retour dans ce fichier.
+# Assurez-vous que ce fichier est sécurisé et non partagé publiquement.
+mt5_credentials:
+  login: 10008432 # <--- REMPLACEZ PAR VOTRE LOGIN
+  password: jsne80aX! # <--- REMPLACEZ PAR VOTRE MOT DE PASSE
+  server: Axi-US50-Demo # <--- REMPLACEZ PAR VOTRE SERVEUR
+
 ai_analysis:
   max_trades_in_prompt: 50
 api:
@@ -9,10 +19,6 @@ backtest_settings:
 learning:
   enabled: false
   min_trades_for_analysis: 10
-mt5_credentials:
-  login: 10008432
-  password: jsne80aX!
-  server: Axi-US50-Demo
 
 professional_journal:
   enabled: true
@@ -58,10 +64,11 @@ sound_alerts:
   enabled: true
   sound_file: ./alert.wav
 trading_settings:
+  dry_run: true # Mettre à false pour le trading réel
   crypto_symbols:
   - BTCUSD
   - ETHUSD
-  live_trading_enabled: True
+  live_trading_enabled: True # Attention: dry_run=true a priorité
   magic_number: 13579
   symbols:
   - XAUUSD
@@ -85,11 +92,6 @@ trend_filter:
   ema_period: 200
   enabled: true
   higher_timeframe: H4
-trend_filter:
-  enabled: true # Activer/Désactiver le filtre MTF
-  higher_timeframe: H4 # Timeframe supérieur pour analyse de tendance
-  ema_period: 200 # Période de l'EMA sur le timeframe supérieur
-
 pattern_detection:
   CHANGE_OF_CHARACTER: true
   INBALANCE: true
