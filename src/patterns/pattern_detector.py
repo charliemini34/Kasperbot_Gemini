@@ -1,7 +1,7 @@
 
 
 # Fichier: src/patterns/pattern_detector.py
-# Version: 17.0.0 (SMC-Targeting)
+# Version: 1.0.0 manuel
 # Dépendances: pandas, numpy, logging, datetime, src.constants
 
 import pandas as pd

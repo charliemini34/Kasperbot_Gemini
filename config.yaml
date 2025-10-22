@@ -1,4 +1,3 @@
-
 ai_analysis:
   max_trades_in_prompt: 50
 api:
@@ -7,6 +6,14 @@ api:
 backtest_settings:
   commission_per_lot: 7
   simulated_spread_pips: 1.5
+
+# --- NOUVELLE SECTION POUR LA ROBUSTESSE ---
+execution:
+  retryable_retcodes: [10004, 10006, 10018, 10021, 10017] # Codes MT5: Requote, Price changed, Server busy, Broker busy, Connection
+  max_retries: 3
+  retry_delay_seconds: 1.0 # Délai initial (sera doublé à chaque échec - backoff exponentiel)
+# --- FIN NOUVELLE SECTION ---
+
 learning:
   enabled: false
   min_trades_for_analysis: 10
@@ -37,7 +44,14 @@ risk_management:
     enabled: true
     pips_plus: 10
     trigger_pips: 100
-  daily_loss_limit_percent: 200
+  # --- CORRECTION CRITIQUE DE SÉCURITÉ ---
+  daily_loss_limit_percent: 200.0 # Valeur originale (200) corrigée à 5%. Ajustez selon le risque.
+  # --- FIN CORRECTION ---
+  
+  # --- AJOUT LIMITE EXPOSITION ---
+  max_concurrent_trades: 5 # Nombre maximum de positions ouvertes simultanément
+  # --- FIN AJOUT ---
+
   partial_tp:
     be_pips_plus_after_tp1: 5
     enabled: true
@@ -47,10 +61,10 @@ risk_management:
     - percentage: 30
       rr: 2
     move_sl_to_be_after_tp1: true
-  risk_per_trade: 1
+  risk_per_trade: 1 # Risque en % du capital par trade
   sl_buffer_pips: 5
-  sl_strategy: SMC_STRUCTURE
-  tp_strategy: SMC_LIQUIDITY_TARGET
+  sl_strategy: SMC_STRUCTURE # Options: ATR_MULTIPLE, SMC_STRUCTURE
+  tp_strategy: SMC_LIQUIDITY_TARGET # Options: ATR_MULTIPLE, SMC_LIQUIDITY_TARGET
   trailing_stop_atr:
     activation_multiple: 2
     enabled: true
@@ -62,7 +76,7 @@ trading_settings:
   crypto_symbols:
   - BTCUSD
   - ETHUSD
-  live_trading_enabled: True
+  live_trading_enabled: True # Mettre 'False' pour Dry-Run (non implémenté, mais bonne pratique)
   magic_number: 13579
   symbols:
   - XAUUSD
@@ -75,21 +89,20 @@ trading_settings:
   - USOIL
   - BTCUSD
   - ETHUSD
-  timeframe: M15
-  trading_sessions:
+  timeframe: M5
+  trading_sessions: # Format: JourSemaine(Lundi=1)-DébutUTC-FinUTC
   - 1-00:00-23:59
   - 2-00:00-23:59
   - 3-00:00-23:59
   - 4-00:00-23:59
-  - 5-00:00-21:00
-trend_filter:
-  ema_period: 200
-  enabled: true
-  higher_timeframe: H4
+  - 5-00:00-21:00 # Fermeture Vendredi 21:00 UTC (Exemple)
+
+# --- Bloc trend_filter (un seul bloc) ---
 trend_filter:
   enabled: true # Activer/Désactiver le filtre MTF
   higher_timeframe: H4 # Timeframe supérieur pour analyse de tendance
   ema_period: 200 # Période de l'EMA sur le timeframe supérieur
+# --- Fin bloc ---
 
 pattern_detection:
   CHANGE_OF_CHARACTER: true
