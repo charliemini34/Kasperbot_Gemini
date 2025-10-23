@@ -1,3 +1,4 @@
+
 # Fichier: src/shared_state.py
 # Version: 1.0.0 manuel
 # Dépendances: threading, logging, collections.deque

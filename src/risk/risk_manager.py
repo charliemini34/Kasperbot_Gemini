@@ -1,3 +1,4 @@
+
 # Fichier: src/risk/risk_manager.py
 # Version: 1.2.2 (FIX-6)
 # Dépendances: MetaTrader5, pandas, numpy, logging, pytz, src.constants
