@@ -1,3 +1,4 @@
+
 # Fichier: src/patterns/pattern_detector.py
 # Version: 18.2.0 (SMC-Retest-AMD)
 # Dépendances: pandas, numpy, logging, datetime, src.constants
