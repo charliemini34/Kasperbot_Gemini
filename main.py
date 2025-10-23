@@ -1,3 +1,4 @@
+
 # Fichier: main.py
 # Version: 17.0.5 (FIX-2) # <-- Version mise à jour
 # Dépendances: MetaTrader5, pytz, PyYAML, Flask, time, threading, logging, webbrowser, os, datetime, src modules

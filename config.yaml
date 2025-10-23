@@ -44,8 +44,10 @@ risk_management:
     enabled: true
     pips_plus: 10
     trigger_pips: 100
-  # --- CORRECTION CRITIQUE DE SÉCURITÉ ---
-  daily_loss_limit_percent: 200.0 # Valeur originale (200) corrigée à 5%. Ajustez selon le risque.
+    
+  # --- CORRECTION CRITIQUE DE SÉCURITÉ (Suggestion 1) ---
+  # Valeur originale (200) corrigée à 5.0 (conformément au commentaire).
+  daily_loss_limit_percent: 5.0 
   # --- FIN CORRECTION ---
   
   # --- AJOUT LIMITE EXPOSITION ---
@@ -69,6 +71,10 @@ risk_management:
     activation_multiple: 2
     enabled: true
     trailing_multiple: 1.8
+    
+  # --- AJOUT POUR SUGGESTION 6 (Journal) ---
+  initial_capital_for_journal: 10000.0 # Capital initial si journal vide
+
 sound_alerts:
   enabled: true
   sound_file: ./alert.wav
@@ -102,6 +108,10 @@ trend_filter:
   enabled: true # Activer/Désactiver le filtre MTF
   higher_timeframe: H4 # Timeframe supérieur pour analyse de tendance
   ema_period: 200 # Période de l'EMA sur le timeframe supérieur
+  # --- AJOUT POUR SUGGESTION 7 (Zone Neutre) ---
+  # Multiple d'ATR (sur HTF) pour définir la zone neutre autour de l'EMA.
+  # 0 pour désactiver la zone neutre.
+  ema_dead_zone_atr_multiple: 0.5 
 # --- Fin bloc ---
 
 pattern_detection:

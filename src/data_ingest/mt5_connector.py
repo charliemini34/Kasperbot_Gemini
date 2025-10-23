@@ -1,4 +1,3 @@
-
 # Fichier: src/data_ingest/mt5_connector.py
 # Version: 1.0.0 manuel
 # Dépendances: MetaTrader5, pandas, logging, time, datetime, pytz
