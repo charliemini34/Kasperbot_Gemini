@@ -1,15 +1,16 @@
 # Fichier: src/risk/risk_manager.py
-# Version: 1.3.0 (Sugg-3.2)
-# Dépendances: MetaTrader5, pandas, numpy, logging, pytz, src.constants
-# DESCRIPTION: Ajoute la vérification du RR minimum (Sugg 3.2).
+# Version: 1.3.1 (Opt-1: Cache Conversion)
+# Dépendances: MetaTrader5, pandas, numpy, logging, pytz, time, src.constants
+# DESCRIPTION: Ajoute un cache pour les taux de conversion (Opt 1).
 
 import MetaTrader5 as mt5
 import logging
 import math
 import pandas as pd
 import numpy as np
-from datetime import datetime
+from datetime import datetime, timedelta # Ajout timedelta pour cache
 import pytz
+import time # Ajouté pour cache
 from typing import Tuple, List, Dict, Optional
 
 from src.constants import BUY, SELL
@@ -17,7 +18,7 @@ from src.constants import BUY, SELL
 class RiskManager:
     """
     Gère le risque.
-    v1.3.0: Ajout vérification RR minimum (Sugg 3.2).
+    v1.3.1: Ajout cache taux de conversion (Opt 1).
     """
     def __init__(self, config: dict, executor, symbol: str):
         self.log = logging.getLogger(self.__class__.__name__)
@@ -36,7 +37,13 @@ class RiskManager:
         self.digits: int = self.symbol_info.digits
         self._partial_tp_taken = {}
 
+        # --- [Optimisation 1] Cache Taux de Change ---
+        self._conversion_rate_cache: Dict[str, Tuple[float, float]] = {}
+        self._cache_duration: timedelta = timedelta(seconds=60) # Validité du cache (ex: 60 secondes)
+        # --- Fin [Optimisation 1] ---
+
     def is_daily_loss_limit_reached(self) -> Tuple[bool, float]:
+        # (Logique inchangée)
         risk_settings = self._config.get('risk_management', {})
         loss_limit_percent = risk_settings.get('daily_loss_limit_percent', 5.0)
         if loss_limit_percent <= 0: return False, 0.0
@@ -47,7 +54,7 @@ class RiskManager:
             if history_deals is None: return False, 0.0
             magic_number = self._config.get('trading_settings', {}).get('magic_number', 0)
             daily_pnl = sum(deal.profit for deal in history_deals if deal.magic == magic_number and deal.entry in [mt5.DEAL_ENTRY_OUT, mt5.DEAL_ENTRY_INOUT])
-            equity_now = self.account_info.equity
+            equity_now = self.account_info.equity # Utiliser equity actuelle pour calcul limite
             loss_limit_amount = (equity_now * loss_limit_percent) / 100.0
             if daily_pnl < 0 and abs(daily_pnl) >= loss_limit_amount:
                 self.log.critical(f"ARRÊT D'URGENCE: Perte journalière ({daily_pnl:.2f}) atteint limite {loss_limit_percent}%.")
@@ -58,7 +65,7 @@ class RiskManager:
             return False, 0.0
 
     def calculate_trade_parameters(self, equity: float, price: float, ohlc_data: pd.DataFrame, trade_signal: dict) -> Tuple[float, float, float]:
-        """ Calcule Volume, SL et TP avec vérification RR minimum (Sugg 3.2). """
+        # (Logique inchangée - Sugg 3.2 déjà implémentée)
         try:
             if not isinstance(trade_signal, dict) or 'direction' not in trade_signal:
                 self.log.error(f"Signal invalide: {trade_signal}. 'direction' manquante.")
@@ -67,18 +74,13 @@ class RiskManager:
             rm_settings = self._config.get('risk_management', {})
             risk_percent_from_config = rm_settings.get('risk_per_trade', 1.0)
             risk_percent = risk_percent_from_config / 100.0
-            
-            # (Sugg 3.2) Récupérer le RR minimum
             min_rr = rm_settings.get('min_rr', 2.0)
 
             if risk_percent <= 0:
                  self.log.error(f"Risque par trade ({risk_percent_from_config}%) <= 0.")
                  return 0.0, 0.0, 0.0
 
-            # Calcul SL/TP (basé sur ohlc_data LTF)
             ideal_sl, ideal_tp = self._calculate_initial_sl_tp_with_min_dist(price, ohlc_data, trade_signal)
-
-            # Ajouter buffer au SL
             sl_buffer_pips = rm_settings.get('sl_buffer_pips', 0)
             if sl_buffer_pips > 0 and ideal_sl != 0:
                  sl_buffer = sl_buffer_pips * self.point
@@ -89,40 +91,36 @@ class RiskManager:
                  self.log.error(f"SL/TP final invalide (0). SL: {ideal_sl}, TP: {ideal_tp}")
                  return 0.0, 0.0, 0.0
 
-            # --- [Suggestion 3.2] Vérification du RR Minimum ---
             sl_distance_final = abs(price - ideal_sl)
             tp_distance_final = abs(ideal_tp - price)
             
-            if sl_distance_final < self.point: # Éviter division par zéro
-                 self.log.error(f"Distance SL finale invalide ({sl_distance_final:.{self.digits}f}). Trade annulé.")
+            if sl_distance_final < self.point:
+                 self.log.error(f"Distance SL finale invalide ({sl_distance_final:.{self.digits}f}).")
                  return 0.0, 0.0, 0.0
                  
             calculated_rr = tp_distance_final / sl_distance_final
-
             if calculated_rr < min_rr:
-                self.log.warning(f"Trade annulé. RR Calculé ({calculated_rr:.2f}) < RR Minimum ({min_rr}). SL={ideal_sl:.{self.digits}f}, TP={ideal_tp:.{self.digits}f}")
+                self.log.warning(f"Trade annulé. RR Calculé ({calculated_rr:.2f}) < Min ({min_rr}). SL={ideal_sl:.{self.digits}f}, TP={ideal_tp:.{self.digits}f}")
                 return 0.0, 0.0, 0.0
-            # --- Fin [Suggestion 3.2] ---
 
-            # Calcul du volume
             ideal_volume = self._calculate_volume(equity, risk_percent, price, ideal_sl)
 
             if ideal_volume <= 0:
-                 self.log.warning(f"Volume calculé nul ({ideal_volume:.4f}). SL={ideal_sl:.{self.digits}f}. Trade annulé.")
+                 self.log.warning(f"Volume calculé nul ({ideal_volume:.4f}). SL={ideal_sl:.{self.digits}f}.")
                  return 0.0, 0.0, 0.0
-
             if ideal_volume < self.symbol_info.volume_min:
-                self.log.warning(f"Volume idéal ({ideal_volume:.4f}) < Min ({self.symbol_info.volume_min}). SL={ideal_sl:.{self.digits}f}. Trade annulé.")
+                self.log.warning(f"Volume idéal ({ideal_volume:.4f}) < Min ({self.symbol_info.volume_min}). SL={ideal_sl:.{self.digits}f}.")
                 return 0.0, 0.0, 0.0
 
             self.log.info(f"Paramètres validés: Vol={ideal_volume:.2f}, SL={ideal_sl:.{self.digits}f}, TP={ideal_tp:.{self.digits}f}, RR={calculated_rr:.2f}")
             return ideal_volume, ideal_sl, ideal_tp
 
         except Exception as e:
-            self.log.error(f"Erreur inattendue dans calculate_trade_parameters : {e}", exc_info=True)
+            self.log.error(f"Erreur calculate_trade_parameters : {e}", exc_info=True)
             return 0.0, 0.0, 0.0
 
     def _calculate_volume(self, equity: float, risk_percent: float, entry_price: float, sl_price: float) -> float:
+        # (Logique inchangée mais utilise get_conversion_rate avec cache)
         risk_amount_account_currency = equity * risk_percent
         sl_distance_price = abs(entry_price - sl_price)
         if sl_distance_price < self.point: return 0.0
@@ -130,8 +128,10 @@ class RiskManager:
         profit_currency = self.symbol_info.currency_profit
         loss_per_lot_account_currency = loss_per_lot_profit_currency
         if profit_currency != self.account_info.currency:
-            conversion_rate = self.get_conversion_rate(profit_currency, self.account_info.currency)
-            if not conversion_rate or conversion_rate <= 0: return 0.0
+            conversion_rate = self.get_conversion_rate(profit_currency, self.account_info.currency) # Utilise le cache
+            if not conversion_rate or conversion_rate <= 0:
+                self.log.error(f"Échec obtention taux de change pour {profit_currency}->{self.account_info.currency}")
+                return 0.0
             loss_per_lot_account_currency *= conversion_rate
         if loss_per_lot_account_currency <= 0: return 0.0
         volume = risk_amount_account_currency / loss_per_lot_account_currency
@@ -142,7 +142,7 @@ class RiskManager:
         return max(0.0, min(self.symbol_info.volume_max, volume))
 
     def _find_swing_points(self, df: pd.DataFrame, n: int = 3):
-        """ Détecte les swing points (fractals) n=3 (fenêtre 7 bougies). """
+        # (Logique inchangée)
         window_size = n * 2 + 1
         df_historical = df.iloc[:-1]
         if 'is_swing_high' not in df.columns: df['is_swing_high'] = False
@@ -155,122 +155,120 @@ class RiskManager:
         return df[df['is_swing_high'] == True], df[df['is_swing_low'] == True]
 
     def _calculate_initial_sl_tp_with_min_dist(self, price: float, ohlc_data: pd.DataFrame, trade_signal: dict) -> Tuple[float, float]:
-        """ Calcule SL/TP initiaux et ajuste le SL pour la distance minimale. """
-        
-        # (Sugg 3.2) Le RR min n'est pas vérifié ici, mais dans la fonction appelante
+        # (Logique inchangée)
         ideal_sl, ideal_tp = self._calculate_initial_sl_tp(price, ohlc_data, trade_signal)
-
-        if ideal_sl == 0 or ideal_tp == 0:
-             return 0.0, 0.0
-
+        if ideal_sl == 0 or ideal_tp == 0: return 0.0, 0.0
         direction = trade_signal['direction']
         min_distance_points = self.symbol_info.trade_stops_level + 2
         min_distance_price = min_distance_points * self.point
         current_sl_distance = abs(price - ideal_sl)
-
         if current_sl_distance < min_distance_price:
-            self.log.warning(f"SL initial ({ideal_sl:.{self.digits}f}) trop proche. Ajustement à distance min ({min_distance_price:.{self.digits}f}).")
-            if direction == BUY:
-                ideal_sl = price - min_distance_price
-            elif direction == SELL:
-                ideal_sl = price + min_distance_price
+            self.log.warning(f"SL initial ({ideal_sl:.{self.digits}f}) trop proche. Ajustement à dist min ({min_distance_price:.{self.digits}f}).")
+            if direction == BUY: ideal_sl = price - min_distance_price
+            elif direction == SELL: ideal_sl = price + min_distance_price
             ideal_sl = round(ideal_sl, self.digits)
-
         return ideal_sl, ideal_tp
 
     def _calculate_initial_sl_tp(self, price: float, ohlc_data: pd.DataFrame, trade_signal: dict) -> Tuple[float, float]:
-        """ Calcule SL (basé sur LTF) et TP (basé sur HTF). """
+        # (Logique inchangée)
         rm_settings = self._config.get('risk_management', {})
         sl_strategy = rm_settings.get('sl_strategy', 'ATR_MULTIPLE')
-        tp_strategy = rm_settings.get('tp_strategy', 'SMC_LIQUIDITY_TARGET') # Par défaut Sugg 3.1
+        tp_strategy = rm_settings.get('tp_strategy', 'SMC_LIQUIDITY_TARGET')
         direction = trade_signal['direction']
-        
-        # (Sugg 3.2) min_rr est maintenant lu dans la fonction appelante
-        # min_rr = rm_settings.get('min_rr', 2.0) 
-
         atr_settings_key = self._symbol
         atr_settings = rm_settings.get('atr_settings', {}).get(atr_settings_key, rm_settings.get('atr_settings', {}).get('default', {}))
         atr = self.calculate_atr(ohlc_data, atr_settings.get('period', 14))
         if atr is None or atr <= 0: return 0.0, 0.0
-
-        sl = 0.0
-        tp = 0.0
+        sl = 0.0; tp = 0.0
         sl_distance_atr_fallback = atr * atr_settings.get('sl_multiple', 1.5)
         tp_distance_atr_fallback = atr * atr_settings.get('tp_multiple', 3.0)
-
-        # Calcul SL (basé sur LTF data)
+        # Calcul SL (basé sur LTF)
         if sl_strategy == "SMC_STRUCTURE":
             swing_highs, swing_lows = self._find_swing_points(ohlc_data, n=3)
             try:
                 if direction == BUY:
                     relevant_lows = swing_lows[swing_lows['low'] < price]
-                    if not relevant_lows.empty: sl = relevant_lows['low'].iloc[-1]
-                    else: sl = price - sl_distance_atr_fallback
+                    sl = relevant_lows['low'].iloc[-1] if not relevant_lows.empty else price - sl_distance_atr_fallback
                 elif direction == SELL:
                     relevant_highs = swing_highs[swing_highs['high'] > price]
-                    if not relevant_highs.empty: sl = relevant_highs['high'].iloc[-1]
-                    else: sl = price + sl_distance_atr_fallback
+                    sl = relevant_highs['high'].iloc[-1] if not relevant_highs.empty else price + sl_distance_atr_fallback
             except Exception as e:
                  self.log.error(f"Erreur SL SMC (LTF): {e}. Fallback ATR.", exc_info=False)
                  sl = price - sl_distance_atr_fallback if direction == BUY else price + sl_distance_atr_fallback
-        else: # ATR_MULTIPLE ou autre
-             sl = price - sl_distance_atr_fallback if direction == BUY else price + sl_distance_atr_fallback
-
+        else: sl = price - sl_distance_atr_fallback if direction == BUY else price + sl_distance_atr_fallback
         if sl == 0: return 0.0, 0.0
-
-        # Calcul TP (Sugg 3.1: Utilise la cible HTF)
+        # Calcul TP (utilise target_price HTF)
         use_atr_fallback_for_tp = False
         if tp_strategy == "SMC_LIQUIDITY_TARGET":
-            tp = trade_signal.get('target_price') # Doit être la cible HTF
-            if not tp or tp == 0: 
-                self.log.warning("Cible HTF (target_price) manquante. Fallback ATR TP.")
-                use_atr_fallback_for_tp = True
-            elif (direction == BUY and tp < price) or (direction == SELL and tp > price):
-                self.log.warning(f"Cible HTF invalide ({tp:.5f}) vs Prix ({price:.5f}). Fallback ATR TP.")
-                use_atr_fallback_for_tp = True
-        else: # ATR_MULTIPLE
-             use_atr_fallback_for_tp = True
-
+            tp = trade_signal.get('target_price')
+            if not tp or tp == 0: use_atr_fallback_for_tp = True
+            elif (direction == BUY and tp < price) or (direction == SELL and tp > price): use_atr_fallback_for_tp = True
+        else: use_atr_fallback_for_tp = True
         if use_atr_fallback_for_tp:
             tp = price + tp_distance_atr_fallback if direction == BUY else price - tp_distance_atr_fallback
-
         if tp == 0: return 0.0, 0.0
-
         return round(sl, self.digits), round(tp, self.digits)
 
-
+    # --- [Optimisation 1] get_conversion_rate avec cache ---
     def get_conversion_rate(self, from_currency: str, to_currency: str) -> Optional[float]:
+        """ Récupère le taux de change, en utilisant un cache. """
         if from_currency == to_currency: return 1.0
+
+        cache_key = f"{from_currency}->{to_currency}"
+        current_time = time.monotonic()
+
+        # Vérifier le cache
+        if cache_key in self._conversion_rate_cache:
+            rate, timestamp = self._conversion_rate_cache[cache_key]
+            if current_time - timestamp < self._cache_duration.total_seconds():
+                self.log.debug(f"Cache HIT pour {cache_key}: {rate}")
+                return rate
+            else:
+                self.log.debug(f"Cache EXPIRED pour {cache_key}")
+                del self._conversion_rate_cache[cache_key] # Supprimer l'entrée expirée
+
+        self.log.debug(f"Cache MISS pour {cache_key}. Récupération via API MT5...")
+        rate = self._fetch_conversion_rate_from_mt5(from_currency, to_currency)
+
+        # Mettre à jour le cache si un taux valide est trouvé
+        if rate is not None and rate > 0:
+            self._conversion_rate_cache[cache_key] = (rate, current_time)
+            self.log.debug(f"Cache SET pour {cache_key}: {rate}")
+
+        return rate
+
+    def _fetch_conversion_rate_from_mt5(self, from_currency: str, to_currency: str) -> Optional[float]:
+        """ Logique originale de récupération du taux via MT5. """
+        # Essai direct
         pair1 = f"{from_currency}{to_currency}"
         info1 = self._executor._mt5.symbol_info_tick(pair1)
         if info1 and info1.ask > 0: return info1.ask
+        # Essai inversé
         pair2 = f"{to_currency}{from_currency}"
         info2 = self._executor._mt5.symbol_info_tick(pair2)
         if info2 and info2.bid > 0: return 1.0 / info2.bid
+        # Essai triangulation via pivots
         for pivot in ["USD", "EUR", "GBP"]:
              if from_currency != pivot and to_currency != pivot:
-                 # Logique de triangulation (inchangée)
-                 pair_from = f"{from_currency}{pivot}"
-                 pair_to = f"{pivot}{to_currency}"
-                 rate1_info = self._executor._mt5.symbol_info_tick(pair_from)
-                 rate2_info = self._executor._mt5.symbol_info_tick(pair_to)
-                 rate1 = 0.0
-                 if rate1_info and rate1_info.ask > 0: rate1 = rate1_info.ask
-                 else:
-                      pair_from_inv = f"{pivot}{from_currency}"
-                      rate1_info_inv = self._executor._mt5.symbol_info_tick(pair_from_inv)
-                      if rate1_info_inv and rate1_info_inv.bid > 0: rate1 = 1.0 / rate1_info_inv.bid
-                 rate2 = 0.0
-                 if rate2_info and rate2_info.ask > 0: rate2 = rate2_info.ask
-                 else:
-                      pair_to_inv = f"{to_currency}{pivot}"
-                      rate2_info_inv = self._executor._mt5.symbol_info_tick(pair_to_inv)
-                      if rate2_info_inv and rate2_info_inv.bid > 0: rate2 = 1.0 / rate2_info_inv.bid
+                 rate1 = self._get_rate_or_inverse(from_currency, pivot)
+                 rate2 = self._get_rate_or_inverse(pivot, to_currency)
                  if rate1 > 0 and rate2 > 0: return rate1 * rate2
-        self.log.error(f"Conversion impossible {from_currency} -> {to_currency}")
+        self.log.error(f"Conversion impossible via MT5: {from_currency} -> {to_currency}")
         return None
 
+    def _get_rate_or_inverse(self, curr1: str, curr2: str) -> float:
+        """ Helper pour _fetch_conversion_rate_from_mt5. """
+        pair_direct = f"{curr1}{curr2}"
+        info_direct = self._executor._mt5.symbol_info_tick(pair_direct)
+        if info_direct and info_direct.ask > 0: return info_direct.ask
+        pair_inverse = f"{curr2}{curr1}"
+        info_inverse = self._executor._mt5.symbol_info_tick(pair_inverse)
+        if info_inverse and info_inverse.bid > 0: return 1.0 / info_inverse.bid
+        return 0.0
+    # --- Fin [Optimisation 1] ---
+
     def calculate_atr(self, ohlc_data: pd.DataFrame, period: int) -> Optional[float]:
+        # (Logique inchangée)
         if ohlc_data is None or ohlc_data.empty or len(ohlc_data) < period + 1: return None
         try:
              high_low = ohlc_data['high'] - ohlc_data['low']
@@ -283,8 +281,8 @@ class RiskManager:
              return atr
         except Exception: return None
 
-    # --- Gestion de position (inchangée, utilise les données LTF) ---
     def manage_open_positions(self, positions: list, current_tick, ohlc_data: pd.DataFrame):
+        # (Logique inchangée)
         if not positions or not current_tick or ohlc_data is None or ohlc_data.empty: return []
         partial_close_actions = []
         risk_settings = self._config.get('risk_management', {})
@@ -298,6 +296,7 @@ class RiskManager:
         return partial_close_actions
 
     def _apply_partial_tp(self, positions: list, tick, partial_cfg: dict):
+        # (Logique inchangée)
         actions = []
         levels = partial_cfg.get('levels', [])
         if not levels: return actions
@@ -312,9 +311,7 @@ class RiskManager:
             current_rr = current_pnl_pips / initial_risk_pips if initial_risk_pips > 0 else 0
             if pos.ticket not in self._partial_tp_taken: self._partial_tp_taken[pos.ticket] = set()
             taken_levels = self._partial_tp_taken[pos.ticket]
-            context = None
-            for order_id, ctx in self._executor._trade_context.items():
-                 if ctx.get('position_id') == pos.ticket: context = ctx; break
+            context = next((ctx for order_id, ctx in self._executor._trade_context.items() if ctx.get('position_id') == pos.ticket), None)
             if not context: continue
             initial_volume = context.get('volume_initial', pos.volume)
             for level_cfg in levels:
@@ -331,29 +328,28 @@ class RiskManager:
                         if target_rr == levels[0].get('rr') and partial_cfg.get('move_sl_to_be_after_tp1', False):
                             be_pips = partial_cfg.get('be_pips_plus_after_tp1', 0)
                             breakeven_sl = pos.price_open + (be_pips * self.point) if pos.type == mt5.ORDER_TYPE_BUY else pos.price_open - (be_pips * self.point)
-                            should_move_sl = False
-                            if pos.type == mt5.ORDER_TYPE_BUY and breakeven_sl > pos.sl: should_move_sl = True
-                            if pos.type == mt5.ORDER_TYPE_SELL and (pos.sl == 0 or breakeven_sl < pos.sl): should_move_sl = True
+                            should_move_sl = (pos.type == mt5.ORDER_TYPE_BUY and breakeven_sl > pos.sl) or \
+                                             (pos.type == mt5.ORDER_TYPE_SELL and (pos.sl == 0 or breakeven_sl < pos.sl))
                             if should_move_sl: self._executor.modify_position(pos.ticket, breakeven_sl, pos.tp, trade_id=f"BE_after_TP{target_rr}R")
-                    else: taken_levels.add(target_rr)
+                    else: taken_levels.add(target_rr) # Marquer comme pris même si volume trop faible
         return actions
 
     def _apply_breakeven(self, positions: list, tick, be_cfg: dict):
+        # (Logique inchangée)
         trigger_pips = be_cfg.get('trigger_pips', 100); pips_plus = be_cfg.get('pips_plus', 10)
         trigger_distance = trigger_pips * self.point; be_adjustment = pips_plus * self.point
         for pos in positions:
             move_sl = False; breakeven_sl = pos.sl
-            if pos.type == mt5.ORDER_TYPE_BUY:
-                if (tick.bid - pos.price_open) >= trigger_distance:
-                    potential_be_sl = pos.price_open + be_adjustment
-                    if potential_be_sl > pos.sl: move_sl = True; breakeven_sl = potential_be_sl
-            elif pos.type == mt5.ORDER_TYPE_SELL:
-                if (pos.price_open - tick.ask) >= trigger_distance:
-                    potential_be_sl = pos.price_open - be_adjustment
-                    if pos.sl == 0 or potential_be_sl < pos.sl: move_sl = True; breakeven_sl = potential_be_sl
+            if pos.type == mt5.ORDER_TYPE_BUY and (tick.bid - pos.price_open) >= trigger_distance:
+                potential_be_sl = pos.price_open + be_adjustment
+                if potential_be_sl > pos.sl: move_sl = True; breakeven_sl = potential_be_sl
+            elif pos.type == mt5.ORDER_TYPE_SELL and (pos.price_open - tick.ask) >= trigger_distance:
+                potential_be_sl = pos.price_open - be_adjustment
+                if pos.sl == 0 or potential_be_sl < pos.sl: move_sl = True; breakeven_sl = potential_be_sl
             if move_sl: self._executor.modify_position(pos.ticket, breakeven_sl, pos.tp, trade_id="BE")
 
     def _apply_trailing_stop_atr(self, positions: list, tick, ohlc_data: pd.DataFrame, risk_cfg: dict):
+        # (Logique inchangée)
         ts_cfg = risk_cfg.get('trailing_stop_atr', {}); atr_settings_key = self._symbol
         atr_cfg = risk_cfg.get('atr_settings', {}).get(atr_settings_key, risk_cfg.get('atr_settings', {}).get('default', {}))
         period = atr_cfg.get('period', 14); atr = self.calculate_atr(ohlc_data, period)
@@ -362,14 +358,12 @@ class RiskManager:
         activation_distance = atr * activation_multiple; trailing_distance = atr * trailing_multiple
         for pos in positions:
             move_sl = False; new_sl = pos.sl
-            if pos.type == mt5.ORDER_TYPE_BUY:
-                if (tick.bid - pos.price_open) >= activation_distance:
-                    potential_new_sl = tick.bid - trailing_distance
-                    if potential_new_sl > pos.sl: new_sl = potential_new_sl; move_sl = True
-            elif pos.type == mt5.ORDER_TYPE_SELL:
-                if (pos.price_open - tick.ask) >= activation_distance:
-                    potential_new_sl = tick.ask + trailing_distance
-                    if pos.sl == 0 or potential_new_sl < pos.sl: new_sl = potential_new_sl; move_sl = True
+            if pos.type == mt5.ORDER_TYPE_BUY and (tick.bid - pos.price_open) >= activation_distance:
+                potential_new_sl = tick.bid - trailing_distance
+                if potential_new_sl > pos.sl: new_sl = potential_new_sl; move_sl = True
+            elif pos.type == mt5.ORDER_TYPE_SELL and (pos.price_open - tick.ask) >= activation_distance:
+                potential_new_sl = tick.ask + trailing_distance
+                if pos.sl == 0 or potential_new_sl < pos.sl: new_sl = potential_new_sl; move_sl = True
             if move_sl:
                 rounded_new_sl = round(new_sl, self.digits)
                 if rounded_new_sl != round(pos.sl, self.digits): self._executor.modify_position(pos.ticket, rounded_new_sl, pos.tp, trade_id="TS_ATR")
