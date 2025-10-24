@@ -6,14 +6,10 @@ api:
 backtest_settings:
   commission_per_lot: 7
   simulated_spread_pips: 1.5
-
-# --- NOUVELLE SECTION POUR LA ROBUSTESSE ---
 execution:
-  retryable_retcodes: [10004, 10006, 10018, 10021, 10017] # Codes MT5: Requote, Price changed, Server busy, Broker busy, Connection
+  retryable_retcodes: [10004, 10006, 10018, 10021, 10017]
   max_retries: 3
-  retry_delay_seconds: 1.0 # Délai initial (sera doublé à chaque échec - backoff exponentiel)
-# --- FIN NOUVELLE SECTION ---
-
+  retry_delay_seconds: 1.0
 learning:
   enabled: false
   min_trades_for_analysis: 10
@@ -21,49 +17,29 @@ mt5_credentials:
   login: 10008432
   password: jsne80aX!
   server: Axi-US50-Demo
-
 professional_journal:
   enabled: true
   file_path_template: Journal_Trading_{month_name}_{year}.csv
 risk_management:
   atr_settings:
-    BTCUSD:
-      sl_multiple: 1.2
-      tp_multiple: 2.5
-    ETHUSD:
-      sl_multiple: 1.2
-      tp_multiple: 2.5
-    XAUUSD:
-      sl_multiple: 1.8
-      tp_multiple: 3.5
-    default:
-      period: 14
-      sl_multiple: 1.5
-      tp_multiple: 3
+    BTCUSD: {sl_multiple: 1.2, tp_multiple: 2.5}
+    ETHUSD: {sl_multiple: 1.2, tp_multiple: 2.5}
+    XAUUSD: {sl_multiple: 1.8, tp_multiple: 3.5}
+    default: {period: 14, sl_multiple: 1.5, tp_multiple: 3}
   breakeven:
     enabled: true
     pips_plus: 10
     trigger_pips: 100
-    
-  # --- CORRECTION CRITIQUE DE SÉCURITÉ (Suggestion 1) ---
-  # Valeur originale (200) corrigée à 5.0 (conformément au commentaire).
-  daily_loss_limit_percent: 5.0 
-  # --- FIN CORRECTION ---
-  
-  # --- AJOUT LIMITE EXPOSITION ---
-  max_concurrent_trades: 5 # Nombre maximum de positions ouvertes simultanément
-  # --- FIN AJOUT ---
-
+  daily_loss_limit_percent: 5.0
+  max_concurrent_trades: 5
   partial_tp:
     be_pips_plus_after_tp1: 5
     enabled: true
     levels:
-    - percentage: 50
-      rr: 1
-    - percentage: 30
-      rr: 2
+    - {percentage: 50, rr: 1}
+    - {percentage: 30, rr: 2}
     move_sl_to_be_after_tp1: true
-  risk_per_trade: 1 # Risque en % du capital par trade
+  risk_per_trade: 1
   sl_buffer_pips: 5
   sl_strategy: SMC_STRUCTURE # Options: ATR_MULTIPLE, SMC_STRUCTURE
   tp_strategy: SMC_LIQUIDITY_TARGET # Options: ATR_MULTIPLE, SMC_LIQUIDITY_TARGET
@@ -71,9 +47,10 @@ risk_management:
     activation_multiple: 2
     enabled: true
     trailing_multiple: 1.8
-    
-  # --- AJOUT POUR SUGGESTION 6 (Journal) ---
-  initial_capital_for_journal: 10000.0 # Capital initial si journal vide
+  initial_capital_for_journal: 10000.0
+  
+  # --- AJOUT SUGGESTION 3.2 (RR Minimum) ---
+  min_rr: 2.0 # Refuser les trades si le RR < 2.0
 
 sound_alerts:
   enabled: true
@@ -82,42 +59,43 @@ trading_settings:
   crypto_symbols:
   - BTCUSD
   - ETHUSD
-  live_trading_enabled: True # Mettre 'False' pour Dry-Run (non implémenté, mais bonne pratique)
-  magic_number: 13579
-  symbols:
-  - XAUUSD
-  - XAGUSD
-  - EURUSD
-  - GBPUSD
-  - NZDUSD
-  - AUDUSD
-  - USDCAD
-  - USOIL
-  - BTCUSD
-  - ETHUSD
-  timeframe: M15
-  trading_sessions: # Format: JourSemaine(Lundi=1)-DébutUTC-FinUTC
-  - 1-00:00-23:59
-  - 2-00:00-23:59
-  - 3-00:00-23:59
-  - 4-00:00-23:59
-  - 5-00:00-21:00 # Fermeture Vendredi 21:00 UTC (Exemple)
+  live_trading_enabled: True
+  magic_number: 13580
+  
+  # --- (Sugg 5.1) Suppression de la liste 'symbols' globale ---
+  # 'symbols' est maintenant géré par les killzones
 
-# --- Bloc trend_filter (un seul bloc) ---
+  timeframe: M15 # Timeframe d'exécution (LTF)
+
+  # --- (Sugg 5.1 / 5.2) Remplacement de 'trading_sessions' par 'killzones' ---
+  killzones:
+    # Définir les sessions de trading et les symboles associés
+    # Format: NomSession: [HeureDébutUTC, HeureFinUTC, [Symbole1, Symbole2, ...]]
+    ASIA: ["00:00", "07:00", ["AUDUSD", "NZDUSD"]]
+    LONDON: ["07:00", "10:00", ["EURUSD", "GBPUSD", "XAUUSD"]]
+    NEW_YORK: ["12:00", "16:00", ["EURUSD", "GBPUSD", "XAUUSD", "USDCAD", "USOIL"]]
+    # CRYPTO gère les symboles 24/7
+    CRYPTO: ["00:00", "23:59", ["BTCUSD", "ETHUSD"]]
+  # --- Fin (Sugg 5.1 / 5.2) ---
+
 trend_filter:
-  enabled: true # Activer/Désactiver le filtre MTF
-  higher_timeframe: H4 # Timeframe supérieur pour analyse de tendance
-  ema_period: 200 # Période de l'EMA sur le timeframe supérieur
-  # --- AJOUT POUR SUGGESTION 7 (Zone Neutre) ---
-  # Multiple d'ATR (sur HTF) pour définir la zone neutre autour de l'EMA.
-  # 0 pour désactiver la zone neutre.
-  ema_dead_zone_atr_multiple: 0.5 
-# --- Fin bloc ---
-
+  enabled: true
+  higher_timeframe: H4 # Timeframe d'analyse (HTF)
+  
+  # --- (Sugg 1.1) Filtre de confluence EMA ---
+  ema_fast_period: 50 # EMA rapide
+  ema_slow_period: 200 # EMA lente (Anciennement ema_period)
+  
+  ema_dead_zone_atr_multiple: 0.5
+  
 pattern_detection:
-  CHANGE_OF_CHARACTER: true
+  # --- (Sugg 4.2) Terminologie mise à jour ---
+  BREAK_OF_STRUCTURE: true # (Anciennement CHANGE_OF_CHARACTER)
+  CHANGE_OF_CHARACTER: true # Pour les confirmations LTF
+  
   INBALANCE: true
   LIQUIDITY_GRAB: true
   ORDER_BLOCK: true
-  SMC_AMD_SESSION: true
-  # BREAK_OF_STRUCTURE n'est pas activable ici, il est informatif
+  
+  # --- (Sugg 2.1) Désactivation AMD (Bottom-Up) pour logique Top-Down ---
+  SMC_AMD_SESSION: false
