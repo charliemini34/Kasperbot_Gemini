@@ -1,11 +1,7 @@
-
-
 # Fichier: src/risk/risk_manager.py
-# Version: 1.2.2 (FIX-6)
+# Version: 1.3.0 (Sugg-3.2)
 # Dépendances: MetaTrader5, pandas, numpy, logging, pytz, src.constants
-# DESCRIPTION: Ajoute une vérification et un ajustement pour la distance
-#              minimale du Stop Loss (Stops Level) afin de corriger
-#              l'erreur 'Invalid stops' (retcode=10016).
+# DESCRIPTION: Ajoute la vérification du RR minimum (Sugg 3.2).
 
 import MetaTrader5 as mt5
 import logging
@@ -21,7 +17,7 @@ from src.constants import BUY, SELL
 class RiskManager:
     """
     Gère le risque.
-    v1.2.2: Ajout Marge de Sécurité pour Distance SL Minimale (Stops Level).
+    v1.3.0: Ajout vérification RR minimum (Sugg 3.2).
     """
     def __init__(self, config: dict, executor, symbol: str):
         self.log = logging.getLogger(self.__class__.__name__)
@@ -33,7 +29,7 @@ class RiskManager:
         self.account_info = self._executor._mt5.account_info()
 
         if not self.symbol_info or not self.account_info:
-            self.log.critical(f"Impossible d'obtenir les informations pour le symbole {self._symbol} ou pour le compte.")
+            self.log.critical(f"Impossible d'obtenir les informations pour {self._symbol} ou compte.")
             raise ValueError("Informations de compte ou de symbole MT5 manquantes.")
 
         self.point: float = self.symbol_info.point
@@ -41,7 +37,6 @@ class RiskManager:
         self._partial_tp_taken = {}
 
     def is_daily_loss_limit_reached(self) -> Tuple[bool, float]:
-        # (Fonction inchangée - cf. V1.2.1)
         risk_settings = self._config.get('risk_management', {})
         loss_limit_percent = risk_settings.get('daily_loss_limit_percent', 5.0)
         if loss_limit_percent <= 0: return False, 0.0
@@ -55,67 +50,72 @@ class RiskManager:
             equity_now = self.account_info.equity
             loss_limit_amount = (equity_now * loss_limit_percent) / 100.0
             if daily_pnl < 0 and abs(daily_pnl) >= loss_limit_amount:
-                self.log.critical(f"ARRÊT D'URGENCE: Perte journalière ({daily_pnl:.2f}) a atteint la limite de {loss_limit_percent}% ({loss_limit_amount:.2f}).")
+                self.log.critical(f"ARRÊT D'URGENCE: Perte journalière ({daily_pnl:.2f}) atteint limite {loss_limit_percent}%.")
                 return True, daily_pnl
             return False, daily_pnl
         except Exception as e:
-            self.log.error(f"Erreur calcul limite de perte journalière : {e}", exc_info=True)
+            self.log.error(f"Erreur calcul limite perte jour : {e}", exc_info=True)
             return False, 0.0
 
     def calculate_trade_parameters(self, equity: float, price: float, ohlc_data: pd.DataFrame, trade_signal: dict) -> Tuple[float, float, float]:
-        """ Calcule Volume, SL et TP avec vérification de distance SL minimale. """
+        """ Calcule Volume, SL et TP avec vérification RR minimum (Sugg 3.2). """
         try:
             if not isinstance(trade_signal, dict) or 'direction' not in trade_signal:
                 self.log.error(f"Signal invalide: {trade_signal}. 'direction' manquante.")
                 return 0.0, 0.0, 0.0
-
-            risk_percent_from_config = self._config.get('risk_management', {}).get('risk_per_trade', 1.0)
+                
+            rm_settings = self._config.get('risk_management', {})
+            risk_percent_from_config = rm_settings.get('risk_per_trade', 1.0)
             risk_percent = risk_percent_from_config / 100.0
+            
+            # (Sugg 3.2) Récupérer le RR minimum
+            min_rr = rm_settings.get('min_rr', 2.0)
 
             if risk_percent <= 0:
                  self.log.error(f"Risque par trade ({risk_percent_from_config}%) <= 0.")
                  return 0.0, 0.0, 0.0
-            if risk_percent > 0.1:
-                 self.log.critical(f"RISQUE EXTRÊME CONFIGURÉ: risk_per_trade ({risk_percent_from_config}%) > 10%.")
 
-            # --- [FIX-6] Calcul SL/TP AVEC ajustement distance minimale ---
+            # Calcul SL/TP (basé sur ohlc_data LTF)
             ideal_sl, ideal_tp = self._calculate_initial_sl_tp_with_min_dist(price, ohlc_data, trade_signal)
-            # --- Fin [FIX-6] ---
 
-            # Ajouter buffer au SL (après ajustement distance min)
-            sl_buffer_pips = self._config.get('risk_management', {}).get('sl_buffer_pips', 0)
+            # Ajouter buffer au SL
+            sl_buffer_pips = rm_settings.get('sl_buffer_pips', 0)
             if sl_buffer_pips > 0 and ideal_sl != 0:
                  sl_buffer = sl_buffer_pips * self.point
-                 # Appliquer buffer DANS la bonne direction après ajustement min dist
                  ideal_sl = ideal_sl - sl_buffer if trade_signal['direction'] == BUY else ideal_sl + sl_buffer
                  ideal_sl = round(ideal_sl, self.digits)
-                 self.log.debug(f"SL final (avec buffer {sl_buffer_pips} pips): {ideal_sl:.{self.digits}f}")
 
-
-            # Vérifications finales
             if ideal_sl == 0 or ideal_tp == 0:
                  self.log.error(f"SL/TP final invalide (0). SL: {ideal_sl}, TP: {ideal_tp}")
                  return 0.0, 0.0, 0.0
 
+            # --- [Suggestion 3.2] Vérification du RR Minimum ---
             sl_distance_final = abs(price - ideal_sl)
-            min_required_dist_final = (self.symbol_info.trade_stops_level + 2) * self.point # Stops level + 2 points sécurité
-            if sl_distance_final < min_required_dist_final:
-                 self.log.error(f"SL final ({ideal_sl:.{self.digits}f}) toujours trop proche après buffer. Distance: {sl_distance_final:.{self.digits}f}, Requis: ~{min_required_dist_final:.{self.digits}f}. Trade annulé.")
+            tp_distance_final = abs(ideal_tp - price)
+            
+            if sl_distance_final < self.point: # Éviter division par zéro
+                 self.log.error(f"Distance SL finale invalide ({sl_distance_final:.{self.digits}f}). Trade annulé.")
                  return 0.0, 0.0, 0.0
+                 
+            calculated_rr = tp_distance_final / sl_distance_final
 
-            if abs(ideal_tp - price) < abs(ideal_sl - price):
-                 self.log.warning(f"Ratio < 1 final. SL={ideal_sl:.{self.digits}f}, TP={ideal_tp:.{self.digits}f}.")
+            if calculated_rr < min_rr:
+                self.log.warning(f"Trade annulé. RR Calculé ({calculated_rr:.2f}) < RR Minimum ({min_rr}). SL={ideal_sl:.{self.digits}f}, TP={ideal_tp:.{self.digits}f}")
+                return 0.0, 0.0, 0.0
+            # --- Fin [Suggestion 3.2] ---
 
+            # Calcul du volume
             ideal_volume = self._calculate_volume(equity, risk_percent, price, ideal_sl)
 
             if ideal_volume <= 0:
-                 self.log.warning(f"Volume calculé nul ou négatif ({ideal_volume:.4f}). SL={ideal_sl:.{self.digits}f}. Trade annulé.")
+                 self.log.warning(f"Volume calculé nul ({ideal_volume:.4f}). SL={ideal_sl:.{self.digits}f}. Trade annulé.")
                  return 0.0, 0.0, 0.0
 
             if ideal_volume < self.symbol_info.volume_min:
                 self.log.warning(f"Volume idéal ({ideal_volume:.4f}) < Min ({self.symbol_info.volume_min}). SL={ideal_sl:.{self.digits}f}. Trade annulé.")
                 return 0.0, 0.0, 0.0
 
+            self.log.info(f"Paramètres validés: Vol={ideal_volume:.2f}, SL={ideal_sl:.{self.digits}f}, TP={ideal_tp:.{self.digits}f}, RR={calculated_rr:.2f}")
             return ideal_volume, ideal_sl, ideal_tp
 
         except Exception as e:
@@ -123,37 +123,26 @@ class RiskManager:
             return 0.0, 0.0, 0.0
 
     def _calculate_volume(self, equity: float, risk_percent: float, entry_price: float, sl_price: float) -> float:
-        # (Fonction inchangée - cf. V1.2.1)
-        self.log.debug("--- DÉBUT DU CALCUL DE VOLUME SÉCURISÉ ---")
         risk_amount_account_currency = equity * risk_percent
-        self.log.debug(f"1. Capital: {equity:.2f} | Risque: {risk_percent:.2%} -> Montant à risquer: {risk_amount_account_currency:.2f} {self.account_info.currency}")
         sl_distance_price = abs(entry_price - sl_price)
         if sl_distance_price < self.point: return 0.0
-        self.log.debug(f"2. Distance SL: {sl_distance_price:.{self.digits}f}")
         loss_per_lot_profit_currency = sl_distance_price * self.symbol_info.trade_contract_size
         profit_currency = self.symbol_info.currency_profit
-        self.log.debug(f"3. Perte/Lot ({profit_currency}): {loss_per_lot_profit_currency:.2f}")
         loss_per_lot_account_currency = loss_per_lot_profit_currency
         if profit_currency != self.account_info.currency:
             conversion_rate = self.get_conversion_rate(profit_currency, self.account_info.currency)
             if not conversion_rate or conversion_rate <= 0: return 0.0
             loss_per_lot_account_currency *= conversion_rate
-            self.log.debug(f"4. Conversion -> Perte/Lot ({self.account_info.currency}): {loss_per_lot_account_currency:.2f}")
-        else: self.log.debug("4. Pas de conversion.")
         if loss_per_lot_account_currency <= 0: return 0.0
         volume = risk_amount_account_currency / loss_per_lot_account_currency
-        self.log.debug(f"5. Volume brut: {volume:.4f}")
         volume_step = self.symbol_info.volume_step
         if volume_step <= 0: return 0.0
         volume = math.floor(volume / volume_step) * volume_step
         volume = round(volume, 8)
-        final_volume = max(0.0, min(self.symbol_info.volume_max, volume))
-        self.log.debug(f"6. Volume final ajusté: {final_volume:.4f}")
-        self.log.debug("--- FIN DU CALCUL DE VOLUME ---")
-        return final_volume
+        return max(0.0, min(self.symbol_info.volume_max, volume))
 
     def _find_swing_points(self, df: pd.DataFrame, n: int = 3):
-        # (Fonction inchangée - cf. V1.8.1)
+        """ Détecte les swing points (fractals) n=3 (fenêtre 7 bougies). """
         window_size = n * 2 + 1
         df_historical = df.iloc[:-1]
         if 'is_swing_high' not in df.columns: df['is_swing_high'] = False
@@ -163,56 +152,41 @@ class RiskManager:
              low_swings = df_historical['low'].rolling(window=window_size, center=True, min_periods=window_size).min() == df_historical['low']
              df.loc[high_swings.index, 'is_swing_high'] = high_swings
              df.loc[low_swings.index, 'is_swing_low'] = low_swings
-        swing_highs = df[df['is_swing_high'] == True]
-        swing_lows = df[df['is_swing_low'] == True]
-        return swing_highs, swing_lows
+        return df[df['is_swing_high'] == True], df[df['is_swing_low'] == True]
 
-    # --- [FIX-6] NOUVELLE FONCTION WRAPPER ---
     def _calculate_initial_sl_tp_with_min_dist(self, price: float, ohlc_data: pd.DataFrame, trade_signal: dict) -> Tuple[float, float]:
-        """ Calcule SL/TP initiaux et ajuste le SL pour respecter la distance minimale. """
-
+        """ Calcule SL/TP initiaux et ajuste le SL pour la distance minimale. """
+        
+        # (Sugg 3.2) Le RR min n'est pas vérifié ici, mais dans la fonction appelante
         ideal_sl, ideal_tp = self._calculate_initial_sl_tp(price, ohlc_data, trade_signal)
 
         if ideal_sl == 0 or ideal_tp == 0:
-             return 0.0, 0.0 # Retourner si calcul initial échoue
+             return 0.0, 0.0
 
         direction = trade_signal['direction']
-
-        # Calculer la distance minimale requise (Stops Level + marge de sécurité de 2 points)
-        # Note: trade_stops_level est en points entiers
         min_distance_points = self.symbol_info.trade_stops_level + 2
         min_distance_price = min_distance_points * self.point
-
-        # Vérifier la distance actuelle du SL
         current_sl_distance = abs(price - ideal_sl)
 
         if current_sl_distance < min_distance_price:
-            self.log.warning(f"SL initial ({ideal_sl:.{self.digits}f}) trop proche ({current_sl_distance:.{self.digits}f}). Ajustement à distance min ({min_distance_price:.{self.digits}f}).")
+            self.log.warning(f"SL initial ({ideal_sl:.{self.digits}f}) trop proche. Ajustement à distance min ({min_distance_price:.{self.digits}f}).")
             if direction == BUY:
                 ideal_sl = price - min_distance_price
             elif direction == SELL:
                 ideal_sl = price + min_distance_price
-            
-            ideal_sl = round(ideal_sl, self.digits) # Arrondir après ajustement
-            self.log.info(f"SL ajusté à la distance minimale: {ideal_sl:.{self.digits}f}")
-
-            # Recalculer le TP basé sur ATR si le SL a été ajusté ? Pourrait invalider le setup SMC.
-            # Pour l'instant, on garde le TP original, mais on log un avertissement si RR devient < 1
-            if abs(ideal_tp - price) < abs(ideal_sl - price):
-                 self.log.warning(f"Ajustement SL a rendu le Ratio < 1. SL={ideal_sl:.{self.digits}f}, TP={ideal_tp:.{self.digits}f}.")
+            ideal_sl = round(ideal_sl, self.digits)
 
         return ideal_sl, ideal_tp
-    # --- FIN [FIX-6] ---
-
 
     def _calculate_initial_sl_tp(self, price: float, ohlc_data: pd.DataFrame, trade_signal: dict) -> Tuple[float, float]:
-        """ Calcule SL et TP initiaux (SANS la vérification de distance min ici). """
-        # (Logique inchangée - cf. V1.2.1 / FIX-3)
+        """ Calcule SL (basé sur LTF) et TP (basé sur HTF). """
         rm_settings = self._config.get('risk_management', {})
         sl_strategy = rm_settings.get('sl_strategy', 'ATR_MULTIPLE')
-        tp_strategy = rm_settings.get('tp_strategy', 'ATR_MULTIPLE')
+        tp_strategy = rm_settings.get('tp_strategy', 'SMC_LIQUIDITY_TARGET') # Par défaut Sugg 3.1
         direction = trade_signal['direction']
-        min_rr = rm_settings.get('min_rr', 1.0)
+        
+        # (Sugg 3.2) min_rr est maintenant lu dans la fonction appelante
+        # min_rr = rm_settings.get('min_rr', 2.0) 
 
         atr_settings_key = self._symbol
         atr_settings = rm_settings.get('atr_settings', {}).get(atr_settings_key, rm_settings.get('atr_settings', {}).get('default', {}))
@@ -224,40 +198,38 @@ class RiskManager:
         sl_distance_atr_fallback = atr * atr_settings.get('sl_multiple', 1.5)
         tp_distance_atr_fallback = atr * atr_settings.get('tp_multiple', 3.0)
 
-        # SL Calculation
+        # Calcul SL (basé sur LTF data)
         if sl_strategy == "SMC_STRUCTURE":
             swing_highs, swing_lows = self._find_swing_points(ohlc_data, n=3)
             try:
                 if direction == BUY:
-                    relevant_lows = swing_lows[swing_lows['low'] < price] # Utiliser ['low'] explicitement
+                    relevant_lows = swing_lows[swing_lows['low'] < price]
                     if not relevant_lows.empty: sl = relevant_lows['low'].iloc[-1]
                     else: sl = price - sl_distance_atr_fallback
                 elif direction == SELL:
-                    relevant_highs = swing_highs[swing_highs['high'] > price] # Utiliser ['high'] explicitement
+                    relevant_highs = swing_highs[swing_highs['high'] > price]
                     if not relevant_highs.empty: sl = relevant_highs['high'].iloc[-1]
                     else: sl = price + sl_distance_atr_fallback
             except Exception as e:
-                 self.log.error(f"Erreur SL SMC: {e}. Fallback ATR.", exc_info=False) # Moins verbeux
+                 self.log.error(f"Erreur SL SMC (LTF): {e}. Fallback ATR.", exc_info=False)
                  sl = price - sl_distance_atr_fallback if direction == BUY else price + sl_distance_atr_fallback
-        elif sl_strategy == "ATR_MULTIPLE":
-             sl = price - sl_distance_atr_fallback if direction == BUY else price + sl_distance_atr_fallback
-        else:
+        else: # ATR_MULTIPLE ou autre
              sl = price - sl_distance_atr_fallback if direction == BUY else price + sl_distance_atr_fallback
 
         if sl == 0: return 0.0, 0.0
 
-        # TP Calculation
+        # Calcul TP (Sugg 3.1: Utilise la cible HTF)
         use_atr_fallback_for_tp = False
         if tp_strategy == "SMC_LIQUIDITY_TARGET":
-            tp = trade_signal.get('target_price')
-            if not tp or tp == 0: use_atr_fallback_for_tp = True
-            else:
-                sl_distance = abs(price - sl)
-                tp_distance = abs(tp - price)
-                if (direction == BUY and tp < price) or (direction == SELL and tp > price): use_atr_fallback_for_tp = True
-                elif tp_distance < (sl_distance * min_rr): use_atr_fallback_for_tp = True
-        elif tp_strategy == "ATR_MULTIPLE": use_atr_fallback_for_tp = True
-        else: use_atr_fallback_for_tp = True
+            tp = trade_signal.get('target_price') # Doit être la cible HTF
+            if not tp or tp == 0: 
+                self.log.warning("Cible HTF (target_price) manquante. Fallback ATR TP.")
+                use_atr_fallback_for_tp = True
+            elif (direction == BUY and tp < price) or (direction == SELL and tp > price):
+                self.log.warning(f"Cible HTF invalide ({tp:.5f}) vs Prix ({price:.5f}). Fallback ATR TP.")
+                use_atr_fallback_for_tp = True
+        else: # ATR_MULTIPLE
+             use_atr_fallback_for_tp = True
 
         if use_atr_fallback_for_tp:
             tp = price + tp_distance_atr_fallback if direction == BUY else price - tp_distance_atr_fallback
@@ -268,7 +240,6 @@ class RiskManager:
 
 
     def get_conversion_rate(self, from_currency: str, to_currency: str) -> Optional[float]:
-        # (Fonction inchangée - cf. V1.2.1)
         if from_currency == to_currency: return 1.0
         pair1 = f"{from_currency}{to_currency}"
         info1 = self._executor._mt5.symbol_info_tick(pair1)
@@ -278,6 +249,7 @@ class RiskManager:
         if info2 and info2.bid > 0: return 1.0 / info2.bid
         for pivot in ["USD", "EUR", "GBP"]:
              if from_currency != pivot and to_currency != pivot:
+                 # Logique de triangulation (inchangée)
                  pair_from = f"{from_currency}{pivot}"
                  pair_to = f"{pivot}{to_currency}"
                  rate1_info = self._executor._mt5.symbol_info_tick(pair_from)
@@ -299,7 +271,6 @@ class RiskManager:
         return None
 
     def calculate_atr(self, ohlc_data: pd.DataFrame, period: int) -> Optional[float]:
-        # (Fonction inchangée - cf. V1.2.1)
         if ohlc_data is None or ohlc_data.empty or len(ohlc_data) < period + 1: return None
         try:
              high_low = ohlc_data['high'] - ohlc_data['low']
@@ -312,8 +283,8 @@ class RiskManager:
              return atr
         except Exception: return None
 
+    # --- Gestion de position (inchangée, utilise les données LTF) ---
     def manage_open_positions(self, positions: list, current_tick, ohlc_data: pd.DataFrame):
-        # (Fonction inchangée - cf. V1.2.1)
         if not positions or not current_tick or ohlc_data is None or ohlc_data.empty: return []
         partial_close_actions = []
         risk_settings = self._config.get('risk_management', {})
@@ -327,7 +298,6 @@ class RiskManager:
         return partial_close_actions
 
     def _apply_partial_tp(self, positions: list, tick, partial_cfg: dict):
-        # (Fonction inchangée - cf. V1.2.1)
         actions = []
         levels = partial_cfg.get('levels', [])
         if not levels: return actions
@@ -369,7 +339,6 @@ class RiskManager:
         return actions
 
     def _apply_breakeven(self, positions: list, tick, be_cfg: dict):
-        # (Fonction inchangée - cf. V1.2.1)
         trigger_pips = be_cfg.get('trigger_pips', 100); pips_plus = be_cfg.get('pips_plus', 10)
         trigger_distance = trigger_pips * self.point; be_adjustment = pips_plus * self.point
         for pos in positions:
@@ -385,7 +354,6 @@ class RiskManager:
             if move_sl: self._executor.modify_position(pos.ticket, breakeven_sl, pos.tp, trade_id="BE")
 
     def _apply_trailing_stop_atr(self, positions: list, tick, ohlc_data: pd.DataFrame, risk_cfg: dict):
-        # (Fonction inchangée - cf. V1.2.1)
         ts_cfg = risk_cfg.get('trailing_stop_atr', {}); atr_settings_key = self._symbol
         atr_cfg = risk_cfg.get('atr_settings', {}).get(atr_settings_key, risk_cfg.get('atr_settings', {}).get('default', {}))
         period = atr_cfg.get('period', 14); atr = self.calculate_atr(ohlc_data, period)
