@@ -1,7 +1,7 @@
 # Fichier: src/patterns/pattern_detector.py
-# Version: 19.1.0 (Opt-2,3,5: Cache HTF, Mitigation POI, Premium/Discount)
+# Version: 19.1.1 (Implémentation Sugg 5)
 # Dépendances: pandas, numpy, logging, datetime, src.constants, typing
-# DESCRIPTION: Ajoute Caching HTF (Opt 2), Mitigation POI (Opt 3), Priorisation Premium/Discount (Opt 5).
+# DESCRIPTION: Ajout Sugg 5 (Validation OB avec FVG).
 
 import pandas as pd
 import numpy as np
@@ -16,7 +16,7 @@ from src.constants import (
 class PatternDetector:
     """
     Module de reconnaissance de patterns SMC (Top-Down).
-    v19.1.0: Ajoute Cache HTF, Mitigation POI, Priorisation Premium/Discount.
+    v19.1.1: Ajout Sugg 5 (Validation OB avec FVG).
     """
     def __init__(self, config):
         self.config = config
@@ -105,28 +105,82 @@ class PatternDetector:
                  zones.append({'type': PATTERN_INBALANCE, 'zone': (candle_minus_2['low'], candle_current['high']), 'timestamp': candle_current.name, 'mitigated': False})
         return zones
 
+    # --- MODIFICATION SUGGESTION 5 ---
     def _identify_ob_zones(self, df: pd.DataFrame, swing_point: pd.Series, direction: str) -> List[Dict]:
-        # (Logique inchangée)
+        """
+        Identifie les zones d'Order Block (OB) avant un swing.
+        Inclut la validation optionnelle par FVG (Sugg 5).
+        """
         zones = []
+        ob = None
+        
         if direction == BUY: # Cherche OB Haussier (dernière bougie Sell avant swing Low)
             search_area = df[df.index < swing_point.name].tail(5)
             down_candles = search_area[search_area['close'] < search_area['open']]
             if not down_candles.empty:
                 ob = down_candles.iloc[-1]
-                zones.append({'type': PATTERN_ORDER_BLOCK, 'zone': (ob['high'], ob['low']), 'timestamp': ob.name, 'mitigated': False})
+        
         elif direction == SELL: # Cherche OB Baissier (dernière bougie Buy avant swing High)
             search_area = df[df.index < swing_point.name].tail(5)
             up_candles = search_area[search_area['close'] > search_area['open']]
             if not up_candles.empty:
                 ob = up_candles.iloc[-1]
+
+        if ob is None:
+            return zones # Aucun OB candidat trouvé
+
+        # Vérification des options de validation (Sugg 5)
+        validation_cfg = self.config.get('pattern_detection', {}).get('ob_validation', {})
+        require_fvg = validation_cfg.get('require_fvg_after', False)
+
+        if not require_fvg:
+            # Pas de validation requise, ajouter l'OB trouvé
+            zones.append({'type': PATTERN_ORDER_BLOCK, 'zone': (ob['high'], ob['low']), 'timestamp': ob.name, 'mitigated': False})
+            return zones
+
+        # --- Validation FVG Requise ---
+        try:
+            ob_index_loc = df.index.get_loc(ob.name)
+            # Regarder les 5 bougies après l'OB pour un FVG (l'impulsion)
+            data_after_ob = df.iloc[ob_index_loc + 1 : ob_index_loc + 6]
+
+            if data_after_ob.empty or len(data_after_ob) < 3:
+                self.log.debug(f"Validation OB: Pas assez de données après l'OB {ob.name} pour chercher FVG.")
+                return zones # Pas assez de données pour FVG
+
+            fvg_found = False
+            # Chercher un FVG (Imbalance) dans la MÊME direction que le biais
+            for i in range(2, len(data_after_ob)):
+                candle_minus_2 = data_after_ob.iloc[i-2]
+                candle_current = data_after_ob.iloc[i]
+                
+                # FVG Haussier (pour Biais BUY)
+                if direction == BUY and candle_current['low'] > candle_minus_2['high']:
+                    fvg_found = True
+                    break
+                # FVG Baissier (pour Biais SELL)
+                elif direction == SELL and candle_current['high'] < candle_minus_2['low']:
+                    fvg_found = True
+                    break
+            
+            if fvg_found:
+                self.log.debug(f"Validation OB: OB {ob.name} validé par FVG suivant.")
                 zones.append({'type': PATTERN_ORDER_BLOCK, 'zone': (ob['high'], ob['low']), 'timestamp': ob.name, 'mitigated': False})
+            else:
+                self.log.debug(f"Validation OB: OB {ob.name} REJETÉ (pas de FVG trouvé après).")
+
+        except Exception as e:
+            self.log.error(f"Erreur validation OB FVG: {e}", exc_info=True)
+
         return zones
+    # --- FIN MODIFICATION SUGGESTION 5 ---
 
     # --- [Opt 3 + Opt 5] Logique POI HTF avec Mitigation et Premium/Discount ---
     def _find_htf_poi(self, htf_data: pd.DataFrame, htf_bias: str, symbol: str) -> (List[Dict], float):
         """
         Identifie POI HTF non mitigés, priorise Premium/Discount, gère mitigation.
         Retourne (liste_poi_priorisee, target_liquidity_htf).
+        Utilise _identify_ob_zones (modifié Sugg 5)
         """
         htf_swing_highs, htf_swing_lows = self._find_swing_points(htf_data.copy(), n=3)
         if htf_swing_highs.empty or htf_swing_lows.empty: return [], 0.0
@@ -150,6 +204,7 @@ class PatternDetector:
             search_data = htf_data[htf_data.index >= last_htf_low_serie.name]
             if not search_data.empty:
                 all_new_poi.extend(self._identify_fvg_zones(search_data, BUY))
+                # Appel à la fonction modifiée (Sugg 5)
                 all_new_poi.extend(self._identify_ob_zones(htf_data, last_htf_low_serie, BUY))
 
         elif htf_bias == SELL:
@@ -162,6 +217,7 @@ class PatternDetector:
             search_data = htf_data[htf_data.index >= last_htf_high_serie.name]
             if not search_data.empty:
                 all_new_poi.extend(self._identify_fvg_zones(search_data, SELL))
+                # Appel à la fonction modifiée (Sugg 5)
                 all_new_poi.extend(self._identify_ob_zones(htf_data, last_htf_high_serie, SELL))
 
         # Fusionner nouvelles POI et existantes, dédupliquer, mettre à jour mitigation
@@ -237,7 +293,7 @@ class PatternDetector:
             self._ltf_state[symbol] = {'last_swing_high': None, 'last_swing_low': None}
 
         ltf_swing_highs, ltf_swing_lows = self._find_swing_points(ltf_data.copy(), n=3)
-        if ltf_swing_highs.empty or ltf_swing_lows.empty: return None, 0.0, None
+        if ltf_swing_highs.empty and ltf_swing_lows.empty: return None, 0.0, None
 
         current_ltf_candle = ltf_data.iloc[-1]
         poi_high, poi_low = poi_htf['zone']
@@ -287,7 +343,11 @@ class PatternDetector:
         # Vérifier et préparer les DataFrames (inchangé)
         for df in [htf_data, ltf_data]:
             if not isinstance(df.index, pd.DatetimeIndex):
-                df['time'] = pd.to_datetime(df['time'], unit='s'); df.set_index('time', inplace=True)
+                try:
+                    df['time'] = pd.to_datetime(df['time'], unit='s'); df.set_index('time', inplace=True)
+                except Exception as e:
+                    self.log.error(f"Échec conversion index temps pour {symbol}: {e}. Colonnes: {df.columns}")
+                    return None
             if df.index.tz is None: df.index = df.index.tz_localize('UTC')
 
         current_htf_timestamp = htf_data.index[-1]

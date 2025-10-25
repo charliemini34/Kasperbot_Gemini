@@ -43,10 +43,20 @@ risk_management:
   sl_buffer_pips: 5
   sl_strategy: SMC_STRUCTURE # Options: ATR_MULTIPLE, SMC_STRUCTURE
   tp_strategy: SMC_LIQUIDITY_TARGET # Options: ATR_MULTIPLE, SMC_LIQUIDITY_TARGET
+  
+  # --- MODIFICATION SUGGESTION 7 ---
+  # Le Trailing Stop ATR est désactivé pour utiliser le Trailing Stop Structure
   trailing_stop_atr:
     activation_multiple: 2
-    enabled: true
+    enabled: false # Désactivé
     trailing_multiple: 1.8
+    
+  # --- AJOUT SUGGESTION 7 (Trailing Stop Structure) ---
+  trailing_stop_structure:
+    enabled: true # Activé
+    ltf_swing_period: 3 # Période (n) pour _find_swing_points (ex: 3)
+  # --- FIN SUGGESTION 7 ---
+
   initial_capital_for_journal: 10000.0
   
   # --- AJOUT SUGGESTION 3.2 (RR Minimum) ---
@@ -96,6 +106,11 @@ pattern_detection:
   INBALANCE: true
   LIQUIDITY_GRAB: true
   ORDER_BLOCK: true
+  
+  # --- AJOUT SUGGESTION 5 (Validation OB) ---
+  ob_validation:
+    require_fvg_after: true # Exiger une imbalance (FVG) après l'OB
+  # --- FIN SUGGESTION 5 ---
   
   # --- (Sugg 2.1) Désactivation AMD (Bottom-Up) pour logique Top-Down ---
   SMC_AMD_SESSION: false

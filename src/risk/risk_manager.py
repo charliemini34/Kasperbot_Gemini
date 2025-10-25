@@ -1,7 +1,7 @@
 # Fichier: src/risk/risk_manager.py
-# Version: 1.3.1 (Opt-1: Cache Conversion)
+# Version: 1.3.2 (Implémentation Sugg 1, 7)
 # Dépendances: MetaTrader5, pandas, numpy, logging, pytz, time, src.constants
-# DESCRIPTION: Ajoute un cache pour les taux de conversion (Opt 1).
+# DESCRIPTION: Ajout Sugg 1 (Vérif TP min dist) et Sugg 7 (TSL Structure).
 
 import MetaTrader5 as mt5
 import logging
@@ -18,7 +18,7 @@ from src.constants import BUY, SELL
 class RiskManager:
     """
     Gère le risque.
-    v1.3.1: Ajout cache taux de conversion (Opt 1).
+    v1.3.2: Ajout Sugg 1 (Vérif TP min dist), Sugg 7 (TSL Structure).
     """
     def __init__(self, config: dict, executor, symbol: str):
         self.log = logging.getLogger(self.__class__.__name__)
@@ -80,7 +80,9 @@ class RiskManager:
                  self.log.error(f"Risque par trade ({risk_percent_from_config}%) <= 0.")
                  return 0.0, 0.0, 0.0
 
+            # Utilise la fonction modifiée (Sugg 1)
             ideal_sl, ideal_tp = self._calculate_initial_sl_tp_with_min_dist(price, ohlc_data, trade_signal)
+            
             sl_buffer_pips = rm_settings.get('sl_buffer_pips', 0)
             if sl_buffer_pips > 0 and ideal_sl != 0:
                  sl_buffer = sl_buffer_pips * self.point
@@ -148,26 +150,45 @@ class RiskManager:
         if 'is_swing_high' not in df.columns: df['is_swing_high'] = False
         if 'is_swing_low' not in df.columns: df['is_swing_low'] = False
         if len(df_historical) >= window_size:
+             # Utiliser center=True pour une détection standard de swing
              high_swings = df_historical['high'].rolling(window=window_size, center=True, min_periods=window_size).max() == df_historical['high']
              low_swings = df_historical['low'].rolling(window=window_size, center=True, min_periods=window_size).min() == df_historical['low']
              df.loc[high_swings.index, 'is_swing_high'] = high_swings
              df.loc[low_swings.index, 'is_swing_low'] = low_swings
         return df[df['is_swing_high'] == True], df[df['is_swing_low'] == True]
 
+    # --- MODIFICATION SUGGESTION 1 ---
     def _calculate_initial_sl_tp_with_min_dist(self, price: float, ohlc_data: pd.DataFrame, trade_signal: dict) -> Tuple[float, float]:
-        # (Logique inchangée)
+        """
+        Calcule SL/TP et applique la distance minimale (trade_stops_level) au SL et au TP.
+        """
         ideal_sl, ideal_tp = self._calculate_initial_sl_tp(price, ohlc_data, trade_signal)
         if ideal_sl == 0 or ideal_tp == 0: return 0.0, 0.0
+        
         direction = trade_signal['direction']
+        
+        # Ajouter 2 points de buffer au stops_level pour sécurité
         min_distance_points = self.symbol_info.trade_stops_level + 2
         min_distance_price = min_distance_points * self.point
+
+        # Vérification SL (inchangée)
         current_sl_distance = abs(price - ideal_sl)
         if current_sl_distance < min_distance_price:
             self.log.warning(f"SL initial ({ideal_sl:.{self.digits}f}) trop proche. Ajustement à dist min ({min_distance_price:.{self.digits}f}).")
             if direction == BUY: ideal_sl = price - min_distance_price
             elif direction == SELL: ideal_sl = price + min_distance_price
             ideal_sl = round(ideal_sl, self.digits)
+            
+        # Vérification TP (AJOUT SUGG 1)
+        current_tp_distance = abs(ideal_tp - price)
+        if current_tp_distance < min_distance_price:
+            self.log.warning(f"TP initial ({ideal_tp:.{self.digits}f}) trop proche. Ajustement à dist min ({min_distance_price:.{self.digits}f}).")
+            if direction == BUY: ideal_tp = price + min_distance_price
+            elif direction == SELL: ideal_tp = price - min_distance_price
+            ideal_tp = round(ideal_tp, self.digits)
+
         return ideal_sl, ideal_tp
+    # --- FIN MODIFICATION SUGGESTION 1 ---
 
     def _calculate_initial_sl_tp(self, price: float, ohlc_data: pd.DataFrame, trade_signal: dict) -> Tuple[float, float]:
         # (Logique inchangée)
@@ -178,13 +199,15 @@ class RiskManager:
         atr_settings_key = self._symbol
         atr_settings = rm_settings.get('atr_settings', {}).get(atr_settings_key, rm_settings.get('atr_settings', {}).get('default', {}))
         atr = self.calculate_atr(ohlc_data, atr_settings.get('period', 14))
-        if atr is None or atr <= 0: return 0.0, 0.0
+        if atr is None or atr <= 0: 
+            self.log.error(f"ATR invalide ({atr}) pour {self._symbol}. Impossible de calculer SL/TP.")
+            return 0.0, 0.0
         sl = 0.0; tp = 0.0
         sl_distance_atr_fallback = atr * atr_settings.get('sl_multiple', 1.5)
         tp_distance_atr_fallback = atr * atr_settings.get('tp_multiple', 3.0)
         # Calcul SL (basé sur LTF)
         if sl_strategy == "SMC_STRUCTURE":
-            swing_highs, swing_lows = self._find_swing_points(ohlc_data, n=3)
+            swing_highs, swing_lows = self._find_swing_points(ohlc_data.copy(), n=3) # Utiliser .copy()
             try:
                 if direction == BUY:
                     relevant_lows = swing_lows[swing_lows['low'] < price]
@@ -281,19 +304,37 @@ class RiskManager:
              return atr
         except Exception: return None
 
+    # --- MODIFICATION SUGGESTION 7 ---
     def manage_open_positions(self, positions: list, current_tick, ohlc_data: pd.DataFrame):
-        # (Logique inchangée)
+        """ Gère les TPs partiels, BE, et Trailing Stops (ATR ou Structure). """
         if not positions or not current_tick or ohlc_data is None or ohlc_data.empty: return []
+        
         partial_close_actions = []
         risk_settings = self._config.get('risk_management', {})
+
+        # 1. TPs Partiels
         if risk_settings.get('partial_tp', {}).get('enabled', False):
             actions = self._apply_partial_tp(positions, current_tick, risk_settings.get('partial_tp', {}))
             partial_close_actions.extend(actions)
+            
+        # 2. Breakeven
         if risk_settings.get('breakeven', {}).get('enabled', False):
             self._apply_breakeven(positions, current_tick, risk_settings.get('breakeven', {}))
-        if risk_settings.get('trailing_stop_atr', {}).get('enabled', False):
+            
+        # 3. Trailing Stop (Logique 'elif' pour n'en activer qu'un seul)
+        ts_atr_cfg = risk_settings.get('trailing_stop_atr', {})
+        ts_smc_cfg = risk_settings.get('trailing_stop_structure', {})
+
+        if ts_atr_cfg.get('enabled', False):
+            self.log.debug("Application Trailing Stop ATR")
             self._apply_trailing_stop_atr(positions, current_tick, ohlc_data, risk_settings)
+        elif ts_smc_cfg.get('enabled', False):
+            self.log.debug("Application Trailing Stop Structure (SMC)")
+            # Doit passer une copie de ohlc_data pour éviter SettingWithCopyWarning
+            self._apply_trailing_stop_structure(positions, ohlc_data.copy(), ts_smc_cfg)
+            
         return partial_close_actions
+    # --- FIN MODIFICATION SUGGESTION 7 ---
 
     def _apply_partial_tp(self, positions: list, tick, partial_cfg: dict):
         # (Logique inchangée)
@@ -367,3 +408,65 @@ class RiskManager:
             if move_sl:
                 rounded_new_sl = round(new_sl, self.digits)
                 if rounded_new_sl != round(pos.sl, self.digits): self._executor.modify_position(pos.ticket, rounded_new_sl, pos.tp, trade_id="TS_ATR")
+
+    # --- AJOUT SUGGESTION 7 ---
+    def _apply_trailing_stop_structure(self, positions: list, ohlc_data: pd.DataFrame, ts_smc_cfg: dict):
+        """
+        Applique un trailing stop basé sur la structure LTF (derniers swings).
+        """
+        period = ts_smc_cfg.get('ltf_swing_period', 3)
+        
+        # Note: ohlc_data devrait être une copie pour éviter SettingWithCopyWarning
+        swing_highs, swing_lows = self._find_swing_points(ohlc_data, n=period)
+
+        if swing_lows.empty and swing_highs.empty:
+            self.log.debug(f"TSL Structure: Pas de swings LTF trouvés pour {self._symbol}.")
+            return
+
+        for pos in positions:
+            move_sl = False
+            new_sl = pos.sl
+            pos_open_time = datetime.fromtimestamp(pos.time, tz=pytz.utc)
+
+            try:
+                if pos.type == mt5.ORDER_TYPE_BUY:
+                    # Trailing Buy: SL sous le dernier swing low LTF
+                    # On ne prend que les lows formés *après* l'ouverture
+                    relevant_lows = swing_lows[swing_lows.index > pos_open_time]
+                    if not relevant_lows.empty:
+                        potential_new_sl = relevant_lows['low'].iloc[-1]
+                        # SL ne doit jamais reculer
+                        if potential_new_sl > pos.sl:
+                            new_sl = potential_new_sl
+                            move_sl = True
+                
+                elif pos.type == mt5.ORDER_TYPE_SELL:
+                    # Trailing Sell: SL au-dessus du dernier swing high LTF
+                    relevant_highs = swing_highs[swing_highs.index > pos_open_time]
+                    if not relevant_highs.empty:
+                        potential_new_sl = relevant_highs['high'].iloc[-1]
+                        # SL ne doit jamais reculer
+                        if pos.sl == 0 or potential_new_sl < pos.sl:
+                            new_sl = potential_new_sl
+                            move_sl = True
+            
+            except Exception as e:
+                self.log.warning(f"[{pos.ticket}] Erreur TSL Structure: {e}", exc_info=False)
+                continue
+
+            if move_sl:
+                # Appliquer le buffer de SL global
+                sl_buffer_pips = self._config.get('risk_management', {}).get('sl_buffer_pips', 0)
+                if sl_buffer_pips > 0:
+                    sl_buffer = sl_buffer_pips * self.point
+                    if pos.type == mt5.ORDER_TYPE_BUY:
+                        new_sl = new_sl - sl_buffer
+                    else:
+                        new_sl = new_sl + sl_buffer
+                
+                rounded_new_sl = round(new_sl, self.digits)
+
+                if rounded_new_sl != round(pos.sl, self.digits):
+                    self.log.info(f"[{pos.ticket}] TSL Structure: Déplacement SL à {rounded_new_sl:.{self.digits}f}")
+                    self._executor.modify_position(pos.ticket, rounded_new_sl, pos.tp, trade_id="TS_SMC")
+    # --- FIN AJOUT SUGGESTION 7 ---
