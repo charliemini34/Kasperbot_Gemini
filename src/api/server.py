@@ -283,8 +283,9 @@ def start_api_server(shared_state):
         from src.backtest.backtester import Backtester
         if shared_state.get_backtest_status()['running']: 
             return jsonify({"error": "Un backtest est déjà en cours."}), 400
-        
-        bt = Backtester(shared_state)
+        # Ligne correcte qui DEVRAIT être dans src/api/server.py (run_backtest_thread)
+        backtester = Backtester(config_bt, symbol, start_date, end_date, initial_capital, shared_app_state)
+       # bt = Backtester(shared_state)
         params = request.json
         current_config = shared_state.get_config()
         
