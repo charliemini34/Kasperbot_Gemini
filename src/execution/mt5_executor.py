@@ -1,16 +1,19 @@
-
 # Fichier: src/execution/mt5_executor.py
-# Version: 1.1.1 (FIX-1)
-# Dépendances: MetaTrader5, pandas, logging, src.journal.professional_journal, time
+# Version: 1.1.3 (Correction Erreur 13)
+# Dépendances: MetaTrader5, pandas, logging, src.journal.professional_journal, time, math
+# DESCRIPTION: Ajout Sugg 10.2 (Utilisation params pré-calculés).
+#            FIX: Ajout de 'import math' manquant pour TP Partiels.
 
 import MetaTrader5 as mt5
 import logging
 import pandas as pd
 import os
 import time # Ajouté pour les retries
+import math # <-- CORRECTION ERREUR 13 : Ajout de l'import manquant
 from datetime import datetime, timedelta
 from src.constants import BUY, SELL
 from src.journal.professional_journal import ProfessionalJournal
+from typing import Optional, Dict, Any # Ajouté
 
 class MT5Executor:
     def __init__(self, mt5_connection, config: dict):
@@ -51,23 +54,42 @@ class MT5Executor:
             self.log.error(f"Erreur lors de la récupération des positions: {e}", exc_info=True)
             return []
 
-    def execute_trade(self, account_info, risk_manager, symbol, direction, ohlc_data, pattern_name, magic_number, trade_signal: dict):
-        """Orchestre le placement d'un trade avec une journalisation détaillée."""
+    # --- MODIFICATION SUGGESTION 10.2 ---
+    def execute_trade(self, account_info, risk_manager, symbol, direction, ohlc_data, 
+                      pattern_name, magic_number, trade_signal: dict, 
+                      precalculated_params: Optional[Dict[str, Any]] = None):
+        """
+        Orchestre le placement d'un trade avec une journalisation détaillée.
+        Utilise precalculated_params (Sugg 10.2) si fourni.
+        """
         trade_id = f"{datetime.utcnow().strftime('%Y%m%d%H%M%S')}-{symbol}-{pattern_name}" # ID Unique pour le log
         self.log.info(f"[{trade_id}] --- DÉBUT DE L'EXÉCUTION DU TRADE POUR {symbol} ---")
 
         trade_type = mt5.ORDER_TYPE_BUY if direction == BUY else mt5.ORDER_TYPE_SELL
-        price_info = self._mt5.symbol_info_tick(symbol)
+        price = 0.0
+        volume = 0.0
+        sl = 0.0
+        tp = 0.0
 
-        if not price_info:
-            self.log.error(f"[{trade_id}] Impossible d'obtenir le tick pour {symbol}. Ordre annulé.")
-            return
-
-        price = price_info.ask if direction == BUY else price_info.bid
-
-        volume, sl, tp = risk_manager.calculate_trade_parameters(
-            account_info.equity, price, ohlc_data, trade_signal
-        )
+        if precalculated_params:
+            # Utiliser les params de main.py (Sugg 10.2)
+            self.log.debug(f"[{trade_id}] Utilisation des paramètres pré-calculés.")
+            price = precalculated_params.get('price', 0.0)
+            volume = precalculated_params.get('volume', 0.0)
+            sl = precalculated_params.get('sl', 0.0)
+            tp = precalculated_params.get('tp', 0.0)
+        else:
+            # Fallback: Calculer les params si non fournis
+            self.log.warning(f"[{trade_id}] Paramètres non fournis, recalcul...")
+            price_info = self._mt5.symbol_info_tick(symbol)
+            if not price_info:
+                self.log.error(f"[{trade_id}] Impossible d'obtenir le tick pour {symbol}. Ordre annulé.")
+                return
+            price = price_info.ask if direction == BUY else price_info.bid
+            
+            volume, sl, tp = risk_manager.calculate_trade_parameters(
+                account_info.equity, price, ohlc_data, trade_signal
+            )
 
         if volume > 0:
             # --- [MM-1] Contrôle de Marge Pré-Trade (Approximation) ---
@@ -108,6 +130,7 @@ class MT5Executor:
             if result and result.order > 0:
                 atr_value = 0
                 try:
+                    # Utiliser ohlc_data (LTF) passé en argument
                     atr_value = risk_manager.calculate_atr(ohlc_data, risk_manager._config.get('risk_management', {}).get('atr_settings', {}).get('default', {}).get('period', 14)) or 0
                 except Exception as e:
                     self.log.warning(f"[{trade_id}] Impossible de calculer l'ATR pour le contexte du trade {symbol}: {e}")
@@ -127,6 +150,7 @@ class MT5Executor:
 
         else:
             self.log.warning(f"[{trade_id}] Trade sur {symbol} annulé car le volume ({volume}) est de 0.0 ou SL/TP invalide ({sl}/{tp}).")
+    # --- FIN MODIFICATION SUGGESTION 10.2 ---
 
     # --- [MT5-1] Robustesse place_order ---
     def place_order(self, symbol, order_type, volume, price, sl, tp, magic_number, pattern_name, trade_id):
@@ -364,6 +388,8 @@ class MT5Executor:
         # Vérifier le volume step
         volume_step = symbol_info.volume_step
         if volume_step > 0:
+             # --- CORRECTION ERREUR 13 ---
+             # Utilisation de math.floor (import ajouté en haut du fichier)
              volume_to_close = math.floor(volume_to_close / volume_step) * volume_step
              volume_to_close = round(volume_to_close, 8) # Arrondir pour précision
         

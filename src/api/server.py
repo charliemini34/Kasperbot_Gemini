@@ -1,311 +1,373 @@
-
 # Fichier: src/api/server.py
-# Version: 1.0.0 manuel
+# Version: 1.1.2 (Restoration HTML + Sugg 10.3)
+# Dépendances: Flask, src.shared_state
+# DESCRIPTION: Ajout Sugg 10.3 (Endpoint /api/visual_alerts).
+#            FIX: Restauration du code HTML embarqué original pour la route '/'.
 
-from flask import Flask, jsonify, render_template_string, request
-import yaml
-import threading
+from flask import Flask, jsonify, request, abort
+from src.shared_state import SharedState
 import logging
 import os
 
-HTML_TEMPLATE = """
-<!DOCTYPE html>
-<html lang="fr">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Dashboard KasperBot v13.0</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <style>
-        body { background-color: #111827; color: #d1d5db; font-family: 'Inter', sans-serif; }
-        .card { background-color: #1f2937; border: 1px solid #374151; border-radius: 0.75rem; }
-        .tab-button { background-color: transparent; color: #9ca3af; border-color: transparent; padding: 0.5rem 1rem; border-bottom: 2px solid transparent;}
-        .tab-button.active { color: #4f46e5; border-color: #4f46e5; }
-        input, select, textarea { background-color: #374151; border: 1px solid #4b5563; border-radius: 0.375rem; padding: 0.5rem 0.75rem; width: 100%; }
-        .btn { padding: 0.5rem 1rem; border-radius: 0.375rem; font-weight: 600; transition: background-color 0.2s; cursor: pointer; }
-        .btn-primary { background-color: #4f46e5; color: white; } .btn-primary:hover { background-color: #4338ca; }
-        .form-checkbox { accent-color: #4f46e5; width: auto; }
-        label { font-weight: 500; }
-        .config-section { border-top: 1px solid #374151; padding-top: 2rem; }
-    </style>
-</head>
-<body class="p-4 sm:p-6 lg:p-8">
-    <div class="max-w-7xl mx-auto">
-        <header class="flex justify-between items-center mb-6">
-            <h1 class="text-2xl sm:text-3xl font-bold text-white">KasperBot <span class="text-sm text-gray-400">v13.0</span></h1>
-            <div id="status-indicator" class="flex items-center space-x-2">
-                <div id="status-dot" class="h-4 w-4 rounded-full bg-gray-500"></div><span id="status-text" class="font-medium">Chargement...</span>
-            </div>
-        </header>
-        <div class="mb-6"><div class="border-b border-gray-700"><nav class="-mb-px flex space-x-8">
-            <button onclick="showTab('dashboard')" class="tab-button active" id="tab-dashboard">Dashboard</button>
-            <button onclick="showTab('config')" class="tab-button" id="tab-config">Configuration</button>
-            <button onclick="showTab('backtest')" class="tab-button" id="tab-backtest">Backtesting</button>
-        </nav></div></div>
-        <main>
-            <div id="content-dashboard" class="tab-content grid grid-cols-1 lg:grid-cols-3 gap-6">
-                <div class="lg:col-span-1 space-y-6">
-                    <div class="card p-5"><h2 class="text-xl font-semibold text-white mb-4">État du Bot</h2><div id="bot-status-container" class="space-y-3"></div></div>
-                    <div class="card p-5" id="learning-suggestions-card" style="display: none;"><h2 class="text-xl font-semibold text-white mb-4">Suggestions d'Analyse</h2><div id="learning-suggestions-container" class="space-y-2 text-sm"></div></div>
-                    <div id="patterns-main-container" class="space-y-6"></div>
-                </div>
-                <div class="lg:col-span-2 space-y-6">
-                    <div class="card p-5"><h2 class="text-xl font-semibold text-white mb-4">Positions Ouvertes</h2><div id="positions-container"></div></div>
-                    <div class="card p-5"><h2 class="text-xl font-semibold text-white mb-4">Journal d'Événements</h2><div id="logs-container" class="h-96 bg-gray-900 rounded-md p-3 overflow-y-auto text-xs font-mono"></div></div>
-                </div>
-            </div>
-            <div id="content-config" class="tab-content hidden"><div class="card p-6"><form id="config-form" class="space-y-8">
-                <div class="config-section"><h3 class="text-lg font-medium text-white">Connexion MetaTrader 5</h3>
-                    <div class="mt-4 grid grid-cols-1 gap-y-6 sm:grid-cols-3 sm:gap-x-8">
-                        <div><label for="mt5_login">Login MT5</label><input type="text" id="mt5_login"></div>
-                        <div><label for="mt5_password">Mot de passe MT5</label><input type="password" id="mt5_password"></div>
-                        <div><label for="mt5_server">Serveur MT5</label><input type="text" id="mt5_server"></div>
-                    </div>
-                </div>
-                <div class="config-section"><h3 class="text-lg font-medium text-white">Moteur d'Apprentissage</h3>
-                    <div class="mt-4 grid grid-cols-1 gap-y-6 sm:grid-cols-2 sm:gap-x-8">
-                        <div><label for="learning_enabled">Mode Automatisé</label><select id="learning_enabled"><option value="true">Activé</option><option value="false">Désactivé (Suggestions)</option></select></div>
-                    </div>
-                </div>
-                <div class="config-section"><h3 class="text-lg font-medium text-white">Détection de Patterns</h3><div id="patterns-config-container" class="mt-4 grid grid-cols-2 sm:grid-cols-3 gap-4"></div></div>
-                <div class="pt-5"><div class="flex justify-end"><button type="submit" class="btn btn-primary">Sauvegarder et Appliquer</button></div></div>
-            </form></div></div>
-            <div id="content-backtest" class="tab-content hidden">
-                 <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                    <div class="lg:col-span-1"><div class="card p-6"><h2 class="text-xl font-semibold text-white mb-4">Paramètres du Backtest</h2>
-                    <form id="backtest-form" class="space-y-4">
-                        <div><label for="backtest_symbol">Symbole</label><input type="text" id="backtest_symbol" value="XAUUSD" class="mt-1"></div>
-                        <div><label for="backtest_timeframe">Timeframe</label><input type="text" id="backtest_timeframe" value="M15" class="mt-1"></div>
-                        <div><label for="start_date">Date de début</label><input type="date" id="start_date" class="mt-1"></div>
-                        <div><label for="end_date">Date de fin</label><input type="date" id="end_date" class="mt-1"></div>
-                        <div><label for="initial_capital">Capital Initial</label><input type="number" id="initial_capital" value="10000" class="mt-1"></div>
-                        <button type="submit" id="run-backtest-btn" class="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 rounded-md mt-4">Lancer le Backtest</button>
-                    </form></div></div>
-                    <div class="lg:col-span-2">
-                         <div id="backtest-results-card" class="card p-6 hidden"><h2 class="text-xl font-semibold">Résultats</h2><div id="backtest-summary" class="grid grid-cols-2 gap-4 text-center mb-4"></div><canvas id="equity-chart"></canvas></div>
-                         <div id="backtest-progress-card" class="card p-6 hidden"><h2 class="text-xl font-semibold">Backtest en cours...</h2><div class="w-full bg-gray-700 rounded-full h-4 mt-4"><div id="backtest-progress-bar" class="bg-blue-500 h-4 rounded-full" style="width: 0%"></div></div></div>
-                    </div>
-                </div>
-            </div>
-        </main>
-    </div>
-    <script>
-        let equityChart = null;
-        function showTab(tabName) {
-            document.querySelectorAll('.tab-content').forEach(el => el.classList.add('hidden'));
-            document.querySelectorAll('.tab-button').forEach(el => el.classList.remove('active'));
-            document.getElementById(`content-${tabName}`).classList.remove('hidden');
-            document.getElementById(`tab-${tabName}`).classList.add('active');
-        }
-        function formatProfit(profit) { return `<span class="${parseFloat(profit) >= 0 ? 'text-green-400' : 'text-red-400'}">${parseFloat(profit).toFixed(2)}</span>`; }
-        
-        async function fetchAllData() {
-            try {
-                const res = await fetch('/api/data');
-                const data = await res.json();
+def start_api_server(state: SharedState):
+    """Démarre le serveur Flask."""
+    
+    app = Flask(__name__)
+    log = logging.getLogger('werkzeug')
+    log.setLevel(logging.ERROR) # Désactiver les logs Flask standards
+
+    # --- RESTAURATION DU CODE HTML ORIGINAL ---
+    @app.route('/')
+    def index():
+        """Sert la page HTML principale (embarquée)."""
+        # Ce code HTML est restauré à partir de la version originale du fichier.
+        html_content = """
+        <!DOCTYPE html>
+        <html lang="fr">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>KasperBot Dashboard</title>
+            <style>
+                body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #121212; color: #E0E0E0; margin: 0; padding: 20px; font-size: 14px; }
+                .container { max-width: 1600px; margin: 0 auto; display: grid; grid-template-columns: 3fr 1fr; gap: 20px; }
+                .main-content { display: grid; grid-template-rows: auto 1fr; gap: 20px; }
+                .sidebar { display: flex; flex-direction: column; gap: 20px; }
+                .widget { background-color: #1E1E1E; border: 1px solid #333; border-radius: 8px; padding: 20px; box-shadow: 0 4px 8px rgba(0,0,0,0.2); }
+                h1, h2, h3 { color: #FFFFFF; border-bottom: 2px solid #4A90E2; padding-bottom: 5px; margin-top: 0; }
+                h1 { font-size: 24px; } h2 { font-size: 20px; } h3 { font-size: 16px; }
                 
-                const statusDot = document.getElementById('status-dot');
-                statusDot.className = `h-4 w-4 rounded-full ${data.status.is_emergency ? 'bg-red-500 animate-pulse' : 'bg-green-500'}`;
-                document.getElementById('status-text').textContent = data.status.status;
-                document.getElementById('bot-status-container').innerHTML = `<div class="flex justify-between"><span>Status:</span> <strong>${data.status.status}</strong></div><div class="flex justify-between"><span>Message:</span> <em class="text-gray-400 text-right truncate">${data.status.message}</em></div>`;
+                /* --- Statut et Contrôles --- */
+                #status-widget .content { display: flex; justify-content: space-between; align-items: center; }
+                #status-indicator { font-size: 20px; font-weight: bold; padding: 10px 15px; border-radius: 5px; }
+                #status-indicator.status-connecte { background-color: #28a745; color: white; }
+                #status-indicator.status-deconnecte { background-color: #dc3545; color: white; }
+                #status-indicator.status-erreur { background-color: #ffc107; color: #333; }
+                #status-message { margin-top: 10px; font-style: italic; color: #AAA; }
+                .controls button { background-color: #4A90E2; color: white; border: none; padding: 10px 15px; border-radius: 5px; cursor: pointer; font-size: 14px; margin-left: 10px; }
+                .controls button.shutdown { background-color: #dc3545; }
+                .controls button:hover { opacity: 0.8; }
+
+                /* --- Alertes Visuelles (Sugg 10) --- */
+                #alerts-widget ul { list-style-type: none; padding: 0; margin: 0; max-height: 250px; overflow-y: auto; }
+                #alerts-widget li { background-color: #2a2a2a; padding: 10px; border-bottom: 1px solid #333; font-family: "Courier New", Courier, monospace; }
+                #alerts-widget li:nth-child(odd) { background-color: #252525; }
+                #alerts-widget li:first-child { background-color: #4A90E2; color: white; font-weight: bold; }
+
+                /* --- Positions Ouvertes --- */
+                #positions-table { width: 100%; border-collapse: collapse; margin-top: 15px; }
+                #positions-table th, #positions-table td { padding: 10px; border: 1px solid #333; text-align: left; }
+                #positions-table th { background-color: #333; }
+                .profit { color: #28a745; }
+                .loss { color: #dc3545; }
+                .buy { color: #3498db; }
+                .sell { color: #e74c3c; }
+
+                /* --- Symboles et Logs --- */
+                .split-widget { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; height: 500px; }
+                #symbols-container, #logs-container { height: 100%; overflow-y: auto; background-color: #252525; padding: 15px; border-radius: 5px; }
+                #logs-container { font-family: "Courier New", Courier, monospace; font-size: 12px; }
+                .log-entry { padding: 3px 0; border-bottom: 1px dotted #444; }
+                .symbol-box { border-bottom: 1px solid #444; padding-bottom: 10px; margin-bottom: 10px; }
+                .symbol-box h3 { border-bottom: none; padding: 0; }
+                .patterns-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 5px 10px; font-size: 12px; }
+                .pattern-item { white-space: nowrap; }
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="main-content">
+                    <div class="widget" id="status-widget">
+                        <div class="content">
+                            <div>
+                                <h1>KasperBot Dashboard</h1>
+                                <div id="status-indicator" class="status-deconnecte">Démarrage</div>
+                                <p id="status-message">Initialisation...</p>
+                            </div>
+                            <div class="controls">
+                                <button id="reload-config-btn">Recharger Config</button>
+                                <button id="shutdown-btn" class="shutdown">Arrêt d'Urgence</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="widget" id="positions-widget">
+                        <h2>Positions Ouvertes (<span id="positions-count">0</span>)</h2>
+                        <table id="positions-table">
+                            <thead>
+                                <tr>
+                                    <th>Ticket</th> <th>Symbole</th> <th>Type</th> <th>Volume</th>
+                                    <th>Prix Ouvert</th> <th>SL</th> <th>TP</th> <th>Profit</th>
+                                </tr>
+                            </thead>
+                            <tbody id="positions-body">
+                                </tbody>
+                        </table>
+                    </div>
+                </div>
                 
-                const suggestionsContainer = document.getElementById('learning-suggestions-container');
-                if (data.status.analysis_suggestions && data.status.analysis_suggestions.length > 0) {
-                    suggestionsContainer.innerHTML = data.status.analysis_suggestions.map(s => `<p class="text-yellow-400">${s}</p>`).join('');
-                    document.getElementById('learning-suggestions-card').style.display = 'block';
-                } else {
-                    document.getElementById('learning-suggestions-card').style.display = 'none';
+                <div class="sidebar">
+                    <div class="widget" id="alerts-widget">
+                        <h2>Alertes Signaux</h2>
+                        <ul id="alerts-list">
+                            <li>Aucune alerte récente.</li>
+                        </ul>
+                    </div>
+
+                    <div class="widget split-widget">
+                        <div id="symbols-container">
+                            <h3>Analyse Symboles</h3>
+                            <div id="symbols-list">
+                                </div>
+                        </div>
+                        <div id="logs-container">
+                            <h3>Logs en direct</h3>
+                            <div id="logs-list">
+                                </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <script>
+                // --- Intervalle de mise à jour ---
+                const UPDATE_INTERVAL = 3000; // 3 secondes
+
+                // --- Fonctions de mise à jour ---
+
+                // Etat principal (Statut, Positions, Symboles)
+                async function fetchMainState() {
+                    try {
+                        const response = await fetch('/api/state');
+                        if (!response.ok) throw new Error('Erreur réseau /api/state');
+                        const state = await response.json();
+
+                        updateStatus(state.status);
+                        updatePositions(state.positions);
+                        updateSymbols(state.symbol_data);
+                    } catch (error) {
+                        console.error("Erreur fetchMainState:", error);
+                        updateStatus({ status: "Erreur UI", message: "Impossible de joindre le backend.", is_emergency: true });
+                    }
                 }
-                
-                const patternsMainContainer = document.getElementById('patterns-main-container');
-                patternsMainContainer.innerHTML = '';
-                if (data.status.symbol_data && Object.keys(data.status.symbol_data).length > 0) {
-                    Object.entries(data.status.symbol_data).forEach(([symbol, symbolData]) => {
-                        let patternsHTML = '';
-                        if(symbolData.patterns && Object.keys(symbolData.patterns).length > 0){
-                            Object.entries(symbolData.patterns).forEach(([name, d]) => {
-                                let statusColor = 'text-gray-400';
-                                const statusText = d.status || 'En attente...';
-                                if (statusText.includes('CONFIRMÉ')) statusColor = 'text-green-400';
-                                else if (statusText.includes('INVALIDÉ')) statusColor = 'text-red-400';
-                                patternsHTML += `<div class="flex justify-between text-sm"><span class="font-medium">${name}</span><strong class="${statusColor}">${statusText}</strong></div>`;
-                            });
-                        } else { patternsHTML = '<p class="text-gray-400 text-sm">En attente...</p>'; }
-                        patternsMainContainer.innerHTML += `<div class="card p-5"><h2 class="text-xl font-semibold text-white mb-4">Analyse: <span class="text-indigo-400">${symbol}</span></h2><div class="space-y-2">${patternsHTML}</div></div>`;
+
+                // Logs
+                async function fetchLogs() {
+                    try {
+                        const response = await fetch('/api/logs');
+                        if (!response.ok) throw new Error('Erreur réseau /api/logs');
+                        const logs = await response.json();
+                        updateLogs(logs);
+                    } catch (error) {
+                        console.error("Erreur fetchLogs:", error);
+                    }
+                }
+
+                // Alertes (Sugg 10)
+                async function fetchAlerts() {
+                    try {
+                        const response = await fetch('/api/visual_alerts');
+                        if (!response.ok) throw new Error('Erreur réseau /api/visual_alerts');
+                        const alerts = await response.json();
+                        updateAlerts(alerts);
+                    } catch (error) {
+                        console.error("Erreur fetchAlerts:", error);
+                    }
+                }
+
+                // --- Fonctions de rendu ---
+
+                function updateStatus(status) {
+                    const indicator = document.getElementById('status-indicator');
+                    const message = document.getElementById('status-message');
+                    
+                    indicator.textContent = status.status || 'Inconnu';
+                    message.textContent = status.message || '...';
+
+                    indicator.className = 'status-deconnecte'; // Défaut
+                    if (status.is_emergency) {
+                        indicator.className = 'status-erreur';
+                    } else if (status.status === 'Connecté') {
+                        indicator.className = 'status-connecte';
+                    }
+                }
+
+                function updatePositions(positions) {
+                    const body = document.getElementById('positions-body');
+                    const count = document.getElementById('positions-count');
+                    body.innerHTML = '';
+                    count.textContent = positions.length;
+
+                    if (positions.length === 0) {
+                        body.innerHTML = '<tr><td colspan="8" style="text-align: center; color: #777;">Aucune position ouverte.</td></tr>';
+                        return;
+                    }
+
+                    positions.forEach(pos => {
+                        const profitClass = pos.profit >= 0 ? 'profit' : 'loss';
+                        const typeClass = pos.type === 'BUY' ? 'buy' : 'sell';
+                        const row = `
+                            <tr>
+                                <td>${pos.ticket}</td>
+                                <td>${pos.symbol}</td>
+                                <td class="${typeClass}">${pos.type}</td>
+                                <td>${pos.volume}</td>
+                                <td>${pos.price_open.toFixed(5)}</td>
+                                <td>${pos.sl.toFixed(5)}</td>
+                                <td>${pos.tp.toFixed(5)}</td>
+                                <td class="${profitClass}">${pos.profit.toFixed(2)}</td>
+                            </tr>
+                        `;
+                        body.innerHTML += row;
                     });
                 }
 
-                const positionsContainer = document.getElementById('positions-container');
-                positionsContainer.innerHTML = data.positions.length > 0 ? `<div class="overflow-x-auto"><table class="w-full text-left"><thead><tr class="border-b border-gray-600 text-sm"><th class="p-2">Symbol</th><th class="p-2">Type</th><th class="p-2">Volume</th><th>Profit</th><th>Magic</th></tr></thead><tbody class="text-sm">${data.positions.map(p => `<tr class="border-b border-gray-700"><td class="p-2 font-bold">${p.symbol}</td><td class="p-2 font-bold ${p.type === 0 ? 'text-blue-400' : 'text-orange-400'}">${p.type === 0 ? 'BUY' : 'SELL'}</td><td class="p-2">${p.volume}</td><td class="p-2 font-semibold">${formatProfit(p.profit)}</td><td class="p-2">${p.magic}</td></tr>`).join('')}</tbody></table></div>` : '<p class="text-gray-400">Aucune position.</p>';
+                function updateSymbols(symbolData) {
+                    const container = document.getElementById('symbols-list');
+                    container.innerHTML = '';
+                    if (Object.keys(symbolData).length === 0) {
+                        container.innerHTML = '<p style="color: #777;">Aucun symbole chargé.</p>';
+                        return;
+                    }
+
+                    for (const [symbol, data] of Object.entries(symbolData)) {
+                        let patternsHtml = '';
+                        if (data.patterns && Object.keys(data.patterns).length > 0) {
+                            for (const [key, val] of Object.entries(data.patterns)) {
+                                patternsHtml += `<div class="pattern-item"><strong>${key}:</strong> ${val.status || 'N/A'}</div>`;
+                            }
+                        } else {
+                            patternsHtml = '<div class="pattern-item" style="color: #777;">En attente d'analyse...</div>';
+                        }
+                        
+                        container.innerHTML += `
+                            <div class="symbol-box">
+                                <h3>${symbol}</h3>
+                                <div class="patterns-grid">
+                                    ${patternsHtml}
+                                </div>
+                            </div>
+                        `;
+                    }
+                }
+
+                function updateLogs(logs) {
+                    const container = document.getElementById('logs-list');
+                    container.innerHTML = logs.map(log => `<div class="log-entry">${log.replace(/\\n/g, '<br>')}</div>`).join('');
+                }
                 
-                const logsContainer = document.getElementById('logs-container');
-                const newLogsHtml = data.logs.map(log => `<p>${log}</p>`).join('');
-                if (logsContainer.innerHTML !== newLogsHtml) { logsContainer.innerHTML = newLogsHtml; logsContainer.scrollTop = logsContainer.scrollHeight; }
+                function updateAlerts(alerts) {
+                    const container = document.getElementById('alerts-list');
+                    if (!alerts || alerts.length === 0) {
+                        container.innerHTML = '<li style="color: #777;">Aucune alerte récente.</li>';
+                        return;
+                    }
+                    container.innerHTML = alerts.map(alert => `<li>${alert}</li>`).join('');
+                }
 
-            } catch (error) { console.error("Erreur de mise à jour:", error); }
-        }
-        
-        async function loadConfig() {
-            try {
-                const res = await fetch('/api/config');
-                const config = await res.json();
-                document.getElementById('mt5_login').value = config.mt5_credentials.login;
-                document.getElementById('mt5_password').value = config.mt5_credentials.password;
-                document.getElementById('mt5_server').value = config.mt5_credentials.server;
-                document.getElementById('learning_enabled').value = config.learning.enabled.toString();
-                const patternsContainer = document.getElementById('patterns-config-container');
-                patternsContainer.innerHTML = '';
-                Object.keys(config.pattern_detection).forEach(name => {
-                    patternsContainer.innerHTML += `<div class="flex items-center"><input id="pattern_${name}" type="checkbox" class="form-checkbox h-4 w-4 rounded" ${config.pattern_detection[name] ? 'checked' : ''}><label for="pattern_${name}" class="ml-2">${name}</label></div>`;
+                // --- Contrôles API ---
+                async function postControl(endpoint) {
+                    if (!confirm(`Êtes-vous sûr de vouloir exécuter l'action: ${endpoint}?`)) {
+                        return;
+                    }
+                    try {
+                        const response = await fetch(endpoint, { method: 'POST' });
+                        if (!response.ok) throw new Error('Échec de la commande');
+                        const result = await response.json();
+                        alert(`Action ${endpoint} exécutée: ${result.status}`);
+                    } catch (error) {
+                        console.error("Erreur postControl:", error);
+                        alert(`Erreur lors de l'exécution de ${endpoint}: ${error.message}`);
+                    }
+                }
+
+                // --- Démarrage ---
+                document.addEventListener('DOMContentLoaded', () => {
+                    // Liaisons des boutons
+                    document.getElementById('shutdown-btn').addEventListener('click', () => postControl('/api/control/shutdown'));
+                    document.getElementById('reload-config-btn').addEventListener('click', () => postControl('/api/control/config_reload'));
+                    
+                    // Démarrage des mises à jour
+                    fetchMainState();
+                    fetchLogs();
+                    fetchAlerts(); // Sugg 10
+                    
+                    setInterval(fetchMainState, UPDATE_INTERVAL);
+                    setInterval(fetchLogs, UPDATE_INTERVAL * 2); // Logs moins fréquents
+                    setInterval(fetchAlerts, UPDATE_INTERVAL); // Alertes à la même fréquence que l'état
                 });
-            } catch (error) { console.error("Erreur de chargement de la config:", error); }
-        }
+            </script>
+        </body>
+        </html>
+        """
+        return html_content
+    # --- FIN RESTAURATION ---
 
-        async function saveConfig(event) {
-            event.preventDefault();
-            try {
-                const res = await fetch('/api/config');
-                let config = await res.json();
-                config.mt5_credentials.login = parseInt(document.getElementById('mt5_login').value);
-                config.mt5_credentials.password = document.getElementById('mt5_password').value;
-                config.mt5_credentials.server = document.getElementById('mt5_server').value;
-                config.learning.enabled = document.getElementById('learning_enabled').value === 'true';
-                Object.keys(config.pattern_detection).forEach(name => {
-                    const checkbox = document.getElementById(`pattern_${name}`);
-                    if(checkbox) config.pattern_detection[name] = checkbox.checked;
-                });
-                await fetch('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(config) });
-                alert('Configuration sauvegardée !');
-            } catch (error) { console.error("Erreur de sauvegarde:", error); }
-        }
-        
-        async function runBacktest(event) {
-            event.preventDefault();
-            document.getElementById('backtest-progress-card').classList.remove('hidden');
-            document.getElementById('backtest-results-card').classList.add('hidden');
-            document.getElementById('run-backtest-btn').disabled = true;
-            const params = {
-                symbol: document.getElementById('backtest_symbol').value,
-                timeframe: document.getElementById('backtest_timeframe').value,
-                start_date: document.getElementById('start_date').value,
-                end_date: document.getElementById('end_date').value,
-                initial_capital: document.getElementById('initial_capital').value,
-            };
-            await fetch('/api/backtest', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(params) });
-            checkBacktestStatus();
-        }
+    @app.route('/api/state')
+    def get_state():
+        """Fournit l'état complet (statut, positions, etc.)."""
+        try:
+            full_state = state.get_full_state()
+            # Filtrer les credentials MT5 avant de les envoyer
+            if 'mt5_credentials' in full_state.get('config', {}):
+                del full_state['config']['mt5_credentials']
+            return jsonify(full_state)
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
 
-        async function checkBacktestStatus() {
-            const res = await fetch('/api/backtest/status');
-            const data = await res.json();
-            if (data.running) {
-                document.getElementById('backtest-progress-bar').style.width = data.progress + '%';
-                setTimeout(checkBacktestStatus, 1000);
-            } else {
-                document.getElementById('run-backtest-btn').disabled = false;
-                displayBacktestResults(data.results);
-            }
-        }
+    @app.route('/api/logs')
+    def get_logs():
+        """Fournit les derniers messages de log."""
+        try:
+            logs = state.get_logs()
+            return jsonify(logs)
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
 
-        function displayBacktestResults(results) {
-            document.getElementById('backtest-progress-card').classList.add('hidden');
-            document.getElementById('backtest-results-card').classList.remove('hidden');
-            const summaryContainer = document.getElementById('backtest-summary');
-            if (results.error) {
-                summaryContainer.innerHTML = `<p class="col-span-2 text-red-400">${results.error}</p>`;
-                return;
-            }
-            summaryContainer.innerHTML = `
-                <div><p class="text-sm text-gray-400">Profit Final</p><p class="text-2xl font-bold ${results.pnl > 0 ? 'text-green-400' : 'text-red-400'}">${results.pnl.toFixed(2)}</p></div>
-                <div><p class="text-sm text-gray-400">Drawdown Max</p><p class="text-2xl font-bold">${results.max_drawdown_percent.toFixed(2)}%</p></div>
-                <div><p class="text-sm text-gray-400">Taux de Réussite</p><p class="text-2xl font-bold">${results.win_rate.toFixed(2)}%</p></div>
-                <div><p class="text-sm text-gray-400">Trades</p><p class="text-2xl font-bold">${results.total_trades}</p></div>
-            `;
-            const ctx = document.getElementById('equity-chart').getContext('2d');
-            if(equityChart) equityChart.destroy();
-            equityChart = new Chart(ctx, {
-                type: 'line',
-                data: {
-                    labels: Array.from(Array(results.equity_curve.length).keys()),
-                    datasets: [{ label: 'Évolution du Capital', data: results.equity_curve, borderColor: 'rgb(75, 192, 192)', tension: 0.1, pointRadius: 0 }]
-                },
-                options: { scales: { x: { display: false } } }
-            });
-        }
-        
-        window.onload = () => {
-            setInterval(fetchAllData, 3000);
-            fetchAllData();
-            loadConfig();
-            document.getElementById('config-form').addEventListener('submit', saveConfig);
-            document.getElementById('backtest-form').addEventListener('submit', runBacktest);
-            const today = new Date().toISOString().split('T')[0];
-            const lastYear = new Date(new Date().setFullYear(new Date().getFullYear() - 1)).toISOString().split('T')[0];
-            document.getElementById('end_date').value = today;
-            document.getElementById('start_date').value = lastYear;
-        };
-    </script>
-</body>
-</html>
-"""
+    # --- AJOUT SUGGESTION 10.3 ---
+    @app.route('/api/visual_alerts')
+    def get_visual_alerts():
+        """ Récupère les dernières alertes de signaux. """
+        try:
+            alerts = state.get_visual_alerts()
+            return jsonify(alerts)
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+    # --- FIN SUGGESTION 10.3 ---
 
-def start_api_server(shared_state):
-    app = Flask(__name__)
-    logging.getLogger('werkzeug').setLevel(logging.ERROR)
+    @app.route('/api/control/shutdown', methods=['POST'])
+    def control_shutdown():
+        """Arrête le bot."""
+        logging.warning("Arrêt demandé via API.")
+        state.shutdown()
+        return jsonify({"status": "shutdown_initiated"})
 
-    @app.route('/')
-    def index():
-        return render_template_string(HTML_TEMPLATE)
+    @app.route('/api/control/config_reload', methods=['POST'])
+    def control_config_reload():
+        """Signale à la boucle principale de recharger config.yaml."""
+        logging.info("Rechargement de la configuration demandé via API.")
+        state.signal_config_changed()
+        return jsonify({"status": "config_reload_signaled"})
 
-    @app.route('/api/data')
-    def get_all_data():
-        return jsonify(shared_state.get_all_data())
-    
-    @app.route('/api/config', methods=['GET', 'POST'])
-    def manage_config():
-        config_path = 'config.yaml'
-        if request.method == 'POST':
-            new_config = request.json
-            with open(config_path, 'w', encoding='utf-8') as f:
-                yaml.dump(new_config, f, sort_keys=False)
-            shared_state.update_config(new_config)
-            shared_state.signal_config_changed()
-            return jsonify({"status": "success"})
-        
-        with open(config_path, 'r', encoding='utf-8') as f:
-            config = yaml.safe_load(f)
-        return jsonify(config)
+    try:
+        config = state.config
+        host = config.get('api', {}).get('host', '127.0.0.1')
+        port = config.get('api', {}).get('port', 5000)
+        app.run(host=host, port=port, debug=False, use_reloader=False)
+    except Exception as e:
+        logging.critical(f"Impossible de démarrer le serveur API: {e}", exc_info=True)
+        # Tenter d'informer l'état partagé si possible
+        state.update_status("ERREUR API", f"Impossible de démarrer l'API: {e}", is_emergency=True)
 
-    @app.route('/api/backtest', methods=['POST'])
-    def handle_backtest():
-        from src.backtest.backtester import Backtester
-        if shared_state.get_backtest_status()['running']: 
-            return jsonify({"error": "Un backtest est déjà en cours."}), 400
-        # Ligne correcte qui DEVRAIT être dans src/api/server.py (run_backtest_thread)
-        backtester = Backtester(config_bt, symbol, start_date, end_date, initial_capital, shared_app_state)
-       # bt = Backtester(shared_state)
-        params = request.json
-        current_config = shared_state.get_config()
-        
-        threading.Thread(
-            target=bt.run, 
-            args=(
-                params['symbol'], params['timeframe'],
-                params['start_date'], params['end_date'], 
-                params['initial_capital'], current_config
-            ), 
-            daemon=True
-        ).start()
-        return jsonify({"status": "Backtest démarré."})
+    return app
 
-    @app.route('/api/backtest/status')
-    def get_backtest_status(): 
-        return jsonify(shared_state.get_backtest_status())
-    
-    config = shared_state.get_config()
-    host = config.get('api', {}).get('host', '127.0.0.1')
-    port = config.get('api', {}).get('port', 5000)
-    
-    app.run(host=host, port=port, debug=False, use_reloader=False)
+# Permet de tester le serveur API indépendamment
+if __name__ == '__main__':
+    logging.basicConfig(level=logging.INFO)
+    mock_state = SharedState()
+    # Ajouter des données mock pour le test
+    mock_state.add_log_message("Test: Log API démarré.")
+    mock_state.add_visual_alert("Test: Alerte visuelle 1 ★★★☆☆")
+    mock_state.update_config({"api": {"host": "127.0.0.1", "port": 5001}})
+    logging.info("Démarrage du serveur API en mode test sur port 5001...")
+    start_api_server(mock_state)

@@ -65,6 +65,13 @@ risk_management:
 sound_alerts:
   enabled: true
   sound_file: ./alert.wav
+
+# --- AJOUT SUGGESTION 9.3 (Alerte Visuelle) ---
+visual_alerts:
+  volatile_start_utc: "15:00"
+  volatile_end_utc: "18:00"
+# --- FIN SUGGESTION 9.3 ---
+
 trading_settings:
   crypto_symbols:
   - BTCUSD

@@ -1,7 +1,8 @@
 # Fichier: src/risk/risk_manager.py
-# Version: 1.3.2 (Implémentation Sugg 1, 7)
+# Version: 1.3.3 (Correction Sugg 7)
 # Dépendances: MetaTrader5, pandas, numpy, logging, pytz, time, src.constants
-# DESCRIPTION: Ajout Sugg 1 (Vérif TP min dist) et Sugg 7 (TSL Structure).
+# DESCRIPTION: Ajout Sugg 1 (Vérif TP min dist), Sugg 7 (TSL Structure)
+#            FIX: Sugg 7 (TSL Structure) conversion DatetimeIndex manquante.
 
 import MetaTrader5 as mt5
 import logging
@@ -18,7 +19,7 @@ from src.constants import BUY, SELL
 class RiskManager:
     """
     Gère le risque.
-    v1.3.2: Ajout Sugg 1 (Vérif TP min dist), Sugg 7 (TSL Structure).
+    v1.3.3: Correction conversion index temps TSL Structure.
     """
     def __init__(self, config: dict, executor, symbol: str):
         self.log = logging.getLogger(self.__class__.__name__)
@@ -65,7 +66,7 @@ class RiskManager:
             return False, 0.0
 
     def calculate_trade_parameters(self, equity: float, price: float, ohlc_data: pd.DataFrame, trade_signal: dict) -> Tuple[float, float, float]:
-        # (Logique inchangée - Sugg 3.2 déjà implémentée)
+        # (Logique inchangée)
         try:
             if not isinstance(trade_signal, dict) or 'direction' not in trade_signal:
                 self.log.error(f"Signal invalide: {trade_signal}. 'direction' manquante.")
@@ -122,7 +123,7 @@ class RiskManager:
             return 0.0, 0.0, 0.0
 
     def _calculate_volume(self, equity: float, risk_percent: float, entry_price: float, sl_price: float) -> float:
-        # (Logique inchangée mais utilise get_conversion_rate avec cache)
+        # (Logique inchangée)
         risk_amount_account_currency = equity * risk_percent
         sl_distance_price = abs(entry_price - sl_price)
         if sl_distance_price < self.point: return 0.0
@@ -234,13 +235,10 @@ class RiskManager:
 
     # --- [Optimisation 1] get_conversion_rate avec cache ---
     def get_conversion_rate(self, from_currency: str, to_currency: str) -> Optional[float]:
-        """ Récupère le taux de change, en utilisant un cache. """
+        # (Logique inchangée)
         if from_currency == to_currency: return 1.0
-
         cache_key = f"{from_currency}->{to_currency}"
         current_time = time.monotonic()
-
-        # Vérifier le cache
         if cache_key in self._conversion_rate_cache:
             rate, timestamp = self._conversion_rate_cache[cache_key]
             if current_time - timestamp < self._cache_duration.total_seconds():
@@ -248,29 +246,22 @@ class RiskManager:
                 return rate
             else:
                 self.log.debug(f"Cache EXPIRED pour {cache_key}")
-                del self._conversion_rate_cache[cache_key] # Supprimer l'entrée expirée
-
+                del self._conversion_rate_cache[cache_key]
         self.log.debug(f"Cache MISS pour {cache_key}. Récupération via API MT5...")
         rate = self._fetch_conversion_rate_from_mt5(from_currency, to_currency)
-
-        # Mettre à jour le cache si un taux valide est trouvé
         if rate is not None and rate > 0:
             self._conversion_rate_cache[cache_key] = (rate, current_time)
             self.log.debug(f"Cache SET pour {cache_key}: {rate}")
-
         return rate
 
     def _fetch_conversion_rate_from_mt5(self, from_currency: str, to_currency: str) -> Optional[float]:
-        """ Logique originale de récupération du taux via MT5. """
-        # Essai direct
+        # (Logique inchangée)
         pair1 = f"{from_currency}{to_currency}"
         info1 = self._executor._mt5.symbol_info_tick(pair1)
         if info1 and info1.ask > 0: return info1.ask
-        # Essai inversé
         pair2 = f"{to_currency}{from_currency}"
         info2 = self._executor._mt5.symbol_info_tick(pair2)
         if info2 and info2.bid > 0: return 1.0 / info2.bid
-        # Essai triangulation via pivots
         for pivot in ["USD", "EUR", "GBP"]:
              if from_currency != pivot and to_currency != pivot:
                  rate1 = self._get_rate_or_inverse(from_currency, pivot)
@@ -280,7 +271,7 @@ class RiskManager:
         return None
 
     def _get_rate_or_inverse(self, curr1: str, curr2: str) -> float:
-        """ Helper pour _fetch_conversion_rate_from_mt5. """
+        # (Logique inchangée)
         pair_direct = f"{curr1}{curr2}"
         info_direct = self._executor._mt5.symbol_info_tick(pair_direct)
         if info_direct and info_direct.ask > 0: return info_direct.ask
@@ -409,14 +400,32 @@ class RiskManager:
                 rounded_new_sl = round(new_sl, self.digits)
                 if rounded_new_sl != round(pos.sl, self.digits): self._executor.modify_position(pos.ticket, rounded_new_sl, pos.tp, trade_id="TS_ATR")
 
-    # --- AJOUT SUGGESTION 7 ---
+    # --- AJOUT SUGGESTION 7 (avec CORRECTION Erreur 11) ---
     def _apply_trailing_stop_structure(self, positions: list, ohlc_data: pd.DataFrame, ts_smc_cfg: dict):
         """
         Applique un trailing stop basé sur la structure LTF (derniers swings).
         """
+        
+        # --- AJOUT CORRECTION (Erreur 11) ---
+        # Assurer que ohlc_data a un DatetimeIndex pour la comparaison
+        if not isinstance(ohlc_data.index, pd.DatetimeIndex):
+            try:
+                # Vérifier si la colonne 'time' existe (elle devrait venir de get_ohlc)
+                if 'time' not in ohlc_data.columns:
+                     self.log.error(f"TSL Structure: Colonne 'time' manquante dans ohlc_data.")
+                     return
+                ohlc_data['time'] = pd.to_datetime(ohlc_data['time'], unit='s')
+                ohlc_data.set_index('time', inplace=True)
+                if ohlc_data.index.tz is None:
+                    ohlc_data.index = ohlc_data.index.tz_localize('UTC')
+            except Exception as e:
+                self.log.error(f"TSL Structure: Échec conversion index temps: {e}", exc_info=False)
+                return
+        # --- FIN CORRECTION ---
+
         period = ts_smc_cfg.get('ltf_swing_period', 3)
         
-        # Note: ohlc_data devrait être une copie pour éviter SettingWithCopyWarning
+        # Note: ohlc_data est déjà une copie (passée depuis manage_open_positions)
         swing_highs, swing_lows = self._find_swing_points(ohlc_data, n=period)
 
         if swing_lows.empty and swing_highs.empty:

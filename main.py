@@ -1,7 +1,7 @@
 # Fichier: main.py
-# Version: 18.0.0 (Sugg-TopDown)
+# Version: 18.1.0 (Implémentation Sugg 9, 10)
 # Dépendances: MetaTrader5, pytz, PyYAML, Flask, time, threading, logging, webbrowser, os, datetime, src modules
-# Description: Refonte majeure (Sugg 1-5) vers logique Top-Down (H4/M15) et Killzones.
+# Description: Ajout Sugg 9 (Calcul Rating) et Sugg 10 (Alerte Visuelle).
 
 import time
 import threading
@@ -12,7 +12,7 @@ import os
 import sys
 from datetime import datetime, time as dt_time
 import pytz
-from typing import List, Dict
+from typing import List, Dict, Tuple
 
 import MetaTrader5 as mt5
 from src.data_ingest.mt5_connector import MT5Connector
@@ -22,6 +22,7 @@ from src.execution.mt5_executor import MT5Executor
 from src.api.server import start_api_server
 from src.shared_state import SharedState, LogHandler
 from src.analysis.performance_analyzer import PerformanceAnalyzer
+from src.constants import BUY, SELL # Ajouté pour Sugg 9.2
 
 def setup_logging(state: SharedState):
     """Configure la journalisation."""
@@ -127,6 +128,62 @@ def get_active_symbols_for_session(config: dict) -> List[str]:
 
     return list(active_symbols)
 # --- Fin [Suggestion 5.1 / 5.2] ---
+
+# --- AJOUT SUGGESTION 9.2 ---
+def _calculate_signal_rating(price: float, sl: float, tp: float, 
+                             trade_signal: dict, config: dict, 
+                             symbol: str) -> int:
+    """
+    Calcule une note (0-5) pour un signal de trading validé.
+    Appelé après le calcul du SL/TP.
+    """
+    
+    rating = 0
+    cfg_rm = config.get('risk_management', {})
+    
+    try:
+        # Étoile 1: Tendance (Toujours 1 si signal généré, car le biais HTF est la 1ère condition)
+        rating += 1
+        
+        # Étoile 2: Point d'Entrée (Prix dans la POI HTF)
+        # (Nécessite Sugg 9.1: 'poi_zone' dans trade_signal)
+        poi_zone = trade_signal.get('poi_zone') 
+        direction = trade_signal.get('direction')
+        if poi_zone:
+            poi_high, poi_low = poi_zone
+            # Vérifier si 'price' (ask ou bid) est dans la zone
+            if (direction == BUY and poi_low <= price <= poi_high) or \
+               (direction == SELL and poi_low <= price <= poi_high):
+                rating += 1
+        
+        # Étoile 3: Stop Loss (Basé sur Structure SMC)
+        if cfg_rm.get('sl_strategy') == 'SMC_STRUCTURE':
+            rating += 1
+            
+        # Étoile 4: Risk Reward (Vérifié par RiskManager > min_rr)
+        # (Le RiskManager bloque déjà les trades < min_rr)
+        rating += 1
+
+        # Étoile 5: Session Volatile (Ex: 15h-18h UTC)
+        alert_cfg = config.get('visual_alerts', {})
+        start_str = alert_cfg.get('volatile_start_utc', '15:00')
+        end_str = alert_cfg.get('volatile_end_utc', '18:00')
+        
+        start_utc = dt_time.fromisoformat(start_str)
+        end_utc = dt_time.fromisoformat(end_str)
+        now_utc_time = datetime.now(pytz.utc).time()
+        
+        if start_utc <= end_utc: # Session jour (ex: 15:00-18:00)
+            if start_utc <= now_utc_time < end_utc: rating += 1
+        else: # Session overnight (ex: 22:00-02:00)
+            if now_utc_time >= start_utc or now_utc_time < end_utc: rating += 1
+            
+    except Exception as e:
+        logging.error(f"Erreur calcul rating pour {symbol}: {e}", exc_info=True)
+        return 0 # Retourner 0 en cas d'erreur
+        
+    return rating
+# --- FIN SUGGESTION 9.2 ---
 
 
 def main_trading_loop(state: SharedState):
@@ -306,15 +363,54 @@ def main_trading_loop(state: SharedState):
                             # RiskManager utilise les données LTF (M15) pour le calcul SL (si SMC_STRUCTURE)
                             risk_manager = RiskManager(config, executor, symbol)
                             
-                            executor.execute_trade(
-                                account_info, risk_manager, symbol, trade_signal['direction'],
-                                ltf_data, # Passer LTF data pour calcul SL/ATR
-                                trade_signal['pattern'], magic_number,
-                                trade_signal # Contient target_price HTF (Sugg 3.1)
+                            # --- MODIFICATION SUGGESTION 10.2 ---
+                            # Obtenir prix d'entrée AVANT calcul SL/TP
+                            price_info = connector.get_tick(symbol)
+                            if not price_info:
+                                logging.error(f"[{symbol}] Impossible d'obtenir le tick pour le calcul des paramètres. Signal annulé.")
+                                continue
+                            
+                            entry_price = price_info.ask if trade_signal['direction'] == BUY else price_info.bid
+                            
+                            volume, sl, tp = risk_manager.calculate_trade_parameters(
+                                account_info.equity, entry_price, ltf_data, trade_signal
                             )
-                            time.sleep(0.5)
-                            all_bot_positions = executor.get_open_positions(magic=magic_number)
-                            state.update_positions(all_bot_positions)
+                            
+                            if volume > 0:
+                                # --- AJOUT SUGGESTION 9.2 / 10.2 ---
+                                # Calculer le Rating maintenant que SL/TP sont connus
+                                rating = _calculate_signal_rating(
+                                    entry_price, sl, tp,
+                                    trade_signal, config, symbol
+                                )
+                                
+                                # Formatage du message d'alerte
+                                symbol_digits = connector.get_symbol_digits(symbol)
+                                alert_msg = (
+                                    f"[{datetime.now(pytz.utc).strftime('%H:%M:%S')}] "
+                                    f"{trade_signal['direction']} {symbol} @ {entry_price:.{symbol_digits}f} | "
+                                    f"SL: {sl:.{symbol_digits}f} | "
+                                    f"TP: {tp:.{symbol_digits}f} | "
+                                    f"Rating: {'★' * rating}{'☆' * (5 - rating)}"
+                                )
+                                
+                                state.add_visual_alert(alert_msg)
+                                logging.info(f"ALERTE VISUELLE: {alert_msg}")
+                                # --- FIN SUGGESTION 9.2 / 10.2 ---
+                            
+                                # L'exécution du trade continue
+                                executor.execute_trade(
+                                    account_info, risk_manager, symbol, trade_signal['direction'],
+                                    ltf_data, # Passer LTF data pour calcul SL/ATR (utilisé par execute_trade pour contexte)
+                                    trade_signal['pattern'], magic_number,
+                                    trade_signal, # Contient target_price HTF (Sugg 3.1)
+                                    # Passer les params pré-calculés pour éviter redondance
+                                    precalculated_params={'volume': volume, 'sl': sl, 'tp': tp, 'price': entry_price}
+                                )
+                                time.sleep(0.5)
+                                all_bot_positions = executor.get_open_positions(magic=magic_number)
+                                state.update_positions(all_bot_positions)
+                            # --- FIN MODIFICATION SUGGESTION 10.2 ---
 
                     except ValueError as e: logging.error(f"Impossible de traiter le symbole '{symbol}': {e}.")
                     except Exception as e: logging.error(f"Erreur inattendue analyse {symbol}: {e}", exc_info=True)
@@ -353,7 +449,7 @@ def main_trading_loop(state: SharedState):
 
 
 # --- Version Info ---
-__version__ = "18.0.0" # Version de refonte Top-Down
+__version__ = "18.1.0" # Version avec Alertes Visuelles
 
 # Bloc principal
 if __name__ == "__main__":

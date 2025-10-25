@@ -1,7 +1,7 @@
 # Fichier: src/patterns/pattern_detector.py
-# Version: 19.1.1 (Implémentation Sugg 5)
+# Version: 19.1.2 (Implémentation Sugg 5, 9.1)
 # Dépendances: pandas, numpy, logging, datetime, src.constants, typing
-# DESCRIPTION: Ajout Sugg 5 (Validation OB avec FVG).
+# DESCRIPTION: Ajout Sugg 5 (Validation OB avec FVG) et Sugg 9.1 (Retour poi_zone).
 
 import pandas as pd
 import numpy as np
@@ -16,7 +16,7 @@ from src.constants import (
 class PatternDetector:
     """
     Module de reconnaissance de patterns SMC (Top-Down).
-    v19.1.1: Ajout Sugg 5 (Validation OB avec FVG).
+    v19.1.2: Ajout Sugg 5 (Validation OB avec FVG), Sugg 9.1 (Retour poi_zone).
     """
     def __init__(self, config):
         self.config = config
@@ -286,14 +286,14 @@ class PatternDetector:
     def _check_ltf_confirmation(self, ltf_data: pd.DataFrame, poi_htf: Dict, htf_bias: str, symbol: str) -> (str, float, Dict):
         """
         Vérifie confirmation LTF (CHOCH) dans POI HTF.
-        Retourne (pattern_name, entry_price, poi_used) si confirmé.
+        Retourne (pattern_name, entry_price, poi_used_dict) si confirmé.
         Marque la POI utilisée comme mitigée.
         """
         if symbol not in self._ltf_state:
             self._ltf_state[symbol] = {'last_swing_high': None, 'last_swing_low': None}
 
         ltf_swing_highs, ltf_swing_lows = self._find_swing_points(ltf_data.copy(), n=3)
-        if ltf_swing_highs.empty and ltf_swing_lows.empty: return None, 0.0, None
+        if ltf_swing_highs.empty or ltf_swing_lows.empty: return None, 0.0, None
 
         current_ltf_candle = ltf_data.iloc[-1]
         poi_high, poi_low = poi_htf['zone']
@@ -332,6 +332,7 @@ class PatternDetector:
                       poi['mitigated'] = True
                       self.log.debug(f"POI HTF {poi['type']} {poi['zone']} marquée mitigée après confirmation LTF ({symbol}).")
                       break
+            # [MODIFICATION SUGG 9.1] Retourner poi_htf (le dict)
             return confirmed_pattern, entry_price, poi_htf
             
         return None, 0.0, None
@@ -406,6 +407,7 @@ class PatternDetector:
         poi_to_watch = prioritized_poi[0]
         
         # [Opt 3] _check_ltf_confirmation marque la POI comme mitigée si confirmation
+        # [MODIFICATION SUGG 9.1] poi_used est maintenant un dict
         pattern_name, entry_price, poi_used = self._check_ltf_confirmation(
             ltf_data, poi_to_watch, htf_bias, symbol
         )
@@ -417,10 +419,12 @@ class PatternDetector:
 
             self.log.info(f"SIGNAL (Top-Down) sur {symbol}: Biais {htf_bias} -> POI {poi_used['type']} -> Conf. {pattern_name}.")
             
+            # [MODIFICATION SUGG 9.1] Ajouter poi_zone
             return {
                 'pattern': f"{poi_used['type']}_HTF_CONF_{pattern_name}_LTF", # Nom plus générique
                 'direction': htf_bias,
-                'target_price': target_liquidity_htf
+                'target_price': target_liquidity_htf,
+                'poi_zone': poi_used['zone'] # Ajouté pour Sugg 9 (Rating)
             }
 
         return None
