@@ -11,7 +11,7 @@ import os
 
 def start_api_server(state: SharedState):
     """Démarre le serveur Flask."""
-    
+
     app = Flask(__name__)
     log = logging.getLogger('werkzeug')
     log.setLevel(logging.ERROR) # Désactiver les logs Flask standards
@@ -36,7 +36,7 @@ def start_api_server(state: SharedState):
                 .widget { background-color: #1E1E1E; border: 1px solid #333; border-radius: 8px; padding: 20px; box-shadow: 0 4px 8px rgba(0,0,0,0.2); }
                 h1, h2, h3 { color: #FFFFFF; border-bottom: 2px solid #4A90E2; padding-bottom: 5px; margin-top: 0; }
                 h1 { font-size: 24px; } h2 { font-size: 20px; } h3 { font-size: 16px; }
-                
+
                 /* --- Statut et Contrôles --- */
                 #status-widget .content { display: flex; justify-content: space-between; align-items: center; }
                 #status-indicator { font-size: 20px; font-weight: bold; padding: 10px 15px; border-radius: 5px; }
@@ -105,7 +105,7 @@ def start_api_server(state: SharedState):
                         </table>
                     </div>
                 </div>
-                
+
                 <div class="sidebar">
                     <div class="widget" id="alerts-widget">
                         <h2>Alertes Signaux</h2>
@@ -180,7 +180,7 @@ def start_api_server(state: SharedState):
                 function updateStatus(status) {
                     const indicator = document.getElementById('status-indicator');
                     const message = document.getElementById('status-message');
-                    
+
                     indicator.textContent = status.status || 'Inconnu';
                     message.textContent = status.message || '...';
 
@@ -237,9 +237,9 @@ def start_api_server(state: SharedState):
                                 patternsHtml += `<div class="pattern-item"><strong>${key}:</strong> ${val.status || 'N/A'}</div>`;
                             }
                         } else {
-                            patternsHtml = '<div class="pattern-item" style="color: #777;">En attente d'analyse...</div>';
+                            patternsHtml = '<div class="pattern-item" style="color: #777;">En attente d\\'analyse...</div>';
                         }
-                        
+
                         container.innerHTML += `
                             <div class="symbol-box">
                                 <h3>${symbol}</h3>
@@ -255,7 +255,7 @@ def start_api_server(state: SharedState):
                     const container = document.getElementById('logs-list');
                     container.innerHTML = logs.map(log => `<div class="log-entry">${log.replace(/\\n/g, '<br>')}</div>`).join('');
                 }
-                
+
                 function updateAlerts(alerts) {
                     const container = document.getElementById('alerts-list');
                     if (!alerts || alerts.length === 0) {
@@ -267,7 +267,7 @@ def start_api_server(state: SharedState):
 
                 // --- Contrôles API ---
                 async function postControl(endpoint) {
-                    if (!confirm(`Êtes-vous sûr de vouloir exécuter l'action: ${endpoint}?`)) {
+                    if (!confirm(`Êtes-vous sûr de vouloir exécuter l\\'action: ${endpoint}?`)) {
                         return;
                     }
                     try {
@@ -277,7 +277,7 @@ def start_api_server(state: SharedState):
                         alert(`Action ${endpoint} exécutée: ${result.status}`);
                     } catch (error) {
                         console.error("Erreur postControl:", error);
-                        alert(`Erreur lors de l'exécution de ${endpoint}: ${error.message}`);
+                        alert(`Erreur lors de l\\'exécution de ${endpoint}: ${error.message}`);
                     }
                 }
 
@@ -286,12 +286,12 @@ def start_api_server(state: SharedState):
                     // Liaisons des boutons
                     document.getElementById('shutdown-btn').addEventListener('click', () => postControl('/api/control/shutdown'));
                     document.getElementById('reload-config-btn').addEventListener('click', () => postControl('/api/control/config_reload'));
-                    
+
                     // Démarrage des mises à jour
                     fetchMainState();
                     fetchLogs();
                     fetchAlerts(); // Sugg 10
-                    
+
                     setInterval(fetchMainState, UPDATE_INTERVAL);
                     setInterval(fetchLogs, UPDATE_INTERVAL * 2); // Logs moins fréquents
                     setInterval(fetchAlerts, UPDATE_INTERVAL); // Alertes à la même fréquence que l'état
