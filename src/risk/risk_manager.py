@@ -1,481 +1,604 @@
+
 # Fichier: src/risk/risk_manager.py
-# Version: 1.3.3 (Correction Sugg 7)
-# Dépendances: MetaTrader5, pandas, numpy, logging, pytz, time, src.constants
-# DESCRIPTION: Ajout Sugg 1 (Vérif TP min dist), Sugg 7 (TSL Structure)
-#            FIX: Sugg 7 (TSL Structure) conversion DatetimeIndex manquante.
+# Version: 20.0.0 (Build Stabilisé)
+# Dépendances: MetaTrader5, pandas, numpy, logging, decimal, pytz, datetime, typing
+# Description: Version stable intégrant P1-P6 et corrections proactives (Calcul P-Proactif 5b, Logique BE/TS P-Proactif 4).
 
 import MetaTrader5 as mt5
-import logging
-import math
 import pandas as pd
 import numpy as np
-from datetime import datetime, timedelta # Ajout timedelta pour cache
+import logging
+from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP, InvalidOperation
+from datetime import datetime, time as dt_time, timedelta
 import pytz
-import time # Ajouté pour cache
-from typing import Tuple, List, Dict, Optional
+from typing import Tuple, Optional, Dict, List, TYPE_CHECKING 
 
 from src.constants import BUY, SELL
 
+if TYPE_CHECKING:
+    from src.execution.mt5_executor import MT5Executor
+
 class RiskManager:
     """
-    Gère le risque.
-    v1.3.3: Correction conversion index temps TSL Structure.
+    Gère tous les aspects du risque.
+    v20.0.0: Stable. Corrige calcul valeur point (P-Proactif 5b) et logique BE/TS (P-Proactif 4).
     """
-    def __init__(self, config: dict, executor, symbol: str):
-        self.log = logging.getLogger(self.__class__.__name__)
-        self._config: Dict = config
-        self._executor = executor
-        self._symbol: str = symbol
 
-        self.symbol_info = self._executor._mt5.symbol_info(self._symbol)
-        self.account_info = self._executor._mt5.account_info()
+    def __init__(self, config: dict, executor: 'MT5Executor', symbol: str):
+        self.log = logging.getLogger(self.__class__.__name__)
+        self.config = config
+        self.executor = executor
+        try:
+            self.mt5 = executor.get_mt5_connection()
+        except AttributeError:
+             self.log.warning("Utilisation de l'accès direct .mt5. Mettre à jour MT5Executor (v15.5.0+).")
+             self.mt5 = executor.mt5
+        
+        self.symbol = symbol
+        self.symbol_info = self.mt5.symbol_info(self.symbol)
+        self.account_info = self.executor.get_account_info()
 
         if not self.symbol_info or not self.account_info:
-            self.log.critical(f"Impossible d'obtenir les informations pour {self._symbol} ou compte.")
-            raise ValueError("Informations de compte ou de symbole MT5 manquantes.")
+            self.log.critical(f"Impossible d'obtenir les infos symbole/compte pour {self.symbol}.")
+            raise ValueError(f"Infos symbole MT5 introuvables pour {self.symbol}")
 
-        self.point: float = self.symbol_info.point
-        self.digits: int = self.symbol_info.digits
-        self._partial_tp_taken = {}
+        risk_settings = self.config.get('risk_management', {})
+        self.risk_per_trade_pct = Decimal(str(risk_settings.get('risk_per_trade', 1.0))) / Decimal('100.0')
+        self.daily_loss_limit_pct = Decimal(str(risk_settings.get('daily_loss_limit_percent', 5.0))) / Decimal('100.0')
+        self.max_concurrent_risk_pct = Decimal(str(risk_settings.get('max_concurrent_risk_percent', 3.0))) / Decimal('100.0')
 
-        # --- [Optimisation 1] Cache Taux de Change ---
-        self._conversion_rate_cache: Dict[str, Tuple[float, float]] = {}
-        self._cache_duration: timedelta = timedelta(seconds=60) # Validité du cache (ex: 60 secondes)
-        # --- Fin [Optimisation 1] ---
+        self.ptp_rules = risk_settings.get('partial_tp', {}).get('levels', [])
+        self.breakeven_rules = risk_settings.get('breakeven', {})
+        self.trailing_stop_rules = risk_settings.get('trailing_stop_atr', {})
 
-    def is_daily_loss_limit_reached(self) -> Tuple[bool, float]:
-        # (Logique inchangée)
-        risk_settings = self._config.get('risk_management', {})
-        loss_limit_percent = risk_settings.get('daily_loss_limit_percent', 5.0)
-        if loss_limit_percent <= 0: return False, 0.0
+        self.sl_strategy = risk_settings.get('sl_strategy', 'ATR_MULTIPLE')
+        self.tp_strategy = risk_settings.get('tp_strategy', 'SMC_LIQUIDITY_TARGET')
+        self.sl_buffer_pips = Decimal(str(risk_settings.get('sl_buffer_pips', 1.0)))
+        self.tp_buffer_pips = Decimal(str(risk_settings.get('tp_buffer_pips', 0.0)))
+        
+        atr_settings = risk_settings.get('atr_settings', {})
+        symbol_atr_override = atr_settings.get(symbol, {})
+        default_atr = atr_settings.get('default', {'sl_multiple': 2.0, 'tp_multiple': 3.0})
+        
+        self.sl_atr_multiplier = Decimal(str(symbol_atr_override.get('sl_multiple', default_atr.get('sl_multiple', 2.0))))
+        self.tp_atr_multiplier = Decimal(str(symbol_atr_override.get('tp_multiple', default_atr.get('tp_multiple', 3.0))))
+
+        self.digits = self.symbol_info.digits
+        self.point = self.symbol_info.point
+        self.volume_min = self.symbol_info.volume_min
+        self.volume_max = self.symbol_info.volume_max
+        self.volume_step = self.symbol_info.volume_step
+        self.trade_contract_size = self.symbol_info.trade_contract_size
+        self.currency_profit = self.symbol_info.currency_profit
+        self.currency_margin = self.symbol_info.currency_margin
+        self.trade_calc_mode = self.symbol_info.trade_calc_mode
+        self.trade_tick_value = self.symbol_info.trade_tick_value
+        self.trade_tick_size = self.symbol_info.trade_tick_size
+        self.account_currency = self.account_info.currency
+        self.ohlc_data_cache = None
+
+
+    def _calculate_atr(self, ohlc_data: pd.DataFrame, period: int = 14) -> float:
+        if ohlc_data is None or len(ohlc_data) < period:
+            logging.warning(f"Données OHLC insuffisantes pour ATR({period}) sur {self.symbol}")
+            return 0.0
         try:
-            today_start_utc = datetime.now(pytz.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-            now_utc = datetime.now(pytz.utc)
-            history_deals = self._executor._mt5.history_deals_get(today_start_utc, now_utc)
-            if history_deals is None: return False, 0.0
-            magic_number = self._config.get('trading_settings', {}).get('magic_number', 0)
-            daily_pnl = sum(deal.profit for deal in history_deals if deal.magic == magic_number and deal.entry in [mt5.DEAL_ENTRY_OUT, mt5.DEAL_ENTRY_INOUT])
-            equity_now = self.account_info.equity # Utiliser equity actuelle pour calcul limite
-            loss_limit_amount = (equity_now * loss_limit_percent) / 100.0
-            if daily_pnl < 0 and abs(daily_pnl) >= loss_limit_amount:
-                self.log.critical(f"ARRÊT D'URGENCE: Perte journalière ({daily_pnl:.2f}) atteint limite {loss_limit_percent}%.")
-                return True, daily_pnl
-            return False, daily_pnl
+            high_low = ohlc_data['high'].astype(float) - ohlc_data['low'].astype(float)
+            high_close = np.abs(ohlc_data['high'].astype(float) - ohlc_data['close'].astype(float).shift())
+            low_close = np.abs(ohlc_data['low'].astype(float) - ohlc_data['close'].astype(float).shift())
         except Exception as e:
-            self.log.error(f"Erreur calcul limite perte jour : {e}", exc_info=True)
-            return False, 0.0
+             logging.error(f"Erreur conversion type pour ATR: {e}"); return 0.0
+        tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+        atr = tr.rolling(window=period).mean().iloc[-1]
+        if pd.isna(atr) or atr == 0.0:
+             logging.warning(f"Calcul ATR invalide (NaN ou 0.0) pour {self.symbol}. Fallback 10 pips.")
+             return self.point * 10
+        return atr
 
-    def calculate_trade_parameters(self, equity: float, price: float, ohlc_data: pd.DataFrame, trade_signal: dict) -> Tuple[float, float, float]:
-        # (Logique inchangée)
+
+    def get_conversion_rate(self, from_currency: str, to_currency: str) -> Decimal:
+        if from_currency == to_currency: return Decimal('1.0')
+        ticker_direct = f"{from_currency}{to_currency}"
+        tick_direct = self.mt5.symbol_info_tick(ticker_direct)
+        if tick_direct and tick_direct.ask > 0:
+            return Decimal(str(tick_direct.ask))
+        ticker_inverse = f"{to_currency}{from_currency}"
+        tick_inverse = self.mt5.symbol_info_tick(ticker_inverse)
+        if tick_inverse and tick_inverse.bid > 0:
+            try: return Decimal('1.0') / Decimal(str(tick_inverse.bid))
+            except (InvalidOperation, ZeroDivisionError): pass
+        if from_currency != "USD" and to_currency != "USD":
+            try:
+                rate_from_usd = self.get_conversion_rate(from_currency, "USD")
+                rate_usd_to = self.get_conversion_rate("USD", to_currency)
+                if rate_from_usd > 0 and rate_usd_to > 0: return rate_from_usd * rate_usd_to
+            except Exception as e: logging.error(f"Erreur taux croisé {from_currency}{to_currency}: {e}")
+        logging.error(f"Impossible d'obtenir taux conversion {from_currency} -> {to_currency}.")
+        return Decimal('0.0')
+
+    def _calculate_point_value_in_account_currency(self, volume: Decimal = Decimal('1.0')) -> Decimal:
+        """ Calcule la valeur monétaire d'un mouvement d'un POINT pour un volume donné. """
         try:
-            if not isinstance(trade_signal, dict) or 'direction' not in trade_signal:
-                self.log.error(f"Signal invalide: {trade_signal}. 'direction' manquante.")
-                return 0.0, 0.0, 0.0
-                
-            rm_settings = self._config.get('risk_management', {})
-            risk_percent_from_config = rm_settings.get('risk_per_trade', 1.0)
-            risk_percent = risk_percent_from_config / 100.0
-            min_rr = rm_settings.get('min_rr', 2.0)
-
-            if risk_percent <= 0:
-                 self.log.error(f"Risque par trade ({risk_percent_from_config}%) <= 0.")
-                 return 0.0, 0.0, 0.0
-
-            # Utilise la fonction modifiée (Sugg 1)
-            ideal_sl, ideal_tp = self._calculate_initial_sl_tp_with_min_dist(price, ohlc_data, trade_signal)
+            point_d = Decimal(str(self.point))
+            contract_size_d = Decimal(str(self.trade_contract_size))
+            point_value_profit_currency = Decimal('0.0')
+            calc_mode = self.trade_calc_mode
             
-            sl_buffer_pips = rm_settings.get('sl_buffer_pips', 0)
-            if sl_buffer_pips > 0 and ideal_sl != 0:
-                 sl_buffer = sl_buffer_pips * self.point
-                 ideal_sl = ideal_sl - sl_buffer if trade_signal['direction'] == BUY else ideal_sl + sl_buffer
-                 ideal_sl = round(ideal_sl, self.digits)
+            tick_value_d = Decimal(str(self.trade_tick_value))
+            tick_size_d = Decimal(str(self.trade_tick_size))
 
-            if ideal_sl == 0 or ideal_tp == 0:
-                 self.log.error(f"SL/TP final invalide (0). SL: {ideal_sl}, TP: {ideal_tp}")
-                 return 0.0, 0.0, 0.0
-
-            sl_distance_final = abs(price - ideal_sl)
-            tp_distance_final = abs(ideal_tp - price)
+            # --- MODIFICATION (P-Proactif 5b) : Suppression de la branche Forex incorrecte ---
+            # La logique CFD (basée sur tick_value/tick_size) est universelle et correcte.
             
-            if sl_distance_final < self.point:
-                 self.log.error(f"Distance SL finale invalide ({sl_distance_final:.{self.digits}f}).")
-                 return 0.0, 0.0, 0.0
+            if calc_mode in [mt5.SYMBOL_CALC_MODE_FOREX, mt5.SYMBOL_CALC_MODE_CFD, mt5.SYMBOL_CALC_MODE_CFDINDEX, mt5.SYMBOL_CALC_MODE_FUTURES, mt5.SYMBOL_CALC_MODE_CFDLEVERAGE]:
+                 if tick_size_d == 0: logging.error(f"{self.symbol}: Tick size est zéro."); return Decimal('0.0')
                  
-            calculated_rr = tp_distance_final / sl_distance_final
-            if calculated_rr < min_rr:
-                self.log.warning(f"Trade annulé. RR Calculé ({calculated_rr:.2f}) < Min ({min_rr}). SL={ideal_sl:.{self.digits}f}, TP={ideal_tp:.{self.digits}f}")
-                return 0.0, 0.0, 0.0
-
-            ideal_volume = self._calculate_volume(equity, risk_percent, price, ideal_sl)
-
-            if ideal_volume <= 0:
-                 self.log.warning(f"Volume calculé nul ({ideal_volume:.4f}). SL={ideal_sl:.{self.digits}f}.")
-                 return 0.0, 0.0, 0.0
-            if ideal_volume < self.symbol_info.volume_min:
-                self.log.warning(f"Volume idéal ({ideal_volume:.4f}) < Min ({self.symbol_info.volume_min}). SL={ideal_sl:.{self.digits}f}.")
-                return 0.0, 0.0, 0.0
-
-            self.log.info(f"Paramètres validés: Vol={ideal_volume:.2f}, SL={ideal_sl:.{self.digits}f}, TP={ideal_tp:.{self.digits}f}, RR={calculated_rr:.2f}")
-            return ideal_volume, ideal_sl, ideal_tp
-
-        except Exception as e:
-            self.log.error(f"Erreur calculate_trade_parameters : {e}", exc_info=True)
-            return 0.0, 0.0, 0.0
-
-    def _calculate_volume(self, equity: float, risk_percent: float, entry_price: float, sl_price: float) -> float:
-        # (Logique inchangée)
-        risk_amount_account_currency = equity * risk_percent
-        sl_distance_price = abs(entry_price - sl_price)
-        if sl_distance_price < self.point: return 0.0
-        loss_per_lot_profit_currency = sl_distance_price * self.symbol_info.trade_contract_size
-        profit_currency = self.symbol_info.currency_profit
-        loss_per_lot_account_currency = loss_per_lot_profit_currency
-        if profit_currency != self.account_info.currency:
-            conversion_rate = self.get_conversion_rate(profit_currency, self.account_info.currency) # Utilise le cache
-            if not conversion_rate or conversion_rate <= 0:
-                self.log.error(f"Échec obtention taux de change pour {profit_currency}->{self.account_info.currency}")
-                return 0.0
-            loss_per_lot_account_currency *= conversion_rate
-        if loss_per_lot_account_currency <= 0: return 0.0
-        volume = risk_amount_account_currency / loss_per_lot_account_currency
-        volume_step = self.symbol_info.volume_step
-        if volume_step <= 0: return 0.0
-        volume = math.floor(volume / volume_step) * volume_step
-        volume = round(volume, 8)
-        return max(0.0, min(self.symbol_info.volume_max, volume))
-
-    def _find_swing_points(self, df: pd.DataFrame, n: int = 3):
-        # (Logique inchangée)
-        window_size = n * 2 + 1
-        df_historical = df.iloc[:-1]
-        if 'is_swing_high' not in df.columns: df['is_swing_high'] = False
-        if 'is_swing_low' not in df.columns: df['is_swing_low'] = False
-        if len(df_historical) >= window_size:
-             # Utiliser center=True pour une détection standard de swing
-             high_swings = df_historical['high'].rolling(window=window_size, center=True, min_periods=window_size).max() == df_historical['high']
-             low_swings = df_historical['low'].rolling(window=window_size, center=True, min_periods=window_size).min() == df_historical['low']
-             df.loc[high_swings.index, 'is_swing_high'] = high_swings
-             df.loc[low_swings.index, 'is_swing_low'] = low_swings
-        return df[df['is_swing_high'] == True], df[df['is_swing_low'] == True]
-
-    # --- MODIFICATION SUGGESTION 1 ---
-    def _calculate_initial_sl_tp_with_min_dist(self, price: float, ohlc_data: pd.DataFrame, trade_signal: dict) -> Tuple[float, float]:
-        """
-        Calcule SL/TP et applique la distance minimale (trade_stops_level) au SL et au TP.
-        """
-        ideal_sl, ideal_tp = self._calculate_initial_sl_tp(price, ohlc_data, trade_signal)
-        if ideal_sl == 0 or ideal_tp == 0: return 0.0, 0.0
-        
-        direction = trade_signal['direction']
-        
-        # Ajouter 2 points de buffer au stops_level pour sécurité
-        min_distance_points = self.symbol_info.trade_stops_level + 2
-        min_distance_price = min_distance_points * self.point
-
-        # Vérification SL (inchangée)
-        current_sl_distance = abs(price - ideal_sl)
-        if current_sl_distance < min_distance_price:
-            self.log.warning(f"SL initial ({ideal_sl:.{self.digits}f}) trop proche. Ajustement à dist min ({min_distance_price:.{self.digits}f}).")
-            if direction == BUY: ideal_sl = price - min_distance_price
-            elif direction == SELL: ideal_sl = price + min_distance_price
-            ideal_sl = round(ideal_sl, self.digits)
-            
-        # Vérification TP (AJOUT SUGG 1)
-        current_tp_distance = abs(ideal_tp - price)
-        if current_tp_distance < min_distance_price:
-            self.log.warning(f"TP initial ({ideal_tp:.{self.digits}f}) trop proche. Ajustement à dist min ({min_distance_price:.{self.digits}f}).")
-            if direction == BUY: ideal_tp = price + min_distance_price
-            elif direction == SELL: ideal_tp = price - min_distance_price
-            ideal_tp = round(ideal_tp, self.digits)
-
-        return ideal_sl, ideal_tp
-    # --- FIN MODIFICATION SUGGESTION 1 ---
-
-    def _calculate_initial_sl_tp(self, price: float, ohlc_data: pd.DataFrame, trade_signal: dict) -> Tuple[float, float]:
-        # (Logique inchangée)
-        rm_settings = self._config.get('risk_management', {})
-        sl_strategy = rm_settings.get('sl_strategy', 'ATR_MULTIPLE')
-        tp_strategy = rm_settings.get('tp_strategy', 'SMC_LIQUIDITY_TARGET')
-        direction = trade_signal['direction']
-        atr_settings_key = self._symbol
-        atr_settings = rm_settings.get('atr_settings', {}).get(atr_settings_key, rm_settings.get('atr_settings', {}).get('default', {}))
-        atr = self.calculate_atr(ohlc_data, atr_settings.get('period', 14))
-        if atr is None or atr <= 0: 
-            self.log.error(f"ATR invalide ({atr}) pour {self._symbol}. Impossible de calculer SL/TP.")
-            return 0.0, 0.0
-        sl = 0.0; tp = 0.0
-        sl_distance_atr_fallback = atr * atr_settings.get('sl_multiple', 1.5)
-        tp_distance_atr_fallback = atr * atr_settings.get('tp_multiple', 3.0)
-        # Calcul SL (basé sur LTF)
-        if sl_strategy == "SMC_STRUCTURE":
-            swing_highs, swing_lows = self._find_swing_points(ohlc_data.copy(), n=3) # Utiliser .copy()
-            try:
-                if direction == BUY:
-                    relevant_lows = swing_lows[swing_lows['low'] < price]
-                    sl = relevant_lows['low'].iloc[-1] if not relevant_lows.empty else price - sl_distance_atr_fallback
-                elif direction == SELL:
-                    relevant_highs = swing_highs[swing_highs['high'] > price]
-                    sl = relevant_highs['high'].iloc[-1] if not relevant_highs.empty else price + sl_distance_atr_fallback
-            except Exception as e:
-                 self.log.error(f"Erreur SL SMC (LTF): {e}. Fallback ATR.", exc_info=False)
-                 sl = price - sl_distance_atr_fallback if direction == BUY else price + sl_distance_atr_fallback
-        else: sl = price - sl_distance_atr_fallback if direction == BUY else price + sl_distance_atr_fallback
-        if sl == 0: return 0.0, 0.0
-        # Calcul TP (utilise target_price HTF)
-        use_atr_fallback_for_tp = False
-        if tp_strategy == "SMC_LIQUIDITY_TARGET":
-            tp = trade_signal.get('target_price')
-            if not tp or tp == 0: use_atr_fallback_for_tp = True
-            elif (direction == BUY and tp < price) or (direction == SELL and tp > price): use_atr_fallback_for_tp = True
-        else: use_atr_fallback_for_tp = True
-        if use_atr_fallback_for_tp:
-            tp = price + tp_distance_atr_fallback if direction == BUY else price - tp_distance_atr_fallback
-        if tp == 0: return 0.0, 0.0
-        return round(sl, self.digits), round(tp, self.digits)
-
-    # --- [Optimisation 1] get_conversion_rate avec cache ---
-    def get_conversion_rate(self, from_currency: str, to_currency: str) -> Optional[float]:
-        # (Logique inchangée)
-        if from_currency == to_currency: return 1.0
-        cache_key = f"{from_currency}->{to_currency}"
-        current_time = time.monotonic()
-        if cache_key in self._conversion_rate_cache:
-            rate, timestamp = self._conversion_rate_cache[cache_key]
-            if current_time - timestamp < self._cache_duration.total_seconds():
-                self.log.debug(f"Cache HIT pour {cache_key}: {rate}")
-                return rate
+                 # Valeur d'un point pour 1 lot (si volume=1.0)
+                 point_value_margin_curr = (point_d / tick_size_d) * tick_value_d
+                 
+                 if self.currency_margin == self.account_currency:
+                      point_value_profit_currency = point_value_margin_curr
+                 else:
+                      conversion_rate = self.get_conversion_rate(self.currency_margin, self.account_currency)
+                      if conversion_rate <= 0: logging.error(f"Taux conversion invalide {self.currency_margin}->{self.account_currency}"); return Decimal('0.0')
+                      point_value_profit_currency = point_value_margin_curr * conversion_rate
             else:
-                self.log.debug(f"Cache EXPIRED pour {cache_key}")
-                del self._conversion_rate_cache[cache_key]
-        self.log.debug(f"Cache MISS pour {cache_key}. Récupération via API MT5...")
-        rate = self._fetch_conversion_rate_from_mt5(from_currency, to_currency)
-        if rate is not None and rate > 0:
-            self._conversion_rate_cache[cache_key] = (rate, current_time)
-            self.log.debug(f"Cache SET pour {cache_key}: {rate}")
-        return rate
+                logging.warning(f"Mode calcul {calc_mode} non géré. Fallback simple (peut être incorrect).")
+                point_value_profit_currency = point_d * contract_size_d
+            
+            # Appliquer le volume (la plupart des modes MT5 incluent déjà le volume dans tick_value, 
+            # mais si ce n'est pas le cas, ou si le calcul est par lot standard, nous multiplions par le volume)
+            # La logique MT5 est que tick_value est la valeur pour 1 tick, 1 lot.
+            # Notre calcul (point/tick_size) * tick_value donne la valeur pour 1 POINT, 1 Lot.
+            point_value_profit_currency *= volume
+            # --- FIN MODIFICATION ---
 
-    def _fetch_conversion_rate_from_mt5(self, from_currency: str, to_currency: str) -> Optional[float]:
-        # (Logique inchangée)
-        pair1 = f"{from_currency}{to_currency}"
-        info1 = self._executor._mt5.symbol_info_tick(pair1)
-        if info1 and info1.ask > 0: return info1.ask
-        pair2 = f"{to_currency}{from_currency}"
-        info2 = self._executor._mt5.symbol_info_tick(pair2)
-        if info2 and info2.bid > 0: return 1.0 / info2.bid
-        for pivot in ["USD", "EUR", "GBP"]:
-             if from_currency != pivot and to_currency != pivot:
-                 rate1 = self._get_rate_or_inverse(from_currency, pivot)
-                 rate2 = self._get_rate_or_inverse(pivot, to_currency)
-                 if rate1 > 0 and rate2 > 0: return rate1 * rate2
-        self.log.error(f"Conversion impossible via MT5: {from_currency} -> {to_currency}")
-        return None
+            if self.currency_profit == self.account_currency:
+                return point_value_profit_currency.quantize(Decimal("0.00001"))
+            else:
+                conversion_rate = self.get_conversion_rate(self.currency_profit, self.account_currency)
+                if conversion_rate > 0:
+                    return (point_value_profit_currency * conversion_rate).quantize(Decimal("0.00001"))
+                else:
+                    logging.error(f"Point Value: Taux conversion {self.currency_profit}->{self.account_currency} invalide.")
+                    return Decimal('0.0')
+                    
+        except Exception as e:
+            self.log.error(f"Erreur inattendue dans _calculate_point_value: {e}", exc_info=True)
+            return Decimal('0.0')
 
-    def _get_rate_or_inverse(self, curr1: str, curr2: str) -> float:
-        # (Logique inchangée)
-        pair_direct = f"{curr1}{curr2}"
-        info_direct = self._executor._mt5.symbol_info_tick(pair_direct)
-        if info_direct and info_direct.ask > 0: return info_direct.ask
-        pair_inverse = f"{curr2}{curr1}"
-        info_inverse = self._executor._mt5.symbol_info_tick(pair_inverse)
-        if info_inverse and info_inverse.bid > 0: return 1.0 / info_inverse.bid
-        return 0.0
-    # --- Fin [Optimisation 1] ---
 
-    def calculate_atr(self, ohlc_data: pd.DataFrame, period: int) -> Optional[float]:
-        # (Logique inchangée)
-        if ohlc_data is None or ohlc_data.empty or len(ohlc_data) < period + 1: return None
+    
+    def _calculate_volume(self, equity: Decimal, sl_price: Decimal, entry_price: Decimal, direction: str) -> Decimal:
+        log_entries = [f"Calcul Volume {self.symbol}:"]
         try:
-             high_low = ohlc_data['high'] - ohlc_data['low']
-             high_close = np.abs(ohlc_data['high'] - ohlc_data['close'].shift())
-             low_close = np.abs(ohlc_data['low'] - ohlc_data['close'].shift())
-             ranges = pd.concat([high_low, high_close, low_close], axis=1)
-             true_range = np.max(ranges, axis=1)
-             atr = true_range.ewm(span=period, adjust=False).mean().iloc[-1]
-             if pd.isna(atr) or atr <= 0: return None
-             return atr
-        except Exception: return None
+            log_entries.append(f"  1. Equity: {equity:.2f} {self.account_currency}")
+            risk_amount = equity * self.risk_per_trade_pct
+            log_entries.append(f"  2. Risque Config: {self.risk_per_trade_pct * 100:.2f}%")
+            log_entries.append(f"  3. Montant Risqué: {risk_amount:.2f} {self.account_currency}")
 
-    # --- MODIFICATION SUGGESTION 7 ---
-    def manage_open_positions(self, positions: list, current_tick, ohlc_data: pd.DataFrame):
-        """ Gère les TPs partiels, BE, et Trailing Stops (ATR ou Structure). """
-        if not positions or not current_tick or ohlc_data is None or ohlc_data.empty: return []
+            if direction == "BUY": sl_distance_price = entry_price - sl_price
+            else: sl_distance_price = sl_price - entry_price
+            
+            if sl_distance_price <= 0:
+                log_entries.append(f"  ERREUR: Distance SL <= 0 ({sl_distance_price}).")
+                logging.info("\n".join(log_entries)); return Decimal('0.0')
+
+            log_entries.append(f"  4. Entrée={entry_price}, SL={sl_price}")
+            log_entries.append(f"  5. Distance SL (Prix): {sl_distance_price}")
+
+            point_value_1_lot = self._calculate_point_value_in_account_currency(Decimal('1.0'))
+
+            if point_value_1_lot is None or point_value_1_lot <= 0:
+                 log_entries.append(f"  ERREUR: Valeur Point (1 lot) invalide: {point_value_1_lot}")
+                 logging.info("\n".join(log_entries)); return Decimal('0.0')
+            log_entries.append(f"  6. Valeur Point (1 Lot): {point_value_1_lot:.6f} {self.account_currency}")
+
+            sl_distance_in_points = sl_distance_price / Decimal(str(self.point))
+            loss_per_lot = sl_distance_in_points * point_value_1_lot
+            log_entries.append(f"  7. Distance (Points): {sl_distance_in_points:.1f}")
+            log_entries.append(f"  8. Perte pour 1 Lot: {loss_per_lot:.2f} {self.account_currency}")
+
+            if loss_per_lot <= 0:
+                log_entries.append(f"  ERREUR: Perte par lot invalide: {loss_per_lot}");
+                logging.info("\n".join(log_entries)); return Decimal('0.0')
+
+            volume = risk_amount / loss_per_lot
+            log_entries.append(f"  9. Volume (Brut): {volume:.8f} lots")
+
+            step = Decimal(str(self.volume_step))
+            if step <= 0:
+                log_entries.append("  ERREUR: Volume step invalide.");
+                logging.info("\n".join(log_entries)); return Decimal('0.0')
+            
+            volume_rounded = (volume / step).to_integral_value(rounding=ROUND_DOWN) * step
+            log_entries.append(f"  10. Volume (Arrondi Step {step}): {volume_rounded} lots")
+
+            volume_min_d = Decimal(str(self.volume_min))
+            volume_max_d = Decimal(str(self.volume_max))
+            
+            if volume_rounded < volume_min_d:
+                loss_at_min_volume = (volume_min_d / Decimal('1.0')) * loss_per_lot
+                if loss_at_min_volume > (risk_amount * Decimal('1.5')): # Tolérance 50%
+                     logging.critical(f"RISQUE ÉLEVÉ: Vol Min {volume_min_d} = Risque {loss_at_min_volume:.2f} (Limite {risk_amount:.2f}). Trade annulé.")
+                     log_entries.append(f"  ERREUR: Vol Min {volume_min_d} = Risque {loss_at_min_volume:.2f} > Limite")
+                     volume_final = Decimal('0.0')
+                else:
+                     volume_final = volume_min_d
+                     log_entries.append(f"  11. Ajusté à Vol Min: {volume_final} lots (Risque réel: {loss_at_min_volume:.2f})")
+            elif volume_rounded > volume_max_d:
+                volume_final = volume_max_d
+                loss_at_max_volume = (volume_final / Decimal('1.0')) * loss_per_lot
+                log_entries.append(f"  11. Ajusté à Vol Max: {volume_final} lots (Risque réel: {loss_at_max_volume:.2f})")
+            else:
+                volume_final = volume_rounded
+                if volume_final > 0: 
+                    loss_at_final_volume = (volume_final / Decimal('1.0')) * loss_per_lot
+                    log_entries.append(f"  11. Volume Final: {volume_final} lots (Risque réel: {loss_at_final_volume:.2f})")
+                else:
+                    log_entries.append(f"  11. Volume Final: 0.0 lots")
+            
+            logging.info("\n".join(log_entries))
+            return volume_final.quantize(step) 
+
+        except InvalidOperation as e:
+            logging.error(f"Erreur Decimal (InvalidOperation) dans _calculate_volume: {e}.")
+            log_entries.append(f"  ERREUR (InvalidOperation): {e}")
+            logging.info("\n".join(log_entries)); return Decimal('0.0')
+        except Exception as e:
+            logging.error(f"Erreur inattendue dans _calculate_volume: {e}", exc_info=True)
+            log_entries.append(f"  ERREUR (Inattendue): {e}")
+            logging.info("\n".join(log_entries)); return Decimal('0.0')
+
+
+    def _calculate_sl_tp_levels(self, entry_price: float, direction: str, ohlc_data: pd.DataFrame, trade_signal: dict) -> tuple:
+        sl_price = 0.0; tp_price = 0.0
+        atr = self._calculate_atr(ohlc_data, 14)
         
-        partial_close_actions = []
-        risk_settings = self._config.get('risk_management', {})
+        # 1. Calcul SL
+        sl_calculated_structurally = False
+        if self.sl_strategy == 'SMC_STRUCTURE' and trade_signal.get('sl_price', 0.0) > 0:
+            sl_structure_price = trade_signal['sl_price']
+            sl_buffer_abs = float(self.sl_buffer_pips) * self.point
+            potential_sl = sl_structure_price - sl_buffer_abs if direction == "BUY" else sl_structure_price + sl_buffer_abs
+            if atr > 0 and abs(entry_price - potential_sl) > (atr * 0.5):
+                temp_vol_d = self._calculate_volume(Decimal(str(self.account_info.equity)), Decimal(str(potential_sl)), Decimal(str(entry_price)), direction)
+                if temp_vol_d is not None and temp_vol_d >= Decimal(str(self.volume_min)):
+                    sl_price = potential_sl; sl_calculated_structurally = True
+                    logging.debug(f"SL {self.symbol} (SMC_STRUCTURE): {sl_price:.{self.digits}f}")
+                else: logging.warning(f"SL Structurel {self.symbol} ({potential_sl}) donne volume {temp_vol_d} < min. Fallback ATR.")
+            else: logging.warning(f"SL Structurel {self.symbol} ({potential_sl}) trop proche/ATR invalide. Fallback ATR.")
+                 
+        if not sl_calculated_structurally: 
+            if atr == 0.0: logging.error("ATR invalide, impossible de calculer SL fallback."); return 0.0, 0.0
+            sl_distance = float(self.sl_atr_multiplier) * atr
+            sl_price = entry_price - sl_distance if direction == "BUY" else entry_price + sl_distance
+            logging.debug(f"SL {self.symbol} (ATR_MULTIPLE): {sl_price:.{self.digits}f}")
 
-        # 1. TPs Partiels
-        if risk_settings.get('partial_tp', {}).get('enabled', False):
-            actions = self._apply_partial_tp(positions, current_tick, risk_settings.get('partial_tp', {}))
-            partial_close_actions.extend(actions)
-            
-        # 2. Breakeven
-        if risk_settings.get('breakeven', {}).get('enabled', False):
-            self._apply_breakeven(positions, current_tick, risk_settings.get('breakeven', {}))
-            
-        # 3. Trailing Stop (Logique 'elif' pour n'en activer qu'un seul)
-        ts_atr_cfg = risk_settings.get('trailing_stop_atr', {})
-        ts_smc_cfg = risk_settings.get('trailing_stop_structure', {})
+        # 2. Calcul TP
+        tp_calculated_structurally = False
+        if self.tp_strategy == 'SMC_LIQUIDITY_TARGET' and trade_signal.get('tp_price', 0.0) > 0:
+            target_price = trade_signal['tp_price']
+            if (direction == "BUY" and target_price > entry_price) or (direction == "SELL" and target_price < entry_price):
+                tp_buffer_abs = float(self.tp_buffer_pips) * self.point
+                potential_tp = target_price - tp_buffer_abs if direction == "BUY" else target_price + tp_buffer_abs
+                if (direction == "BUY" and potential_tp > entry_price) or (direction == "SELL" and potential_tp < entry_price):
+                     tp_price = potential_tp; tp_calculated_structurally = True
+                     logging.debug(f"TP {self.symbol} (SMC_LIQUIDITY_TARGET): {tp_price:.{self.digits}f}")
+                else: logging.warning(f"TP SMC {self.symbol} ({potential_tp}) invalide après buffer. Fallback ATR.")
+            else: logging.warning(f"TP SMC {self.symbol} cible ({target_price}) non profitable vs entrée ({entry_price}). Fallback ATR.")
+        
+        if not tp_calculated_structurally: 
+            if atr == 0.0: logging.error("ATR invalide, impossible de calculer TP fallback."); return sl_price, 0.0
+            tp_distance = float(self.tp_atr_multiplier) * atr
+            tp_price = entry_price + tp_distance if direction == "BUY" else entry_price - tp_distance
+            logging.debug(f"TP {self.symbol} (ATR_MULTIPLE): {tp_price:.{self.digits}f}")
 
-        if ts_atr_cfg.get('enabled', False):
-            self.log.debug("Application Trailing Stop ATR")
-            self._apply_trailing_stop_atr(positions, current_tick, ohlc_data, risk_settings)
-        elif ts_smc_cfg.get('enabled', False):
-            self.log.debug("Application Trailing Stop Structure (SMC)")
-            # Doit passer une copie de ohlc_data pour éviter SettingWithCopyWarning
-            self._apply_trailing_stop_structure(positions, ohlc_data.copy(), ts_smc_cfg)
-            
-        return partial_close_actions
-    # --- FIN MODIFICATION SUGGESTION 7 ---
+        # 3. Validation finale et Arrondi
+        if (direction == "BUY" and (sl_price == 0.0 or tp_price == 0.0 or sl_price >= entry_price or tp_price <= entry_price)) or \
+           (direction == "SELL" and (sl_price == 0.0 or tp_price == 0.0 or sl_price <= entry_price or tp_price >= entry_price)):
+             logging.error(f"Erreur logique SL/TP {self.symbol}: E={entry_price}, SL={sl_price}, TP={tp_price}. Annulation.")
+             return 0.0, 0.0
+             
+        sl_price = round(sl_price, self.digits)
+        tp_price = round(tp_price, self.digits)
+        
+        if abs(entry_price - sl_price) < self.point * 5 or abs(entry_price - tp_price) < self.point * 5:
+             logging.error(f"SL/TP final trop proche du prix. SL: {sl_price}, TP: {tp_price}, Prix: {entry_price}. Annulation.")
+             return 0.0, 0.0
+             
+        return sl_price, tp_price
 
-    def _apply_partial_tp(self, positions: list, tick, partial_cfg: dict):
-        # (Logique inchangée)
-        actions = []
-        levels = partial_cfg.get('levels', [])
-        if not levels: return actions
-        levels.sort(key=lambda x: x.get('rr', 0))
+
+    def manage_open_positions(self, positions: list, tick, ohlc_data: pd.DataFrame):
+        self.ohlc_data_cache = ohlc_data 
+        if not positions: return
+        
+        if self.ptp_rules:
+            for pos in list(positions): 
+                current_pos_info = self.mt5.positions_get(ticket=pos.ticket)
+                if not current_pos_info: continue
+                pos_updated = current_pos_info[0] 
+
+                for rule in self.ptp_rules:
+                    rr_target = Decimal(str(rule.get('rr', 1.0)))
+                    percentage_to_close = Decimal(str(rule.get('percentage', 50.0))) / Decimal('100.0')
+                    self._apply_ptp(pos_updated, tick, rr_target, percentage_to_close)
+
+        magic_number = self.config['trading_settings'].get('magic_number', 0)
+        positions = self.executor.get_open_positions(magic=magic_number)
+        if not positions: return
+
+        if self.breakeven_rules.get('enabled', False):
+            ptp1_rr = Decimal(str(self.ptp_rules[0].get('rr', 1.0))) if self.ptp_rules else Decimal('0.0')
+            trigger_pips = self.breakeven_rules.get('trigger_pips', 0)
+            self._apply_breakeven(positions, tick, ptp1_rr, trigger_pips)
+
+        if self.trailing_stop_rules.get('enabled', False):
+            activation_multiple = Decimal(str(self.trailing_stop_rules.get('activation_multiple', 2.0)))
+            trailing_multiple = Decimal(str(self.trailing_stop_rules.get('trailing_multiple', 1.5)))
+            atr = Decimal(str(self._calculate_atr(ohlc_data, 14)))
+            if atr > 0: self._apply_trailing_stop_atr(positions, tick, atr, activation_multiple, trailing_multiple)
+
+    def _apply_ptp(self, pos, tick, rr_target: Decimal, percentage_to_close: Decimal):
+        context = self.executor._trade_context.get(pos.ticket)
+        if not context:
+             logging.warning(f"PTP: Contexte introuvable pour ticket #{pos.ticket}. PTP ignoré.")
+             return
+        
+        # --- MODIFICATION (P-Proactif 4) : Vérifier l'état dans le contexte, pas le commentaire ---
+        rr_level_index = -1
+        for i, lvl in enumerate(self.ptp_rules):
+             if Decimal(str(lvl.get('rr',0))) == rr_target:
+                  rr_level_index = i; break
+        
+        if rr_level_index == -1: return # Règle non trouvée
+        if context['partial_tp_state'][rr_level_index]: return # Déjà pris
+        # --- FIN MODIFICATION ---
+             
+        initial_sl = context.get('sl_initial', pos.sl) 
+        if initial_sl <= 0: logging.warning(f"PTP: SL initial invalide (0) pour #{pos.ticket}."); return
+        
+        initial_entry = pos.price_open
+        
+        if pos.type == mt5.ORDER_TYPE_BUY:
+            sl_distance = Decimal(str(initial_entry - initial_sl))
+            if sl_distance <= 0: return
+            tp_target = Decimal(str(initial_entry)) + (sl_distance * rr_target)
+            current_price = Decimal(str(tick.bid))
+            if current_price >= tp_target:
+                self._execute_partial_close(pos, percentage_to_close, f"PTP{rr_target}", rr_level_index)
+        
+        elif pos.type == mt5.ORDER_TYPE_SELL:
+            sl_distance = Decimal(str(initial_sl - initial_entry))
+            if sl_distance <= 0: return
+            tp_target = Decimal(str(initial_entry)) - (sl_distance * rr_target)
+            current_price = Decimal(str(tick.ask))
+            if current_price <= tp_target:
+                self._execute_partial_close(pos, percentage_to_close, f"PTP{rr_target}", rr_level_index)
+
+    def _execute_partial_close(self, position, percentage: Decimal, comment_flag: str, rr_level_index: int):
+        try:
+            context = self.executor._trade_context.get(position.ticket)
+            if not context: logging.error(f"PTP: Contexte introuvable pour exécution #{position.ticket}."); return
+            
+            initial_volume = Decimal(str(context.get('initial_volume', position.volume)))
+            remaining_volume = Decimal(str(context.get('remaining_volume', position.volume)))
+            
+            volume_to_close = initial_volume * percentage
+            step = Decimal(str(self.volume_step))
+            
+            if step <= 0: logging.error(f"PTP: Volume step invalide pour {self.symbol}"); return
+            
+            volume_to_close = (volume_to_close / step).to_integral_value(rounding=ROUND_DOWN) * step
+            volume_to_close = min(volume_to_close, remaining_volume)
+
+            vol_min_d = Decimal(str(self.volume_min))
+            volume_remaining_after = remaining_volume - volume_to_close
+            
+            if volume_to_close < vol_min_d:
+                 logging.warning(f"PTP {position.ticket}: Vol à fermer ({volume_to_close}) < Min ({vol_min_d}). Annulé.")
+                 return
+                 
+            if volume_remaining_after < vol_min_d and volume_remaining_after > 0:
+                 logging.warning(f"PTP {position.ticket}: Vol restant ({volume_remaining_after}) < Min ({vol_min_d}). Fermeture totale (100%).")
+                 volume_to_close = remaining_volume 
+                 comment_flag += "_FullClose"
+                 
+            vol_digits = abs(step.as_tuple().exponent) if step < 1 else 0
+            volume_to_close_float = round(float(volume_to_close), vol_digits)
+            if volume_to_close_float <= 0:
+                 logging.warning(f"PTP {position.ticket}: Volume final à fermer est 0. Annulé.")
+                 return
+
+            logging.info(f"PTP {comment_flag} atteint {self.symbol} ({position.ticket}). Tentative fermeture {volume_to_close_float} lots.")
+            
+            if self.executor.close_partial_position(position, volume_to_close_float):
+                 context['remaining_volume'] = float(remaining_volume - volume_to_close)
+                 context['partial_tp_state'][rr_level_index] = True # Marquer comme pris
+                 
+                 self.log.info(f"PTP #{position.ticket} succès. Volume restant: {context['remaining_volume']:.{vol_digits}f}")
+                 
+                 # Déplacer à BE+ si c'est le TP1
+                 if rr_level_index == 0 and self.config.get('risk_management',{}).get('partial_tp',{}).get('move_sl_to_be_after_tp1', False):
+                      logging.info(f"PTP1 pris, déclenchement du Breakeven pour #{position.ticket}.")
+                      # Mettre à jour le contexte pour que BE s'applique au prochain tick
+                      context['be_triggered_by_ptp1'] = True
+            
+        except Exception as e: logging.error(f"Erreur exécution PTP (Ticket {position.ticket}): {e}", exc_info=True)
+
+    def _apply_breakeven(self, positions: list, tick, ptp1_rr: Decimal, trigger_pips: int):
+        """ Logique BE unifiée. """
+        
+        # --- MODIFICATION (P-Proactif 4) : Logique BE/TS basée sur le contexte ---
         for pos in positions:
-            if pos.sl == 0: continue
-            initial_risk_pips = abs(pos.price_open - pos.sl) / self.point
-            if initial_risk_pips <= 0: continue
-            current_pnl_pips = 0
-            if pos.type == mt5.ORDER_TYPE_BUY: current_pnl_pips = (tick.bid - pos.price_open) / self.point
-            elif pos.type == mt5.ORDER_TYPE_SELL: current_pnl_pips = (pos.price_open - tick.ask) / self.point
-            current_rr = current_pnl_pips / initial_risk_pips if initial_risk_pips > 0 else 0
-            if pos.ticket not in self._partial_tp_taken: self._partial_tp_taken[pos.ticket] = set()
-            taken_levels = self._partial_tp_taken[pos.ticket]
-            context = next((ctx for order_id, ctx in self._executor._trade_context.items() if ctx.get('position_id') == pos.ticket), None)
+            context = self.executor._trade_context.get(pos.ticket)
             if not context: continue
-            initial_volume = context.get('volume_initial', pos.volume)
-            for level_cfg in levels:
-                target_rr = level_cfg.get('rr')
-                percentage_to_close = level_cfg.get('percentage') / 100.0
-                if target_rr is not None and current_rr >= target_rr and target_rr not in taken_levels:
-                    volume_to_close = initial_volume * percentage_to_close
-                    volume_step = self.symbol_info.volume_step
-                    if volume_step > 0: volume_to_close = math.floor(volume_to_close / volume_step) * volume_step; volume_to_close = round(volume_to_close, 8)
-                    volume_to_close = min(volume_to_close, pos.volume)
-                    if volume_to_close >= self.symbol_info.volume_min:
-                        actions.append({'ticket': pos.ticket, 'volume': volume_to_close, 'trade_id': f"TP{target_rr}R"})
-                        taken_levels.add(target_rr)
-                        if target_rr == levels[0].get('rr') and partial_cfg.get('move_sl_to_be_after_tp1', False):
-                            be_pips = partial_cfg.get('be_pips_plus_after_tp1', 0)
-                            breakeven_sl = pos.price_open + (be_pips * self.point) if pos.type == mt5.ORDER_TYPE_BUY else pos.price_open - (be_pips * self.point)
-                            should_move_sl = (pos.type == mt5.ORDER_TYPE_BUY and breakeven_sl > pos.sl) or \
-                                             (pos.type == mt5.ORDER_TYPE_SELL and (pos.sl == 0 or breakeven_sl < pos.sl))
-                            if should_move_sl: self._executor.modify_position(pos.ticket, breakeven_sl, pos.tp, trade_id=f"BE_after_TP{target_rr}R")
-                    else: taken_levels.add(target_rr) # Marquer comme pris même si volume trop faible
-        return actions
+            
+            # Ne pas appliquer si déjà à BE ou mieux
+            if context.get('be_applied', False): continue
 
-    def _apply_breakeven(self, positions: list, tick, be_cfg: dict):
-        # (Logique inchangée)
-        trigger_pips = be_cfg.get('trigger_pips', 100); pips_plus = be_cfg.get('pips_plus', 10)
-        trigger_distance = trigger_pips * self.point; be_adjustment = pips_plus * self.point
-        for pos in positions:
-            move_sl = False; breakeven_sl = pos.sl
-            if pos.type == mt5.ORDER_TYPE_BUY and (tick.bid - pos.price_open) >= trigger_distance:
-                potential_be_sl = pos.price_open + be_adjustment
-                if potential_be_sl > pos.sl: move_sl = True; breakeven_sl = potential_be_sl
-            elif pos.type == mt5.ORDER_TYPE_SELL and (pos.price_open - tick.ask) >= trigger_distance:
-                potential_be_sl = pos.price_open - be_adjustment
-                if pos.sl == 0 or potential_be_sl < pos.sl: move_sl = True; breakeven_sl = potential_be_sl
-            if move_sl: self._executor.modify_position(pos.ticket, breakeven_sl, pos.tp, trade_id="BE")
+            be_triggered_by_pips = False
+            be_triggered_by_ptp1 = False
 
-    def _apply_trailing_stop_atr(self, positions: list, tick, ohlc_data: pd.DataFrame, risk_cfg: dict):
-        # (Logique inchangée)
-        ts_cfg = risk_cfg.get('trailing_stop_atr', {}); atr_settings_key = self._symbol
-        atr_cfg = risk_cfg.get('atr_settings', {}).get(atr_settings_key, risk_cfg.get('atr_settings', {}).get('default', {}))
-        period = atr_cfg.get('period', 14); atr = self.calculate_atr(ohlc_data, period)
-        if atr is None or atr <= 0: return
-        activation_multiple = ts_cfg.get('activation_multiple', 2.0); trailing_multiple = ts_cfg.get('trailing_multiple', 1.8)
-        activation_distance = atr * activation_multiple; trailing_distance = atr * trailing_multiple
-        for pos in positions:
-            move_sl = False; new_sl = pos.sl
-            if pos.type == mt5.ORDER_TYPE_BUY and (tick.bid - pos.price_open) >= activation_distance:
-                potential_new_sl = tick.bid - trailing_distance
-                if potential_new_sl > pos.sl: new_sl = potential_new_sl; move_sl = True
-            elif pos.type == mt5.ORDER_TYPE_SELL and (pos.price_open - tick.ask) >= activation_distance:
-                potential_new_sl = tick.ask + trailing_distance
-                if pos.sl == 0 or potential_new_sl < pos.sl: new_sl = potential_new_sl; move_sl = True
-            if move_sl:
-                rounded_new_sl = round(new_sl, self.digits)
-                if rounded_new_sl != round(pos.sl, self.digits): self._executor.modify_position(pos.ticket, rounded_new_sl, pos.tp, trade_id="TS_ATR")
-
-    # --- AJOUT SUGGESTION 7 (avec CORRECTION Erreur 11) ---
-    def _apply_trailing_stop_structure(self, positions: list, ohlc_data: pd.DataFrame, ts_smc_cfg: dict):
-        """
-        Applique un trailing stop basé sur la structure LTF (derniers swings).
-        """
-        
-        # --- AJOUT CORRECTION (Erreur 11) ---
-        # Assurer que ohlc_data a un DatetimeIndex pour la comparaison
-        if not isinstance(ohlc_data.index, pd.DatetimeIndex):
-            try:
-                # Vérifier si la colonne 'time' existe (elle devrait venir de get_ohlc)
-                if 'time' not in ohlc_data.columns:
-                     self.log.error(f"TSL Structure: Colonne 'time' manquante dans ohlc_data.")
-                     return
-                ohlc_data['time'] = pd.to_datetime(ohlc_data['time'], unit='s')
-                ohlc_data.set_index('time', inplace=True)
-                if ohlc_data.index.tz is None:
-                    ohlc_data.index = ohlc_data.index.tz_localize('UTC')
-            except Exception as e:
-                self.log.error(f"TSL Structure: Échec conversion index temps: {e}", exc_info=False)
-                return
-        # --- FIN CORRECTION ---
-
-        period = ts_smc_cfg.get('ltf_swing_period', 3)
-        
-        # Note: ohlc_data est déjà une copie (passée depuis manage_open_positions)
-        swing_highs, swing_lows = self._find_swing_points(ohlc_data, n=period)
-
-        if swing_lows.empty and swing_highs.empty:
-            self.log.debug(f"TSL Structure: Pas de swings LTF trouvés pour {self._symbol}.")
-            return
-
-        for pos in positions:
-            move_sl = False
-            new_sl = pos.sl
-            pos_open_time = datetime.fromtimestamp(pos.time, tz=pytz.utc)
-
-            try:
+            # 1. Vérifier le déclenchement par Pips
+            if trigger_pips > 0:
+                trigger_distance_points = Decimal(str(trigger_pips)) * Decimal(str(self.point))
                 if pos.type == mt5.ORDER_TYPE_BUY:
-                    # Trailing Buy: SL sous le dernier swing low LTF
-                    # On ne prend que les lows formés *après* l'ouverture
-                    relevant_lows = swing_lows[swing_lows.index > pos_open_time]
-                    if not relevant_lows.empty:
-                        potential_new_sl = relevant_lows['low'].iloc[-1]
-                        # SL ne doit jamais reculer
-                        if potential_new_sl > pos.sl:
-                            new_sl = potential_new_sl
-                            move_sl = True
+                    current_profit_points = Decimal(str(tick.bid)) - Decimal(str(pos.price_open))
+                else: # SELL
+                    current_profit_points = Decimal(str(pos.price_open)) - Decimal(str(tick.ask))
+                
+                if current_profit_points >= trigger_distance_points:
+                    be_triggered_by_pips = True
+
+            # 2. Vérifier le déclenchement par PTP1 (si la règle de config est activée)
+            if self.config.get('risk_management',{}).get('partial_tp',{}).get('move_sl_to_be_after_tp1', False) and context.get('be_triggered_by_ptp1', False):
+                be_triggered_by_ptp1 = True
+
+            # 3. Appliquer le BE si l'une des conditions est remplie
+            if be_triggered_by_pips or be_triggered_by_ptp1:
+                
+                if be_triggered_by_ptp1:
+                    # Utiliser les pips_plus spécifiques post-PTP1
+                    pips_plus_setting = self.config.get('risk_management',{}).get('partial_tp',{}).get('be_pips_plus_after_tp1', 5.0)
+                    log_msg = f"Breakeven (Post-PTP1) {self.symbol} ({pos.ticket})"
+                else:
+                    # Utiliser les pips_plus standards
+                    pips_plus_setting = self.breakeven_rules.get('pips_plus', 1.0)
+                    log_msg = f"Breakeven (Pips) {self.symbol} (Ticket: {pos.ticket})"
+
+                sl_new_distance_points = Decimal(str(pips_plus_setting)) * Decimal(str(self.point))
+                
+                if pos.type == mt5.ORDER_TYPE_BUY:
+                    new_sl = round(float(Decimal(str(pos.price_open)) + sl_new_distance_points), self.digits)
+                    if new_sl > pos.sl:
+                         logging.info(f"{log_msg}. SL -> {new_sl}")
+                         self.executor.modify_position_sl_tp(pos.ticket, new_sl, pos.tp)
+                         context['be_applied'] = True # Marquer dans le contexte
                 
                 elif pos.type == mt5.ORDER_TYPE_SELL:
-                    # Trailing Sell: SL au-dessus du dernier swing high LTF
-                    relevant_highs = swing_highs[swing_highs.index > pos_open_time]
-                    if not relevant_highs.empty:
-                        potential_new_sl = relevant_highs['high'].iloc[-1]
-                        # SL ne doit jamais reculer
-                        if pos.sl == 0 or potential_new_sl < pos.sl:
-                            new_sl = potential_new_sl
-                            move_sl = True
+                    new_sl = round(float(Decimal(str(pos.price_open)) - sl_new_distance_points), self.digits)
+                    if pos.sl == 0 or new_sl < pos.sl:
+                         logging.info(f"{log_msg}. SL -> {new_sl}")
+                         self.executor.modify_position_sl_tp(pos.ticket, new_sl, pos.tp)
+                         context['be_applied'] = True # Marquer dans le contexte
+        # --- FIN MODIFICATION ---
+
+
+    def _apply_trailing_stop_atr(self, positions: list, tick, atr: Decimal, activation_multiple: Decimal, trailing_multiple: Decimal):
+        if atr <= 0: return
+        try:
+            atr_float = float(atr)
+            activation_distance = float(activation_multiple) * atr_float
+            trailing_distance = float(trailing_multiple) * atr_float
+        except Exception: return
             
-            except Exception as e:
-                self.log.warning(f"[{pos.ticket}] Erreur TSL Structure: {e}", exc_info=False)
-                continue
-
-            if move_sl:
-                # Appliquer le buffer de SL global
-                sl_buffer_pips = self._config.get('risk_management', {}).get('sl_buffer_pips', 0)
-                if sl_buffer_pips > 0:
-                    sl_buffer = sl_buffer_pips * self.point
-                    if pos.type == mt5.ORDER_TYPE_BUY:
-                        new_sl = new_sl - sl_buffer
-                    else:
-                        new_sl = new_sl + sl_buffer
+        for pos in positions:
+            try:
+                current_sl_price = pos.sl
+                entry_price = pos.price_open
                 
-                rounded_new_sl = round(new_sl, self.digits)
+                if pos.type == mt5.ORDER_TYPE_BUY:
+                    current_price = tick.bid
+                    current_profit = current_price - entry_price
+                    if current_profit >= activation_distance:
+                        potential_new_sl = current_price - trailing_distance
+                        if potential_new_sl > entry_price and potential_new_sl > current_sl_price:
+                             new_sl = round(potential_new_sl, self.digits)
+                             logging.debug(f"Trailing Stop (BUY) {self.symbol} ({pos.ticket}). SL -> {new_sl}")
+                             self.executor.modify_position_sl_tp(pos.ticket, new_sl, pos.tp)
+                
+                elif pos.type == mt5.ORDER_TYPE_SELL:
+                    current_price = tick.ask
+                    current_profit = entry_price - current_price
+                    if current_profit >= activation_distance:
+                        potential_new_sl = current_price + trailing_distance
+                        if potential_new_sl < entry_price and (current_sl_price == 0 or potential_new_sl < current_sl_price):
+                             new_sl = round(potential_new_sl, self.digits)
+                             logging.debug(f"Trailing Stop (SELL) {self.symbol} ({pos.ticket}). SL -> {new_sl}")
+                             self.executor.modify_position_sl_tp(pos.ticket, new_sl, pos.tp)
+            except Exception as e:
+                 logging.error(f"Erreur TSL {pos.ticket}: {e}", exc_info=True)
 
-                if rounded_new_sl != round(pos.sl, self.digits):
-                    self.log.info(f"[{pos.ticket}] TSL Structure: Déplacement SL à {rounded_new_sl:.{self.digits}f}")
-                    self._executor.modify_position(pos.ticket, rounded_new_sl, pos.tp, trade_id="TS_SMC")
-    # --- FIN AJOUT SUGGESTION 7 ---
+
+    def is_daily_loss_limit_reached(self) -> tuple:
+        try:
+            magic_number = self.config['trading_settings'].get('magic_number', 0)
+            
+            broker_tz_str = self.config.get('mt5_credentials', {}).get('timezone', 'UTC')
+            broker_tz = pytz.timezone(broker_tz_str)
+            
+            day_start_str = self.config.get('risk_management', {}).get('daily_limit_reset_time_broker', '00:00')
+            
+            day_start_time = dt_time.fromisoformat(day_start_str)
+            now_broker_time = datetime.now(broker_tz)
+            start_of_today = broker_tz.localize(datetime(now_broker_time.year, now_broker_time.month, now_broker_time.day, day_start_time.hour, day_start_time.minute))
+            if now_broker_time < start_of_today:
+                start_of_today = start_of_today - timedelta(days=1)
+            start_of_today_utc = start_of_today.astimezone(pytz.utc)
+            now_utc = datetime.now(pytz.utc)
+
+            deals = self.mt5.history_deals_get(start_of_today_utc, now_utc)
+            if deals is None:
+                logging.error("Impossible de récupérer l'historique des deals (daily loss check).")
+                return False, Decimal('0.0')
+
+            total_profit_today = Decimal('0.0')
+            for deal in deals:
+                if deal.magic == magic_number and deal.entry == mt5.DEAL_ENTRY_OUT:
+                     total_profit_today += Decimal(str(deal.profit)) + Decimal(str(deal.commission)) + Decimal(str(deal.swap))
+
+            floating_pl = self.executor.get_total_floating_pl(magic_number)
+            total_current_pl = total_profit_today + Decimal(str(floating_pl))
+            
+            equity = Decimal(str(self.account_info.equity))
+            loss_limit_amount = self.daily_loss_limit_pct * equity
+            
+            current_loss = -total_current_pl if total_current_pl < 0 else Decimal('0.0')
+
+            if current_loss > 0 and current_loss >= loss_limit_amount: 
+                logging.critical(f"LIMITE PERTE JOUR ATTEINTE: Perte {current_loss:.2f} {self.account_currency} >= Limite {loss_limit_amount:.2f}")
+                return True, float(current_loss) 
+            
+            logging.info(f"Check Perte Jour: {current_loss:.2f} / {loss_limit_amount:.2f} {self.account_currency}")
+            return False, float(current_loss) 
+
+        except Exception as e:
+            logging.error(f"Erreur vérification limite perte jour: {e}", exc_info=True)
+            return False, 0.0 
+
+
+    def check_max_concurrent_risk(self, equity: float) -> bool:
+        if self.max_concurrent_risk_pct <= 0: return True
+        try:
+            magic_number = self.config['trading_settings'].get('magic_number', 0)
+            open_positions = self.executor.get_open_positions(magic_number)
+            current_total_risk_pct = Decimal('0.0')
+            
+            for pos in open_positions:
+                 context = self.executor._trade_context.get(pos.ticket)
+                 is_at_be_or_profit = False
+
+                 # Vérifier si le BE a été appliqué (via contexte)
+                 if context and context.get('be_applied', False):
+                      is_at_be_or_profit = True
+                 
+                 if not is_at_be_or_profit:
+                     # TODO: Calculer le risque réel basé sur le volume restant
+                     # Simplification:
+                     current_total_risk_pct += self.risk_per_trade_pct
+
+            potential_total_risk = current_total_risk_pct + self.risk_per_trade_pct
+            limit_pct = self.max_concurrent_risk_pct
+            
+            if potential_total_risk > limit_pct:
+                 logging.warning(f"Check Risque Concurrent: {potential_total_risk*100:.1f}% > Limite {limit_pct*100:.1f}%. Trade bloqué.")
+                 return False
+            
+            logging.info(f"Check Risque Concurrent: {potential_total_risk*100:.1f}% <= Limite {limit_pct*100:.1f}%.")
+            return True
+
+        except Exception as e:
+             logging.error(f"Erreur vérification risque concurrent: {e}", exc_info=True)
+             return False

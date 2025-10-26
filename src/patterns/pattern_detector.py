@@ -1,430 +1,278 @@
-# Fichier: src/patterns/pattern_detector.py
-# Version: 19.1.2 (Implémentation Sugg 5, 9.1)
-# Dépendances: pandas, numpy, logging, datetime, src.constants, typing
-# DESCRIPTION: Ajout Sugg 5 (Validation OB avec FVG) et Sugg 9.1 (Retour poi_zone).
 
+# Fichier: src/patterns/pattern_detector.py
+# Version: 20.0.0 (Build Stabilisé)
+# Dépendances: MetaTrader5, pandas, numpy, logging, typing, src.constants
+# Description: Version stable intégrant P1-P6 et corrections proactives (Logs INFO -> DEBUG P-Proactif 3).
+
+import MetaTrader5 as mt5
 import pandas as pd
 import numpy as np
 import logging
-from datetime import time, timedelta
-from typing import Optional, List, Dict, Tuple
-from src.constants import (
-    PATTERN_ORDER_BLOCK, PATTERN_INBALANCE, PATTERN_BOS, PATTERN_CHOCH,
-    BUY, SELL, NEUTRAL, PREMIUM_THRESHOLD
-)
+from src.constants import *
+from typing import Tuple, Optional, Dict, List
+
+# Constantes P/D
+PREMIUM = "Premium"
+DISCOUNT = "Discount"
+EQUILIBRIUM = "Equilibrium"
+
 
 class PatternDetector:
     """
-    Module de reconnaissance de patterns SMC (Top-Down).
-    v19.1.2: Ajout Sugg 5 (Validation OB avec FVG), Sugg 9.1 (Retour poi_zone).
+    Détecte les patterns de trading SMC (Smart Money Concepts)
+    v20.0.0: Stable. Logs de signaux internes passés en DEBUG.
     """
-    def __init__(self, config):
-        self.config = config
-        self.log = logging.getLogger(self.__class__.__name__)
-        self.detected_patterns_info = {}
-        # Stockage POI HTF non mitigées (par symbole)
-        # Format: {symbol: [{'type':..., 'zone':(h,l), 'timestamp':..., 'mitigated': False}, ...]}
-        self._unmitigated_htf_poi: Dict[str, List[Dict]] = {}
-        # Stockage états LTF (pour CHOCH)
-        self._ltf_state: Dict[str, Dict] = {}
-        
-        # --- [Optimisation 2] Cache pour Indicateurs HTF ---
-        # Format: {symbol: {'timestamp': ..., 'bias': ..., 'poi': [...], 'target': ...}}
-        self._htf_cache: Dict[str, Dict] = {}
-        # --- Fin [Optimisation 2] ---
 
-    def get_detected_patterns_info(self):
+    def __init__(self, config: dict, digits: int):
+        self.config = config
+        self.digits = digits 
+        
+        self.pattern_settings = config.get('pattern_detection', {})
+        self.use_trend_filter = config.get('trend_filter', {}).get('enabled', True)
+        self.ema_period = config.get('trend_filter', {}).get('ema_period', 200)
+        self.htf_timeframe = config.get('trend_filter', {}).get('higher_timeframe', 'H4')
+
+        self.fvg_imbalance_ratio = self.pattern_settings.get('fvg_imbalance_ratio', 0.5)
+        self.ob_wick_ratio = self.pattern_settings.get('ob_wick_ratio', 0.3)
+        self.swing_lookback = self.pattern_settings.get('swing_lookback_periods', 10)
+        self.premium_threshold = self.pattern_settings.get('premium_threshold', 0.5)
+        
+        self.detected_patterns_info = {}
+
+    def get_detected_patterns_info(self) -> dict:
         return self.detected_patterns_info.copy()
 
-    # --- Fonctions utilitaires (inchangées) ---
-    def _calculate_atr(self, ohlc_data: pd.DataFrame, period: int) -> Optional[float]:
-        if ohlc_data is None or ohlc_data.empty or len(ohlc_data) < period + 1: return None
-        try:
-             high_low = ohlc_data['high'] - ohlc_data['low']
-             high_close = np.abs(ohlc_data['high'] - ohlc_data['close'].shift())
-             low_close = np.abs(ohlc_data['low'] - ohlc_data['close'].shift())
-             ranges = pd.concat([high_low, high_close, low_close], axis=1)
-             true_range = np.max(ranges, axis=1)
-             atr = true_range.ewm(span=period, adjust=False).mean().iloc[-1]
-             if pd.isna(atr) or atr <= 0: return None
-             return atr
-        except Exception: return None
 
-    def _find_swing_points(self, df: pd.DataFrame, n: int = 3):
-        window_size = n * 2 + 1
-        df_historical = df.iloc[:-1]
-        if 'is_swing_high' not in df.columns: df['is_swing_high'] = False
-        if 'is_swing_low' not in df.columns: df['is_swing_low'] = False
-        if len(df_historical) >= window_size:
-             high_swings = df_historical['high'].rolling(window=window_size, center=True, min_periods=window_size).max() == df_historical['high']
-             low_swings = df_historical['low'].rolling(window=window_size, center=True, min_periods=window_size).min() == df_historical['low']
-             df.loc[high_swings.index, 'is_swing_high'] = high_swings
-             df.loc[low_swings.index, 'is_swing_low'] = low_swings
-        return df[df['is_swing_high'] == True], df[df['is_swing_low'] == True]
+    def detect_patterns(self, ohlc_data: pd.DataFrame, connector, symbol: str) -> Optional[Dict]:
+        if ohlc_data is None or len(ohlc_data) < 50:
+             logging.warning(f"Données insuffisantes pour détection SMC {symbol}.")
+             return None
 
-    def _get_htf_bias(self, htf_data: pd.DataFrame, connector, symbol: str) -> str:
-        # (Logique inchangée - Confluence EMA + Zone Neutre)
-        filter_cfg = self.config.get('trend_filter', {})
-        if not filter_cfg.get('enabled', False): return "ANY"
-        ema_fast_period = filter_cfg.get('ema_fast_period', 50)
-        ema_slow_period = filter_cfg.get('ema_slow_period', 200)
-        dead_zone_atr_multiple = filter_cfg.get('ema_dead_zone_atr_multiple', 0.5)
-        try:
-            ema_fast = htf_data['close'].ewm(span=ema_fast_period, adjust=False).mean()
-            ema_slow = htf_data['close'].ewm(span=ema_slow_period, adjust=False).mean()
-            if pd.isna(ema_fast.iloc[-1]) or pd.isna(ema_slow.iloc[-1]): return "ANY"
-            current_price = htf_data['close'].iloc[-1]
-            ema_fast_val = ema_fast.iloc[-1]; ema_slow_val = ema_slow.iloc[-1]
-            is_bullish_bias = current_price > ema_fast_val and ema_fast_val > ema_slow_val
-            is_bearish_bias = current_price < ema_fast_val and ema_fast_val < ema_slow_val
-            bias_direction = BUY if is_bullish_bias else SELL if is_bearish_bias else NEUTRAL
-            if dead_zone_atr_multiple > 0:
-                atr_period = self.config.get('risk_management',{}).get('atr_settings',{}).get('default',{}).get('period', 14)
-                atr_htf = self._calculate_atr(htf_data, atr_period)
-                if atr_htf:
-                    dead_zone_size = atr_htf * dead_zone_atr_multiple
-                    upper_band = ema_fast_val + dead_zone_size; lower_band = ema_fast_val - dead_zone_size
-                    if lower_band <= current_price <= upper_band: bias_direction = NEUTRAL
-            status = f"{bias_direction} (Confluence)"
-            self.detected_patterns_info['TREND_FILTER'] = {'status': f"{status} (HTF)"}
-            return bias_direction
-        except Exception as e:
-            self.log.error(f"Erreur filtre tendance HTF: {e}", exc_info=True)
-            return "ANY"
-
-    def _identify_fvg_zones(self, impulse_data: pd.DataFrame, direction: str) -> List[Dict]:
-        # (Logique inchangée - Corrigée en V19.0.0)
-        zones = []
-        search_start_index = max(0, len(impulse_data) - 10)
-        for i in range(search_start_index, len(impulse_data)):
-             if i < 2: continue
-             candle_minus_2 = impulse_data.iloc[i-2]; candle_current = impulse_data.iloc[i]
-             if direction == BUY and candle_current['low'] > candle_minus_2['high']:
-                 zones.append({'type': PATTERN_INBALANCE, 'zone': (candle_current['low'], candle_minus_2['high']), 'timestamp': candle_current.name, 'mitigated': False})
-             elif direction == SELL and candle_current['high'] < candle_minus_2['low']:
-                 zones.append({'type': PATTERN_INBALANCE, 'zone': (candle_minus_2['low'], candle_current['high']), 'timestamp': candle_current.name, 'mitigated': False})
-        return zones
-
-    # --- MODIFICATION SUGGESTION 5 ---
-    def _identify_ob_zones(self, df: pd.DataFrame, swing_point: pd.Series, direction: str) -> List[Dict]:
-        """
-        Identifie les zones d'Order Block (OB) avant un swing.
-        Inclut la validation optionnelle par FVG (Sugg 5).
-        """
-        zones = []
-        ob = None
+        self.detected_patterns_info = {}
+        df = ohlc_data.copy()
         
-        if direction == BUY: # Cherche OB Haussier (dernière bougie Sell avant swing Low)
-            search_area = df[df.index < swing_point.name].tail(5)
-            down_candles = search_area[search_area['close'] < search_area['open']]
-            if not down_candles.empty:
-                ob = down_candles.iloc[-1]
-        
-        elif direction == SELL: # Cherche OB Baissier (dernière bougie Buy avant swing High)
-            search_area = df[df.index < swing_point.name].tail(5)
-            up_candles = search_area[search_area['close'] > search_area['open']]
-            if not up_candles.empty:
-                ob = up_candles.iloc[-1]
+        if not isinstance(df.index, pd.DatetimeIndex):
+             if 'time' in df.columns:
+                 df['time'] = pd.to_datetime(df['time'], unit='s')
+                 df.set_index('time', inplace=True)
+             else:
+                 logging.error("OHLC n'a ni DatetimeIndex ni colonne 'time'."); return None
 
-        if ob is None:
-            return zones # Aucun OB candidat trouvé
-
-        # Vérification des options de validation (Sugg 5)
-        validation_cfg = self.config.get('pattern_detection', {}).get('ob_validation', {})
-        require_fvg = validation_cfg.get('require_fvg_after', False)
-
-        if not require_fvg:
-            # Pas de validation requise, ajouter l'OB trouvé
-            zones.append({'type': PATTERN_ORDER_BLOCK, 'zone': (ob['high'], ob['low']), 'timestamp': ob.name, 'mitigated': False})
-            return zones
-
-        # --- Validation FVG Requise ---
-        try:
-            ob_index_loc = df.index.get_loc(ob.name)
-            # Regarder les 5 bougies après l'OB pour un FVG (l'impulsion)
-            data_after_ob = df.iloc[ob_index_loc + 1 : ob_index_loc + 6]
-
-            if data_after_ob.empty or len(data_after_ob) < 3:
-                self.log.debug(f"Validation OB: Pas assez de données après l'OB {ob.name} pour chercher FVG.")
-                return zones # Pas assez de données pour FVG
-
-            fvg_found = False
-            # Chercher un FVG (Imbalance) dans la MÊME direction que le biais
-            for i in range(2, len(data_after_ob)):
-                candle_minus_2 = data_after_ob.iloc[i-2]
-                candle_current = data_after_ob.iloc[i]
-                
-                # FVG Haussier (pour Biais BUY)
-                if direction == BUY and candle_current['low'] > candle_minus_2['high']:
-                    fvg_found = True
-                    break
-                # FVG Baissier (pour Biais SELL)
-                elif direction == SELL and candle_current['high'] < candle_minus_2['low']:
-                    fvg_found = True
-                    break
-            
-            if fvg_found:
-                self.log.debug(f"Validation OB: OB {ob.name} validé par FVG suivant.")
-                zones.append({'type': PATTERN_ORDER_BLOCK, 'zone': (ob['high'], ob['low']), 'timestamp': ob.name, 'mitigated': False})
-            else:
-                self.log.debug(f"Validation OB: OB {ob.name} REJETÉ (pas de FVG trouvé après).")
-
-        except Exception as e:
-            self.log.error(f"Erreur validation OB FVG: {e}", exc_info=True)
-
-        return zones
-    # --- FIN MODIFICATION SUGGESTION 5 ---
-
-    # --- [Opt 3 + Opt 5] Logique POI HTF avec Mitigation et Premium/Discount ---
-    def _find_htf_poi(self, htf_data: pd.DataFrame, htf_bias: str, symbol: str) -> (List[Dict], float):
-        """
-        Identifie POI HTF non mitigés, priorise Premium/Discount, gère mitigation.
-        Retourne (liste_poi_priorisee, target_liquidity_htf).
-        Utilise _identify_ob_zones (modifié Sugg 5)
-        """
-        htf_swing_highs, htf_swing_lows = self._find_swing_points(htf_data.copy(), n=3)
-        if htf_swing_highs.empty or htf_swing_lows.empty: return [], 0.0
-
-        current_price = htf_data['close'].iloc[-1]
-        all_new_poi = []
-        target_liquidity = 0.0
-        htf_range_high = 0.0
-        htf_range_low = 0.0
-
-        # Récupérer les POI existantes (potentiellement mitigées)
-        existing_poi_list = self._unmitigated_htf_poi.get(symbol, [])
-
-        if htf_bias == BUY:
-            last_htf_low_serie = htf_swing_lows.iloc[-1]
-            last_htf_high_serie = htf_swing_highs.iloc[-1]
-            target_liquidity = last_htf_high_serie['high']
-            htf_range_low = last_htf_low_serie['low']
-            htf_range_high = last_htf_high_serie['high']
-            
-            search_data = htf_data[htf_data.index >= last_htf_low_serie.name]
-            if not search_data.empty:
-                all_new_poi.extend(self._identify_fvg_zones(search_data, BUY))
-                # Appel à la fonction modifiée (Sugg 5)
-                all_new_poi.extend(self._identify_ob_zones(htf_data, last_htf_low_serie, BUY))
-
-        elif htf_bias == SELL:
-            last_htf_high_serie = htf_swing_highs.iloc[-1]
-            last_htf_low_serie = htf_swing_lows.iloc[-1]
-            target_liquidity = last_htf_low_serie['low']
-            htf_range_low = last_htf_low_serie['low']
-            htf_range_high = last_htf_high_serie['high']
-
-            search_data = htf_data[htf_data.index >= last_htf_high_serie.name]
-            if not search_data.empty:
-                all_new_poi.extend(self._identify_fvg_zones(search_data, SELL))
-                # Appel à la fonction modifiée (Sugg 5)
-                all_new_poi.extend(self._identify_ob_zones(htf_data, last_htf_high_serie, SELL))
-
-        # Fusionner nouvelles POI et existantes, dédupliquer, mettre à jour mitigation
-        updated_poi_list = []
-        seen_zones = set()
-        
-        # D'abord les anciennes pour conserver l'état 'mitigated'
-        for poi in existing_poi_list:
-            zone_tuple = tuple(poi['zone'])
-            if zone_tuple not in seen_zones:
-                 # [Opt 3] Vérifier mitigation par prix actuel
-                 if not poi.get('mitigated', False): # Ne pas remittiger si déjà fait
-                      if htf_bias == BUY and current_price <= poi['zone'][0]: # Prix a touché/dépassé le haut
-                           poi['mitigated'] = True
-                           self.log.debug(f"POI HTF {poi['type']} {poi['zone']} marquée mitigée par prix actuel ({symbol}).")
-                      elif htf_bias == SELL and current_price >= poi['zone'][1]: # Prix a touché/dépassé le bas
-                           poi['mitigated'] = True
-                           self.log.debug(f"POI HTF {poi['type']} {poi['zone']} marquée mitigée par prix actuel ({symbol}).")
-                 
-                 updated_poi_list.append(poi)
-                 seen_zones.add(zone_tuple)
-
-        # Ajouter les nouvelles POI non vues
-        for poi in all_new_poi:
-            zone_tuple = tuple(poi['zone'])
-            if zone_tuple not in seen_zones:
-                 # Vérifier mitigation initiale par prix actuel
-                 if htf_bias == BUY and current_price <= poi['zone'][0]: poi['mitigated'] = True
-                 elif htf_bias == SELL and current_price >= poi['zone'][1]: poi['mitigated'] = True
-                 
-                 updated_poi_list.append(poi)
-                 seen_zones.add(zone_tuple)
-        
-        # Conserver la liste mise à jour
-        self._unmitigated_htf_poi[symbol] = updated_poi_list
-        
-        # Filtrer seulement les POI non mitigées pour la priorisation
-        active_poi = [p for p in updated_poi_list if not p.get('mitigated', False)]
-
-        # [Opt 5] Priorisation Premium/Discount
-        prioritized_poi = []
-        if htf_range_high > htf_range_low: # S'assurer que le range est valide
-            equilibrium = htf_range_low + (htf_range_high - htf_range_low) * PREMIUM_THRESHOLD
-            
-            if htf_bias == BUY:
-                discount_poi = [p for p in active_poi if p['zone'][0] < equilibrium] # Haut de zone < 50%
-                discount_poi.sort(key=lambda p: p['zone'][1], reverse=True) # Plus proche du prix en premier
-                prioritized_poi = discount_poi
-            elif htf_bias == SELL:
-                premium_poi = [p for p in active_poi if p['zone'][1] > equilibrium] # Bas de zone > 50%
-                premium_poi.sort(key=lambda p: p['zone'][0], reverse=False) # Plus proche du prix en premier
-                prioritized_poi = premium_poi
-        else:
-             # Fallback si range invalide: trier par proximité
-             if htf_bias == BUY: active_poi.sort(key=lambda p: p['zone'][1], reverse=True)
-             elif htf_bias == SELL: active_poi.sort(key=lambda p: p['zone'][0], reverse=False)
-             prioritized_poi = active_poi
-             
-        if prioritized_poi:
-            self.log.debug(f"POI HTF Priorisée ({symbol}, Biais {htf_bias}): {prioritized_poi[0]['type']} {prioritized_poi[0]['zone']}")
-        
-        return prioritized_poi, target_liquidity
-    # --- Fin [Opt 3 + Opt 5] ---
-
-    # --- [Opt 3] Logique de confirmation LTF avec mitigation ---
-    def _check_ltf_confirmation(self, ltf_data: pd.DataFrame, poi_htf: Dict, htf_bias: str, symbol: str) -> (str, float, Dict):
-        """
-        Vérifie confirmation LTF (CHOCH) dans POI HTF.
-        Retourne (pattern_name, entry_price, poi_used_dict) si confirmé.
-        Marque la POI utilisée comme mitigée.
-        """
-        if symbol not in self._ltf_state:
-            self._ltf_state[symbol] = {'last_swing_high': None, 'last_swing_low': None}
-
-        ltf_swing_highs, ltf_swing_lows = self._find_swing_points(ltf_data.copy(), n=3)
-        if ltf_swing_highs.empty or ltf_swing_lows.empty: return None, 0.0, None
-
-        current_ltf_candle = ltf_data.iloc[-1]
-        poi_high, poi_low = poi_htf['zone']
-        poi_timestamp = poi_htf['timestamp'] # Pour identifier la POI à mitiger
-
-        confirmed_pattern = None
-        entry_price = 0.0
-
-        if htf_bias == BUY:
-            if current_ltf_candle['low'] <= poi_high: # Prix dans ou sous la zone d'achat POI
-                if not ltf_swing_highs[ltf_swing_highs.index < current_ltf_candle.name].empty:
-                    self._ltf_state[symbol]['last_swing_high'] = ltf_swing_highs[ltf_swing_highs.index < current_ltf_candle.name].iloc[-1]['high']
-                last_ltf_high = self._ltf_state[symbol].get('last_swing_high')
-                if last_ltf_high and current_ltf_candle['close'] > last_ltf_high:
-                    confirmed_pattern = PATTERN_CHOCH; entry_price = current_ltf_candle['close']
-                    self._ltf_state[symbol]['last_swing_high'] = None # Reset après confirmation
-            else: # Prix n'est pas encore entré
-                 self._ltf_state[symbol]['last_swing_high'] = None # Reset si prix sort par le haut
-
-        elif htf_bias == SELL:
-            if current_ltf_candle['high'] >= poi_low: # Prix dans ou au-dessus de la zone de vente POI
-                if not ltf_swing_lows[ltf_swing_lows.index < current_ltf_candle.name].empty:
-                    self._ltf_state[symbol]['last_swing_low'] = ltf_swing_lows[ltf_swing_lows.index < current_ltf_candle.name].iloc[-1]['low']
-                last_ltf_low = self._ltf_state[symbol].get('last_swing_low')
-                if last_ltf_low and current_ltf_candle['close'] < last_ltf_low:
-                    confirmed_pattern = PATTERN_CHOCH; entry_price = current_ltf_candle['close']
-                    self._ltf_state[symbol]['last_swing_low'] = None # Reset après confirmation
-            else: # Prix n'est pas encore entré
-                 self._ltf_state[symbol]['last_swing_low'] = None # Reset si prix sort par le bas
-
-        if confirmed_pattern:
-            self.log.info(f"CONFIRMATION LTF ({confirmed_pattern} {htf_bias}) sur {symbol} dans POI HTF {poi_htf['type']} {poi_htf['zone']}.")
-            # [Opt 3] Marquer la POI comme mitigée dans la liste principale
-            for poi in self._unmitigated_htf_poi.get(symbol, []):
-                 if poi['timestamp'] == poi_timestamp and tuple(poi['zone']) == tuple(poi_htf['zone']):
-                      poi['mitigated'] = True
-                      self.log.debug(f"POI HTF {poi['type']} {poi['zone']} marquée mitigée après confirmation LTF ({symbol}).")
-                      break
-            # [MODIFICATION SUGG 9.1] Retourner poi_htf (le dict)
-            return confirmed_pattern, entry_price, poi_htf
-            
-        return None, 0.0, None
-    # --- Fin [Opt 3] ---
-
-    # --- [Opt 2] Fonction principale avec Cache HTF ---
-    def detect_patterns(self, htf_data: pd.DataFrame, ltf_data: pd.DataFrame, connector, symbol: str):
-        
-        # Vérifier et préparer les DataFrames (inchangé)
-        for df in [htf_data, ltf_data]:
-            if not isinstance(df.index, pd.DatetimeIndex):
+        # 1. Filtre de Tendance
+        main_trend = "NEUTRAL"
+        if self.use_trend_filter:
+            htf_data = connector.get_ohlc(symbol, self.htf_timeframe, self.ema_period + 50)
+            if htf_data is not None and not htf_data.empty:
                 try:
-                    df['time'] = pd.to_datetime(df['time'], unit='s'); df.set_index('time', inplace=True)
+                    htf_data['close'] = pd.to_numeric(htf_data['close'])
+                    htf_data[f'ema_{self.ema_period}'] = htf_data['close'].ewm(span=self.ema_period, adjust=False).mean()
+                    last_close_htf = htf_data['close'].iloc[-1]
+                    last_ema_htf = htf_data[f'ema_{self.ema_period}'].iloc[-1]
+                    if last_close_htf > last_ema_htf: main_trend = "BULLISH"
+                    elif last_close_htf < last_ema_htf: main_trend = "BEARISH"
+                    self.detected_patterns_info['main_trend'] = f"{main_trend} (HTF {self.htf_timeframe})"
                 except Exception as e:
-                    self.log.error(f"Échec conversion index temps pour {symbol}: {e}. Colonnes: {df.columns}")
-                    return None
-            if df.index.tz is None: df.index = df.index.tz_localize('UTC')
+                     logging.error(f"Erreur calcul filtre tendance HTF pour {symbol}: {e}")
+                     self.detected_patterns_info['main_trend'] = "ERREUR HTF"
+            else:
+                 logging.warning(f"Impossible charger données HTF {self.htf_timeframe}.")
+                 self.detected_patterns_info['main_trend'] = "ERREUR HTF"
 
-        current_htf_timestamp = htf_data.index[-1]
-        htf_bias = NEUTRAL
-        prioritized_poi = []
-        target_liquidity_htf = 0.0
+        # 2. Identification Structure
+        structure = self._get_market_structure(df)
+        self.detected_patterns_info['structure'] = structure
 
-        # [Opt 2] Utiliser le cache HTF si possible
-        cached_data = self._htf_cache.get(symbol)
-        if cached_data and cached_data.get('timestamp') == current_htf_timestamp:
-            htf_bias = cached_data.get('bias', NEUTRAL)
-            prioritized_poi = cached_data.get('poi', [])
-            target_liquidity_htf = cached_data.get('target', 0.0)
-            self.log.debug(f"Cache HTF HIT pour {symbol} @ {current_htf_timestamp}")
-            # [Opt 3] Re-vérifier la mitigation des POI cachées par le prix actuel LTF
-            current_ltf_price = ltf_data['close'].iloc[-1]
-            poi_updated = False
-            for poi in prioritized_poi:
-                 if not poi.get('mitigated'):
-                     if htf_bias == BUY and current_ltf_price <= poi['zone'][0]:
-                          poi['mitigated'] = True; poi_updated = True
-                     elif htf_bias == SELL and current_ltf_price >= poi['zone'][1]:
-                          poi['mitigated'] = True; poi_updated = True
-            if poi_updated: # Filtrer à nouveau si mitigation a eu lieu
-                prioritized_poi = [p for p in prioritized_poi if not p.get('mitigated')]
-                
-        else:
-            # [Opt 2] Cache MISS ou Invalide -> Recalculer HTF
-            self.log.debug(f"Cache HTF MISS/EXPIRED pour {symbol}. Recalcul HTF...")
-            htf_bias = self._get_htf_bias(htf_data, connector, symbol)
-            
-            if htf_bias != NEUTRAL and htf_bias != "ANY":
-                # [Opt 3 + Opt 5] _find_htf_poi gère mitigation et priorisation
-                prioritized_poi, target_liquidity_htf = self._find_htf_poi(htf_data, htf_bias, symbol)
-            
-            # [Opt 2] Mettre à jour le cache HTF
-            self._htf_cache[symbol] = {
-                'timestamp': current_htf_timestamp,
-                'bias': htf_bias,
-                'poi': prioritized_poi, # Contient déjà l'état 'mitigated'
-                'target': target_liquidity_htf
-            }
+        # 3. Détection POI (Zones Premium/Discount)
+        premium_discount = self._get_premium_discount_zones(structure)
+        self.detected_patterns_info.update(premium_discount)
 
-        # Suite de la logique (inchangée): Vérifier confirmation LTF sur POI priorisée
-        if htf_bias == NEUTRAL or htf_bias == "ANY":
-            self.detected_patterns_info['HTF_POI'] = {'status': f'Biais HTF Non Concluant ({htf_bias})'}
-            return None
+        order_blocks = self._detect_order_block(df, structure, premium_discount)
+        fvgs = self._detect_fvg(df, structure, premium_discount)
+        self.detected_patterns_info['pois'] = {"order_blocks": f"Found {len(order_blocks)}", "fvgs": f"Found {len(fvgs)}"}
 
-        if not prioritized_poi:
-            self.detected_patterns_info['HTF_POI'] = {'status': 'Aucune POI HTF active/priorisée'}
-            return None
-            
-        self.detected_patterns_info['HTF_POI'] = {'status': f'{len(prioritized_poi)} POI HTF active(s)'}
-
-        # Vérifier confirmation sur la POI la plus priorisée (la première)
-        poi_to_watch = prioritized_poi[0]
+        # 4. Détection Triggers
+        signal = None
         
-        # [Opt 3] _check_ltf_confirmation marque la POI comme mitigée si confirmation
-        # [MODIFICATION SUGG 9.1] poi_used est maintenant un dict
-        pattern_name, entry_price, poi_used = self._check_ltf_confirmation(
-            ltf_data, poi_to_watch, htf_bias, symbol
-        )
+        # --- MODIFICATION (P-Proactif 3) : Logs INFO -> DEBUG ---
+        # Scénario 1: Pullback Achat (Priorité si tendance haussière)
+        if main_trend != "BEARISH" and self.pattern_settings.get('ORDER_BLOCK', True):
+            signal = self._check_pullback_to_poi(df, order_blocks, fvgs, "BUY", structure)
+            if signal:
+                logging.debug(f"Signal détecté (interne) sur {symbol}: {signal['pattern']}")
+                return signal
 
-        if pattern_name and entry_price > 0:
-            if target_liquidity_htf == 0.0:
-                 self.log.warning(f"Signal {pattern_name} trouvé, mais cible HTF invalide (0.0).")
-                 return None
+        # Scénario 2: Pullback Vente (Priorité si tendance baissière)
+        if main_trend != "BULLISH" and self.pattern_settings.get('ORDER_BLOCK', True):
+            signal = self._check_pullback_to_poi(df, order_blocks, fvgs, "SELL", structure)
+            if signal:
+                 logging.debug(f"Signal détecté (interne) sur {symbol}: {signal['pattern']}")
+                 return signal
 
-            self.log.info(f"SIGNAL (Top-Down) sur {symbol}: Biais {htf_bias} -> POI {poi_used['type']} -> Conf. {pattern_name}.")
-            
-            # [MODIFICATION SUGG 9.1] Ajouter poi_zone
-            return {
-                'pattern': f"{poi_used['type']}_HTF_CONF_{pattern_name}_LTF", # Nom plus générique
-                'direction': htf_bias,
-                'target_price': target_liquidity_htf,
-                'poi_zone': poi_used['zone'] # Ajouté pour Sugg 9 (Rating)
-            }
+        # Scénario 3: CHoCH
+        if self.pattern_settings.get('CHANGE_OF_CHARACTER', True):
+            signal = self._detect_choch(df, structure, main_trend)
+            if signal:
+                 logging.debug(f"Signal détecté (interne) sur {symbol}: {signal['pattern']}")
+                 return signal
+        
+        # Scénario 4: Liquidity Grab
+        if self.pattern_settings.get('LIQUIDITY_GRAB', True):
+             signal = self._detect_liquidity_grab(df, structure, main_trend)
+             if signal:
+                 logging.debug(f"Signal détecté (interne) sur {symbol}: {signal['pattern']}")
+                 return signal
+        # --- FIN MODIFICATION ---
+        
+        logging.debug(f"Aucun signal SMC valide trouvé pour {symbol} (Tendance: {main_trend})")
+        return None
 
+
+    def _get_market_structure(self, df: pd.DataFrame) -> dict:
+        n = self.swing_lookback
+        if len(df) < n * 2 + 1:
+             return {"last_swing_high": df['high'].iloc[-1], "last_swing_low": df['low'].iloc[-1], "internal_structure": "UNKNOWN"}
+
+        df_copy = df.copy()
+        n_fractal = max(2, n // 2)
+        
+        df_copy['high_shifted'] = df_copy['high'].shift(1)
+        df_copy['low_shifted'] = df_copy['low'].shift(1)
+        
+        df_copy['is_swing_high'] = (df_copy['high_shifted'] == df_copy['high_shifted'].rolling(window=n, center=False, min_periods=n_fractal).max())
+        df_copy['is_swing_low'] = (df_copy['low_shifted'] == df_copy['low_shifted'].rolling(window=n, center=False, min_periods=n_fractal).min())
+
+        df_copy['is_swing_high'] = df_copy['is_swing_high'].fillna(False).infer_objects(copy=False)
+        df_copy['is_swing_low'] = df_copy['is_swing_low'].fillna(False).infer_objects(copy=False)
+        
+        recent_swings_high_series = df_copy[df_copy['is_swing_high']]['high'].tail(5)
+        recent_swings_low_series = df_copy[df_copy['is_swing_low']]['low'].tail(5)
+
+        structure_info = {
+            "last_swing_high": recent_swings_high_series.iloc[-1] if not recent_swings_high_series.empty else df_copy['high'].iloc[-1],
+            "last_swing_low": recent_swings_low_series.iloc[-1] if not recent_swings_low_series.empty else df_copy['low'].iloc[-1],
+            "internal_structure": "UNKNOWN"
+        }
+        return structure_info
+
+
+    def _get_premium_discount_zones(self, structure: dict) -> dict:
+        low = structure.get('last_swing_low', 0.0)
+        high = structure.get('last_swing_high', 0.0)
+        if low == 0.0 or high == 0.0 or high <= low:
+            return {"equilibrium": 0.0, "premium_start": 0.0, "discount_start": 0.0}
+        equilibrium = low + (high - low) * 0.5
+        premium_threshold = self.premium_threshold
+        discount_threshold = 1.0 - premium_threshold
+        premium_start = low + (high - low) * premium_threshold
+        discount_start = low + (high - low) * discount_threshold
+        return {"equilibrium": equilibrium, "premium_start": premium_start, "discount_start": discount_start}
+
+
+    def _detect_fvg(self, df: pd.DataFrame, structure: dict, pd_zones: dict) -> list:
+        fvgs = []
+        for i in range(len(df) - 50, len(df) - 1):
+            if i < 1: continue
+            try:
+                prev_high = df['high'].iloc[i-1]; curr_high = df['high'].iloc[i]; curr_low = df['low'].iloc[i]; next_low = df['low'].iloc[i+1]
+                prev_low = df['low'].iloc[i-1]; next_high = df['high'].iloc[i+1]
+                is_bullish_candle = df['close'].iloc[i] > df['open'].iloc[i]
+                is_bearish_candle = df['close'].iloc[i] < df['open'].iloc[i]
+                if is_bullish_candle and curr_high > prev_high and next_low > prev_high:
+                     fvg_top = next_low; fvg_bottom = prev_high
+                     if fvg_bottom < pd_zones.get('discount_start', 0.0):
+                         fvgs.append({"type": "FVG_BULLISH", "top": fvg_top, "bottom": fvg_bottom, "candle_index": i})
+                if is_bearish_candle and curr_low < prev_low and next_high < prev_low:
+                     fvg_top = prev_low; fvg_bottom = next_high
+                     if fvg_top > pd_zones.get('premium_start', 0.0):
+                         fvgs.append({"type": "FVG_BEARISH", "top": fvg_top, "bottom": fvg_bottom, "candle_index": i})
+            except IndexError: break
+            except Exception as e: logging.warning(f"Erreur détection FVG index {i}: {e}")
+        return fvgs
+
+
+    def _detect_order_block(self, df: pd.DataFrame, structure: dict, pd_zones: dict) -> list:
+        order_blocks = []
+        for i in range(len(df) - 50, len(df) - 2):
+            try:
+                candle_n = df.iloc[i]; candle_n_plus_1 = df.iloc[i+1]
+                is_n_bullish = candle_n['close'] > candle_n['open']; is_n_bearish = candle_n['close'] < candle_n['open']
+                is_n1_bullish = candle_n_plus_1['close'] > candle_n_plus_1['open']; is_n1_bearish = candle_n_plus_1['close'] < candle_n_plus_1['open']
+                if is_n_bullish and is_n1_bearish:
+                    if candle_n_plus_1['close'] < candle_n['low']:
+                        ob_top = candle_n['high']; ob_bottom = candle_n['low']
+                        if ob_bottom > pd_zones.get('premium_start', 0.0):
+                             order_blocks.append({"type": "OB_BEARISH", "top": ob_top, "bottom": ob_bottom, "candle_index": i})
+                if is_n_bearish and is_n1_bullish:
+                     if candle_n_plus_1['close'] > candle_n['high']:
+                         ob_top = candle_n['high']; ob_bottom = candle_n['low']
+                         if ob_top < pd_zones.get('discount_start', 0.0):
+                             order_blocks.append({"type": "OB_BULLISH", "top": ob_top, "bottom": ob_bottom, "candle_index": i})
+            except IndexError: break
+            except Exception as e: logging.warning(f"Erreur détection OB index {i}: {e}")
+        return order_blocks
+
+
+    def _detect_choch(self, df: pd.DataFrame, structure: dict, main_trend: str) -> Optional[Dict]:
+        last_candle = df.iloc[-1]
+        last_internal_low = structure.get('last_swing_low')
+        if last_candle['close'] < last_internal_low:
+             logging.debug(f"CHoCH Baissier détecté {df.index[-1]}: Clôture {last_candle['close']} < Dernier Low {last_internal_low}")
+             sl_price = structure.get('last_swing_high', last_candle['high'] + (last_candle['high']-last_candle['low']))
+             return {"pattern": "CHANGE_OF_CHARACTER (Bearish)", "direction": "SELL", "sl_price": sl_price, "tp_price": 0.0 }
+        last_internal_high = structure.get('last_swing_high')
+        if last_candle['close'] > last_internal_high:
+             logging.debug(f"CHoCH Haussier détecté {df.index[-1]}: Clôture {last_candle['close']} > Dernier High {last_internal_high}")
+             sl_price = structure.get('last_swing_low', last_candle['low'] - (last_candle['high']-last_candle['low']))
+             return {"pattern": "CHANGE_OF_CHARACTER (Bullish)", "direction": "BUY", "sl_price": sl_price, "tp_price": 0.0 }
+        return None
+    
+    def _detect_liquidity_grab(self, df: pd.DataFrame, structure: dict, main_trend: str) -> Optional[Dict]:
+        if len(df) < 3: return None
+        last_candle = df.iloc[-1]; prev_candle = df.iloc[-2]
+        sl_price = 0.0; tp_price = 0.0
+        if last_candle['low'] < prev_candle['low'] and last_candle['close'] > prev_candle['low']:
+             logging.debug(f"Liquidity Grab (Haussier) détecté sur {df.index[-1]}")
+             sl_price = last_candle['low']
+             tp_price = structure.get('last_swing_high', 0.0)
+             return {"pattern": "LIQUIDITY_GRAB (Bullish)", "direction": "BUY", "sl_price": sl_price, "tp_price": tp_price}
+        if last_candle['high'] > prev_candle['high'] and last_candle['close'] < prev_candle['high']:
+             logging.debug(f"Liquidity Grab (Baissier) détecté sur {df.index[-1]}")
+             sl_price = last_candle['high']
+             tp_price = structure.get('last_swing_low', 0.0)
+             return {"pattern": "LIQUIDITY_GRAB (Bearish)", "direction": "SELL", "sl_price": sl_price, "tp_price": tp_price}
+        return None
+
+
+    def _check_pullback_to_poi(self, df: pd.DataFrame, order_blocks: list, fvgs: list, direction: str, structure: dict) -> Optional[Dict]:
+        last_candle = df.iloc[-1]
+        last_low = last_candle['low']
+        last_high = last_candle['high']
+        
+        digits_fmt = self.digits 
+
+        if direction == "BUY":
+            pois = [p for p in order_blocks if p['type'] == "OB_BULLISH"] + \
+                   [p for p in fvgs if p['type'] == "FVG_BULLISH"]
+            if not pois: return None
+            pois.sort(key=lambda x: x['top'], reverse=True)
+            for poi in pois:
+                poi_top = poi['top']; poi_bottom = poi['bottom']
+                if last_low <= poi_top and last_high >= poi_bottom:
+                     logging.debug(f"Contact POI Achat {poi['type']} @ {poi_top:.{digits_fmt}f} (Index {poi['candle_index']})")
+                     sl_price = poi_bottom
+                     tp_price = structure.get('last_swing_high', 0.0)
+                     return {"pattern": f"POI_PULLBACK ({poi['type']})", "direction": "BUY", "sl_price": sl_price, "tp_price": tp_price}
+
+        if direction == "SELL":
+            pois = [p for p in order_blocks if p['type'] == "OB_BEARISH"] + \
+                   [p for p in fvgs if p['type'] == "FVG_BEARISH"]
+            if not pois: return None
+            pois.sort(key=lambda x: x['bottom'], reverse=False)
+            for poi in pois:
+                poi_top = poi['top']; poi_bottom = poi['bottom']
+                if last_high >= poi_bottom and last_low <= poi_top:
+                     logging.debug(f"Contact POI Vente {poi['type']} @ {poi_bottom:.{digits_fmt}f} (Index {poi['candle_index']})")
+                     sl_price = poi_top
+                     tp_price = structure.get('last_swing_low', 0.0)
+                     return {"pattern": f"POI_PULLBACK ({poi['type']})", "direction": "SELL", "sl_price": sl_price, "tp_price": tp_price}
         return None
