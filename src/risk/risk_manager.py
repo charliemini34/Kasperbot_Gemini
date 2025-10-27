@@ -1,7 +1,5 @@
-
-
 # Fichier: src/risk/risk_manager.py
-# Version: 17.0.1 (Signal-Validation-Fix)
+# Version: 18.0.0 (Implémentation R1)
 # Dépendances: MetaTrader5, pandas, numpy, logging, pytz, src.constants
 
 import MetaTrader5 as mt5
@@ -18,7 +16,7 @@ from src.constants import BUY, SELL
 class RiskManager:
     """
     Gère le risque avec une stratégie de TP configurable et une validation des signaux.
-    v17.0.1: Ajout de la validation du dictionnaire de signal.
+    v18.0.0: Ajout de la logique de TP Partiel (R1).
     """
     def __init__(self, config: dict, executor, symbol: str):
         self.log = logging.getLogger(self.__class__.__name__)
@@ -50,7 +48,21 @@ class RiskManager:
                 return False, 0.0
 
             magic_number = self._config.get('trading_settings', {}).get('magic_number', 0)
-            daily_pnl = sum(deal.profit for deal in history_deals if deal.magic == magic_number and deal.entry == 1)
+            
+            # PnL journalier basé sur tous les deals (entrées et sorties)
+            daily_pnl = 0.0
+            # Regrouper les deals par position_id pour calculer le PnL réalisé
+            deals_by_position = {}
+            for deal in history_deals:
+                if deal.magic == magic_number:
+                    if deal.position_id not in deals_by_position:
+                        deals_by_position[deal.position_id] = []
+                    deals_by_position[deal.position_id].append(deal)
+
+            for position_id, deals in deals_by_position.items():
+                # On ne compte le PnL que si la position a été fermée (un deal de sortie existe)
+                if any(d.entry == mt5.DEAL_ENTRY_OUT or d.entry == mt5.DEAL_ENTRY_INOUT for d in deals):
+                    daily_pnl += sum(d.profit for d in deals)
             
             loss_limit_amount = (self.account_info.equity * loss_limit_percent) / 100.0
             
@@ -214,15 +226,113 @@ class RiskManager:
         
         return true_range.ewm(alpha=1/period, adjust=False).mean().iloc[-1]
 
-    def manage_open_positions(self, positions: list, current_tick, ohlc_data: pd.DataFrame):
+    # (R1) Signature modifiée pour inclure trade_context
+    def manage_open_positions(self, positions: list, current_tick, ohlc_data: pd.DataFrame, trade_context: dict):
+        """Gère les positions ouvertes, y compris TP partiels, BE et Trailing."""
+        
         if not positions or not current_tick or ohlc_data is None or ohlc_data.empty: return
         
         risk_settings = self._config.get('risk_management', {})
+        
+        # (R1) Logique TP Partiel (exécutée en premier)
+        if risk_settings.get('partial_tp', {}).get('enabled', False):
+            self._apply_partial_tp(
+                positions, 
+                current_tick, 
+                trade_context, 
+                risk_settings.get('partial_tp', {})
+            )
+        
         if risk_settings.get('breakeven', {}).get('enabled', False):
             self._apply_breakeven(positions, current_tick, risk_settings.get('breakeven', {}))
             
         if risk_settings.get('trailing_stop_atr', {}).get('enabled', False):
             self._apply_trailing_stop_atr(positions, current_tick, ohlc_data, risk_settings)
+
+    # (R1) Nouvelle fonction pour TP Partiels
+    def _apply_partial_tp(self, positions: list, tick, trade_context: dict, partial_tp_cfg: dict):
+        """Applique la logique de clôture partielle basée sur les niveaux de RR."""
+        
+        # Trier les niveaux par RR croissant pour s'assurer de les traiter dans l'ordre
+        levels = sorted(partial_tp_cfg.get('levels', []), key=lambda x: x.get('rr', 0))
+        magic_number = self._config.get('trading_settings', {}).get('magic_number', 0)
+        
+        if not levels: 
+            return # Pas de niveaux de TP partiels configurés
+
+        for pos in positions:
+            # (R1) Récupérer le contexte original basé sur pos.ticket (position_id)
+            context = trade_context.get(pos.ticket) 
+            
+            if not context:
+                # Log réduit pour éviter le spam si des trades manuels existent
+                # self.log.warning(f"Contexte de trade introuvable pour la position #{pos.ticket}. TP Partiel ignoré.")
+                continue
+                
+            original_sl = context.get('original_sl')
+            original_volume = context.get('original_volume')
+            percent_already_closed = context.get('partial_tp_taken_percent', 0.0)
+            
+            if not original_sl or not original_volume or original_sl == 0 or original_volume == 0:
+                self.log.warning(f"Contexte incomplet pour #{pos.ticket} (SL/Vol manquant). TP Partiel ignoré.")
+                continue
+            
+            # Si le SL a été déplacé au-dessus (BUY) ou au-dessous (SELL) du prix d'entrée (ex: BE),
+            # le calcul de RR original n'est plus pertinent pour la *perte* mais il l'est pour le *gain*.
+            # Nous utilisons toujours le SL *original* pour un calcul de RR cohérent.
+            
+            if percent_already_closed >= 0.999: # Quasi tout fermé
+                continue
+                
+            sl_distance_price = abs(pos.price_open - original_sl)
+            if sl_distance_price < self.point: continue
+            
+            current_price = tick.bid if pos.type == mt5.ORDER_TYPE_BUY else tick.ask
+            profit_distance_price = 0.0
+            
+            if pos.type == mt5.ORDER_TYPE_BUY:
+                profit_distance_price = current_price - pos.price_open
+            else: # SELL
+                profit_distance_price = pos.price_open - current_price
+
+            if profit_distance_price <= 0:
+                continue # Trade en perte, pas de TP
+
+            current_rr = profit_distance_price / sl_distance_price
+            
+            # Trouver le plus haut niveau RR atteint qui n'a pas été pris
+            target_level_config = None
+            for level in reversed(levels): # Commencer par le plus haut niveau (ex: R5)
+                rr_target = level.get('rr', 0)
+                # % total qui devrait être fermé à ce niveau
+                percent_to_close_at_this_level = level.get('percent', 0) / 100.0 
+                
+                # Si on atteint le RR cible ET que le % déjà fermé est inférieur au % cible pour ce niveau
+                if current_rr >= rr_target and percent_already_closed < percent_to_close_at_this_level:
+                    target_level_config = level
+                    break # On prend le plus haut niveau éligible
+            
+            if not target_level_config:
+                continue # Aucun nouveau niveau atteint
+                
+            # Calculer le volume à clôturer pour atteindre ce niveau
+            total_percent_to_close = target_level_config.get('percent', 0) / 100.0
+            percent_to_close_now = total_percent_to_close - percent_already_closed
+            
+            if percent_to_close_now <= 0.001: # Marge d'erreur
+                continue
+            
+            volume_to_close = original_volume * percent_to_close_now
+            
+            rr_label = target_level_config.get('rr')
+            self.log.info(f"TP PARTIEL (R{rr_label}) déclenché pour #{pos.ticket} (RR actuel: {current_rr:.2f}). Clôture de {percent_to_close_now*100:.1f}% ({volume_to_close:.2f} lots).")
+            
+            # Appeler l'Executor pour clôturer
+            result = self._executor.close_partial_position(pos.ticket, volume_to_close, magic_number, f"Partial TP R{rr_label}")
+            
+            if result:
+                # Mettre à jour le contexte (via l'executor) pour refléter le nouveau % clôturé
+                self._executor.update_trade_context_partials(pos.ticket, percent_to_close_now)
 
     def _apply_breakeven(self, positions: list, tick, be_cfg: dict):
         trigger_pips = be_cfg.get('trigger_pips', 150)
@@ -232,16 +342,22 @@ class RiskManager:
             pnl_pips = 0.0
             if pos.type == mt5.ORDER_TYPE_BUY:
                 pnl_pips = (tick.bid - pos.price_open) / self.point
+                # Ne déplacer que si le SL actuel est en dessous du prix d'entrée
                 if pos.sl < pos.price_open and pnl_pips >= trigger_pips:
                     breakeven_sl = pos.price_open + (pips_plus * self.point)
-                    self.log.info(f"BREAK-EVEN déclenché pour le ticket #{pos.ticket}. Nouveau SL: {breakeven_sl:.{self.digits}f}")
-                    self._executor.modify_position(pos.ticket, breakeven_sl, pos.tp)
+                    # S'assurer que le nouveau SL est meilleur que l'ancien
+                    if breakeven_sl > pos.sl:
+                        self.log.info(f"BREAK-EVEN déclenché pour le ticket #{pos.ticket}. Nouveau SL: {breakeven_sl:.{self.digits}f}")
+                        self._executor.modify_position(pos.ticket, breakeven_sl, pos.tp)
             elif pos.type == mt5.ORDER_TYPE_SELL:
                 pnl_pips = (pos.price_open - tick.ask) / self.point
+                # Ne déplacer que si le SL actuel est au-dessus du prix d'entrée (ou à 0)
                 if (pos.sl == 0 or pos.sl > pos.price_open) and pnl_pips >= trigger_pips:
                     breakeven_sl = pos.price_open - (pips_plus * self.point)
-                    self.log.info(f"BREAK-EVEN déclenché pour le ticket #{pos.ticket}. Nouveau SL: {breakeven_sl:.{self.digits}f}")
-                    self._executor.modify_position(pos.ticket, breakeven_sl, pos.tp)
+                    # S'assurer que le nouveau SL est meilleur que l'ancien
+                    if (pos.sl == 0 or breakeven_sl < pos.sl):
+                        self.log.info(f"BREAK-EVEN déclenché pour le ticket #{pos.ticket}. Nouveau SL: {breakeven_sl:.{self.digits}f}")
+                        self._executor.modify_position(pos.ticket, breakeven_sl, pos.tp)
     
     def _apply_trailing_stop_atr(self, positions: list, tick, ohlc_data: pd.DataFrame, risk_cfg: dict):
         ts_cfg = risk_cfg.get('trailing_stop_atr', {})
@@ -256,17 +372,21 @@ class RiskManager:
         
         for pos in positions:
             new_sl = pos.sl
+            current_profit = 0.0
+
             if pos.type == mt5.ORDER_TYPE_BUY:
-                if (tick.bid - pos.price_open) >= (atr * activation_multiple):
+                current_profit = (tick.bid - pos.price_open)
+                if current_profit >= (atr * activation_multiple):
                     potential_new_sl = tick.bid - (atr * trailing_multiple)
                     if potential_new_sl > pos.sl:
                         new_sl = potential_new_sl
             elif pos.type == mt5.ORDER_TYPE_SELL:
-                if (pos.price_open - tick.ask) >= (atr * activation_multiple):
+                current_profit = (pos.price_open - tick.ask)
+                if current_profit >= (atr * activation_multiple):
                     potential_new_sl = tick.ask + (atr * trailing_multiple)
                     if new_sl == 0 or potential_new_sl < new_sl:
                         new_sl = potential_new_sl
                         
             if new_sl != pos.sl:
-                self.log.info(f"TRAILING STOP: Mise à jour du SL pour #{pos.ticket} à {new_sl:.{self.digits}f}")
+                self.log.info(f"TRAILING STOP: Mise à jour du SL pour #{pos.ticket} à {new_sl:.{self.digits}f} (Profit: {current_profit:.2f}, ATR: {atr:.5f})")
                 self._executor.modify_position(pos.ticket, new_sl, pos.tp)

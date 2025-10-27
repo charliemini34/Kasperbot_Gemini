@@ -1,17 +1,15 @@
-
 # Fichier: src/shared_state.py
-# Version: 9.1.0 (UI-Init-Fix)
-# Dépendances: threading, logging, collections.deque
-# Description: Ajoute initialize_symbol_data et supprime l'ImportError (P5.1).
+# Version: 9.2.0 (Implémentation R2)
+# Dépendances: threading, logging, collections.deque, time
+# Description: Ajout du verrouillage par symbole pour idempotence (R2).
 
 import threading
 import logging
+import time
 from collections import deque
 
-# La ligne erronée (ImportError) a été supprimée de ce module.
-
 class SharedState:
-    """Classe thread-safe pour le partage d'état, v9.1 avec initialisation UI."""
+    """Classe thread-safe pour le partage d'état, v9.2 avec verrouillage idempotence."""
     def __init__(self, max_logs=200):
         self.lock = threading.Lock()
         self.status = {
@@ -27,6 +25,7 @@ class SharedState:
         self.config_changed_flag = False
         self._shutdown = False
         self.backtest_status = {'running': False, 'progress': 0, 'results': None}
+        self.symbol_locks = {} # (R2) Dictionnaire pour le verrouillage d'idempotence {symbol: timestamp_expiration}
 
     def update_status(self, status, message, is_emergency=False):
         with self.lock:
@@ -104,6 +103,32 @@ class SharedState:
         
     def is_shutdown(self):
         with self.lock: return self._shutdown
+
+    # (R2) Fonctions de verrouillage d'idempotence
+    def lock_symbol(self, symbol: str, ttl_seconds: int = 300):
+        """Verrouille un symbole pour N secondes pour éviter les trades idempotents."""
+        with self.lock:
+            lock_until = time.time() + ttl_seconds
+            self.symbol_locks[symbol] = lock_until
+            logging.debug(f"Symbole {symbol} verrouillé jusqu'à {datetime.fromtimestamp(lock_until).isoformat()}")
+            
+    def is_symbol_locked(self, symbol: str) -> bool:
+        """Vérifie si un symbole est activement verrouillé."""
+        with self.lock:
+            if symbol not in self.symbol_locks:
+                return False
+            
+            if time.time() < self.symbol_locks[symbol]:
+                return True
+            else:
+                # Nettoyer le verrou expiré
+                try:
+                    del self.symbol_locks[symbol]
+                except KeyError:
+                    pass
+                logging.debug(f"Verrou d'idempotence expiré pour {symbol}.")
+                return False
+    # (Fin R2)
         
     def start_backtest(self):
         with self.lock: self.backtest_status = {'running': True, 'progress': 0, 'results': None}

@@ -1,8 +1,7 @@
-
 # Fichier: main.py
-# Version: 17.0.3 (Executor-Call-Fix) # <-- Version mise à jour
+# Version: 18.0.0 (Implémentation R1, R2)
 # Dépendances: MetaTrader5, pytz, PyYAML, Flask
-# Description: Ajuste l'appel à execute_trade pour passer trade_signal.
+# Description: Ajout du verrouillage d'idempotence (R2) et passage du contexte au RiskManager (R1).
 
 import time
 import threading
@@ -22,7 +21,8 @@ from src.api.server import start_api_server
 from src.shared_state import SharedState, LogHandler
 from src.analysis.performance_analyzer import PerformanceAnalyzer
 
-# ... (le reste des fonctions setup_logging, load_yaml, etc. reste inchangé) ...
+# ... (fonctions setup_logging, load_yaml, get_timeframe_seconds, validate_symbols, is_within_trading_session restent inchangées) ...
+
 def setup_logging(state: SharedState):
     """Configure la journalisation pour la console, les fichiers et l'interface utilisateur."""
     log_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
@@ -113,7 +113,7 @@ def is_within_trading_session(symbol: str, config: dict) -> bool:
 
 def main_trading_loop(state: SharedState):
     """Boucle principale qui orchestre le bot de trading."""
-    logging.info("Démarrage de la boucle de trading v17.0.3 (Executor-Call-Fix)...") # Version mise à jour
+    logging.info("Démarrage de la boucle de trading v18.0.0 (R1, R2, R3)...")
     config = load_yaml('config.yaml')
     state.update_config(config)
 
@@ -149,7 +149,7 @@ def main_trading_loop(state: SharedState):
                 logging.info("Changement de configuration détecté. Rechargement...")
                 config = load_yaml('config.yaml')
                 state.update_config(config)
-                executor = MT5Executor(connector.get_connection(), config)
+                executor = MT5Executor(connector.get_connection(), config) # Recréer l'executor avec la nouvelle config
                 symbols_to_trade = validate_symbols(config['trading_settings'].get('symbols', []), connector.get_connection())
                 state.initialize_symbol_data(symbols_to_trade)
                 state.clear_config_changed_flag()
@@ -185,7 +185,15 @@ def main_trading_loop(state: SharedState):
                         ohlc_data_for_pos = connector.get_ohlc(symbol, timeframe, 200)
                         tick = connector.get_tick(symbol)
                         if tick and ohlc_data_for_pos is not None and not ohlc_data_for_pos.empty:
-                            rm_pos.manage_open_positions(positions, tick, ohlc_data_for_pos)
+                            
+                            # (R1) Appel modifié pour passer le contexte de trade (TP Partiels)
+                            rm_pos.manage_open_positions(
+                                positions, 
+                                tick, 
+                                ohlc_data_for_pos,
+                                executor._trade_context # <-- Ajout R1
+                            )
+                            
                     except ValueError as e:
                         logging.error(f"Erreur de validation pour la gestion des positions sur {symbol}: {e}")
                     except Exception as e:
@@ -210,6 +218,11 @@ def main_trading_loop(state: SharedState):
                 try:
                     if not is_within_trading_session(symbol, config): continue
                     if any(pos.symbol == symbol for pos in all_bot_positions): continue
+                    
+                    # (R2) Vérification Idempotence
+                    if state.is_symbol_locked(symbol):
+                        logging.debug(f"Symbole {symbol} verrouillé (idempotence). Scan ignoré.")
+                        continue
 
                     risk_manager = RiskManager(config, executor, symbol)
                     timeframe = config['trading_settings'].get('timeframe', 'M15')
@@ -226,17 +239,19 @@ def main_trading_loop(state: SharedState):
                     if trade_signal and not is_first_cycle:
                         logging.info(f"SIGNAL VALIDE sur {symbol}: [{trade_signal['pattern']}] direction {trade_signal['direction']}.")
 
-                        # Recalcul des params via RiskManager est fait DANS execute_trade maintenant
-                        # On passe directement à l'exécution si signal valide
+                        # (R2) Verrouillage Idempotence
+                        ttl_lock = config['trading_settings'].get('idempotency_lock_seconds', 300)
+                        state.lock_symbol(symbol, ttl_lock)
+                        
+                        # Recalcul des params via RiskManager est fait DANS execute_trade
 
-                        # --- AJUSTEMENT DE L'APPEL ---
-                        # Passer le trade_signal à execute_trade
+                        # --- APPEL (inchangé depuis v17.0.3) ---
                         executor.execute_trade(
                             account_info, risk_manager, symbol, trade_signal['direction'],
                             ohlc_data, trade_signal['pattern'], magic_number,
-                            trade_signal # <-- Ajout du dictionnaire trade_signal complet
+                            trade_signal
                         )
-                        # --- FIN AJUSTEMENT ---
+                        # --- FIN APPEL ---
 
                 except ValueError as e: logging.error(f"Impossible de traiter '{symbol}': {e}.")
                 except Exception as e: logging.error(f"Erreur analyse sur {symbol}: {e}", exc_info=True)
