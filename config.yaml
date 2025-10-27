@@ -11,7 +11,7 @@ learning:
   enabled: false
   min_trades_for_analysis: 10
 mt5_credentials:
-  login: 10004952
+  login: 10008432
   password: jsne80aX!
   server: Axi-US50-Demo
 pattern_detection:
@@ -52,7 +52,7 @@ risk_management:
     - percentage: 30
       rr: 2
     move_sl_to_be_after_tp1: true
-  risk_per_trade: 1
+  risk_per_trade: 0.01
   sl_buffer_pips: 5
   sl_strategy: SMC_STRUCTURE
   tp_strategy: SMC_LIQUIDITY_TARGET
