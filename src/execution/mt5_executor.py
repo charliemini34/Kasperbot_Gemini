@@ -1,5 +1,5 @@
 # Fichier: src/execution/mt5_executor.py
-# Version: 18.0.1 (Fix R3.1 - PreCheck RetCode)
+# Version: 18.0.2 (Fix R3.2 - Log 'No Money')
 # Dépendances: MetaTrader5, pandas, logging, math, time, src.journal.professional_journal
 
 import MetaTrader5 as mt5
@@ -11,6 +11,9 @@ import time
 from datetime import datetime, timedelta
 from src.constants import BUY, SELL
 from src.journal.professional_journal import ProfessionalJournal
+
+# (R3.2) Constante pour 'No Money'
+TRADE_RETCODE_NO_MONEY = 10019
 
 class MT5Executor:
     def __init__(self, mt5_connection, config: dict):
@@ -132,18 +135,20 @@ class MT5Executor:
         try:
             check_result = self._mt5.order_check(request)
             
-            # --- FIX R3.1 ---
-            # order_check() retourne retcode=0 pour SUCCÈS (Done)
-            # et un retcode != 0 pour ÉCHEC
-            if not check_result or check_result.retcode != 0: # <-- CORRECTION (était != mt5.TRADE_RETCODE_DONE)
-            # --- FIN FIX R3.1 ---
-            
+            # (R3.1) order_check() retourne retcode=0 pour SUCCÈS
+            if not check_result or check_result.retcode != 0:
                 error_code = check_result.retcode if check_result else -1
                 error_comment = check_result.comment if check_result else "order_check a retourné None"
                 
                 self.log.error(f"ÉCHEC PRÉ-CHECK Marge/Volume: Code={error_code}, Commentaire={error_comment}")
-                if check_result:
+                
+                # --- FIX R3.2 ---
+                # Ne pas afficher les détails de marge s'ils sont 0.0 car l'API MT5
+                # ne les remplit pas en cas de "No Money" (10019)
+                if check_result and check_result.retcode != TRADE_RETCODE_NO_MONEY:
+                # --- FIN FIX R3.2 ---
                     self.log.error(f"Détails Pré-check: Solde requis: {check_result.balance}, Marge requise: {check_result.margin}, Marge libre: {check_result.margin_free}")
+                
                 return None
             
             self.log.debug(f"Pré-check réussi (Code 0). Marge libre restante estimée: {check_result.margin_free:.2f}")
@@ -164,7 +169,6 @@ class MT5Executor:
             self.log.error(f"Échec critique de l'envoi. order_send a retourné None. Erreur MT5: {self._mt5.last_error()}")
             return None
 
-        # (R3.1) order_send() retourne mt5.TRADE_RETCODE_DONE (10009) pour SUCCÈS
         if result.retcode == mt5.TRADE_RETCODE_DONE:
             self.log.info(f"Ordre placé avec succès: Ticket #{result.order}, Deal #{result.deal}, Retcode: {result.retcode}")
             return result
@@ -229,10 +233,14 @@ class MT5Executor:
             # (R3.1) Pré-check de la clôture partielle
             check_result = self._mt5.order_check(request)
             
-            # --- FIX R3.1 ---
-            if not check_result or check_result.retcode != 0: # <-- CORRECTION
-            # --- FIN FIX R3.1 ---
-                 self.log.error(f"TP Partiel: Échec Pré-check pour clôture {position_ticket}: {check_result.comment if check_result else 'N/A'} (Code: {check_result.retcode if check_result else 'N/A'})")
+            if not check_result or check_result.retcode != 0:
+                 error_code = check_result.retcode if check_result else -1
+                 error_comment = check_result.comment if check_result else 'N/A'
+                 self.log.error(f"TP Partiel: Échec Pré-check pour clôture {position_ticket}: {error_comment} (Code: {error_code})")
+                 
+                 # (R3.2) Log amélioré
+                 if check_result and check_result.retcode != TRADE_RETCODE_NO_MONEY:
+                     self.log.error(f"Détails Pré-check Clôture: Marge requise: {check_result.margin}, Marge libre: {check_result.margin_free}")
                  return None
 
             # Envoyer l'ordre de clôture
@@ -345,25 +353,24 @@ class MT5Executor:
         try:
             check_result = self._mt5.order_check(request)
             
-            # --- FIX R3.1 ---
-            if not check_result or check_result.retcode != 0: # <-- CORRECTION
-            # --- FIN FIX R3.1 ---
-            
+            if not check_result or check_result.retcode != 0:
                  error_code = check_result.retcode if check_result else -1
                  error_comment = check_result.comment if check_result else "order_check a retourné None"
                  self.log.error(f"Échec Pré-check modification #{ticket}: Code={error_code}, Commentaire={error_comment}")
+                 
+                 # (R3.2) Log amélioré
+                 if check_result and check_result.retcode != TRADE_RETCODE_NO_MONEY:
+                     self.log.error(f"Détails Pré-check SLTP: Marge requise: {check_result.margin}, Marge libre: {check_result.margin_free}")
                  return
         except Exception as e:
             self.log.error(f"Exception lors du Pré-check de modification SL/TP pour #{ticket}: {e}", exc_info=True)
             return
         
-        # Si le Pré-check est OK (Code=0), on envoie l'ordre.
         self.log.debug(f"Pré-check modification SLTP pour #{ticket} réussi. Envoi de l'ordre...")
 
         # Envoi de l'ordre de modification
         result = self._mt5.order_send(request)
 
-        # (R3.1) order_send() retourne mt5.TRADE_RETCODE_DONE (10009) pour SUCCÈS
         if not result or result.retcode != mt5.TRADE_RETCODE_DONE:
             error_comment = result.comment if result else "Résultat vide de order_send"
             error_code = result.retcode if result else "N/A"

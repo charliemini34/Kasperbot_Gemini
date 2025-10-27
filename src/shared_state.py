@@ -1,15 +1,16 @@
 # Fichier: src/shared_state.py
-# Version: 9.2.0 (Implémentation R2)
-# Dépendances: threading, logging, collections.deque, time
-# Description: Ajout du verrouillage par symbole pour idempotence (R2).
+# Version: 9.2.1 (Fix R2.1 - Import NameError)
+# Dépendances: threading, logging, collections.deque, time, datetime
+# Description: Ajout de l'import 'datetime' manquant pour la fonction lock_symbol (R2.1).
 
 import threading
 import logging
 import time
 from collections import deque
+from datetime import datetime # <-- FIX R2.1: Import manquant
 
 class SharedState:
-    """Classe thread-safe pour le partage d'état, v9.2 avec verrouillage idempotence."""
+    """Classe thread-safe pour le partage d'état, v9.2.1 avec fix import."""
     def __init__(self, max_logs=200):
         self.lock = threading.Lock()
         self.status = {
@@ -25,7 +26,7 @@ class SharedState:
         self.config_changed_flag = False
         self._shutdown = False
         self.backtest_status = {'running': False, 'progress': 0, 'results': None}
-        self.symbol_locks = {} # (R2) Dictionnaire pour le verrouillage d'idempotence {symbol: timestamp_expiration}
+        self.symbol_locks = {} 
 
     def update_status(self, status, message, is_emergency=False):
         with self.lock:
@@ -51,13 +52,10 @@ class SharedState:
         Assure que l'UI affiche les symboles surveillés dès le démarrage.
         """
         with self.lock:
-            # Ajouter les nouveaux symboles s'ils n'existent pas
             for symbol in symbols_list:
                 if symbol not in self.status['symbol_data']:
-                    # Initialiser avec une structure vide que l'UI peut lire
                     self.status['symbol_data'][symbol] = {'patterns': {}} 
             
-            # Supprimer les anciens symboles (si la config a changé)
             current_symbols_in_state = list(self.status['symbol_data'].keys())
             for symbol in current_symbols_in_state:
                 if symbol not in symbols_list:
@@ -110,6 +108,7 @@ class SharedState:
         with self.lock:
             lock_until = time.time() + ttl_seconds
             self.symbol_locks[symbol] = lock_until
+            # (R2.1) Cet appel nécessite 'from datetime import datetime'
             logging.debug(f"Symbole {symbol} verrouillé jusqu'à {datetime.fromtimestamp(lock_until).isoformat()}")
             
     def is_symbol_locked(self, symbol: str) -> bool:
@@ -121,14 +120,12 @@ class SharedState:
             if time.time() < self.symbol_locks[symbol]:
                 return True
             else:
-                # Nettoyer le verrou expiré
                 try:
                     del self.symbol_locks[symbol]
                 except KeyError:
                     pass
                 logging.debug(f"Verrou d'idempotence expiré pour {symbol}.")
                 return False
-    # (Fin R2)
         
     def start_backtest(self):
         with self.lock: self.backtest_status = {'running': True, 'progress': 0, 'results': None}

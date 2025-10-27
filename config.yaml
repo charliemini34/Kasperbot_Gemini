@@ -11,9 +11,9 @@ learning:
   enabled: false
   min_trades_for_analysis: 10
 mt5_credentials:
-  login: 10008432
-  password: jsne80aX!
-  server: Axi-US50-Demo
+  login: 1511921064
+  password: r9r?N89G@H
+  server: FTMO-Demo
 pattern_detection:
   CHANGE_OF_CHARACTER: true
   INBALANCE: true
