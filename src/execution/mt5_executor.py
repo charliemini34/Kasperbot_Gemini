@@ -1,5 +1,5 @@
 # Fichier: src/execution/mt5_executor.py
-# Version: 18.0.2 (Fix R3.2 - Log 'No Money')
+# Version: 18.0.3 (Fix R5 - Contexte Deal #0)
 # Dépendances: MetaTrader5, pandas, logging, math, time, src.journal.professional_journal
 
 import MetaTrader5 as mt5
@@ -12,7 +12,6 @@ from datetime import datetime, timedelta
 from src.constants import BUY, SELL
 from src.journal.professional_journal import ProfessionalJournal
 
-# (R3.2) Constante pour 'No Money'
 TRADE_RETCODE_NO_MONEY = 10019
 
 class MT5Executor:
@@ -64,25 +63,37 @@ class MT5Executor:
             self.log.info(f"Paramètres de l'ordre: {direction} {volume:.2f} lot(s) de {symbol} @ {price:.5f}, SL={sl:.5f}, TP={tp:.5f}")
             result = self.place_order(symbol, trade_type, volume, price, sl, tp, magic_number, pattern_name)
 
-            if result and result.order > 0 and result.deal > 0:
+            # --- FIX R5 (Contexte Deal #0) ---
+            # Nous vérifions result.order, car result.deal peut être 0 (vu dans les logs FTMO)
+            if result and result.order > 0:
+            # --- FIN FIX R5 ---
+            
                 position_id = 0
                 try:
-                    deal_info = self._mt5.history_deals_get(ticket=result.deal)
-                    if deal_info and len(deal_info) > 0:
-                        position_id = deal_info[0].position_id
-                    else:
-                        self.log.warning(f"Deal #{result.deal} non trouvé immédiatement. Tentative 2...")
-                        time.sleep(0.5)
-                        deal_info = self._mt5.history_deals_get(ticket=result.deal)
-                        if deal_info and len(deal_info) > 0:
-                            position_id = deal_info[0].position_id
+                    # R5: Logique robuste pour trouver le deal/position_id basé sur l'ID d'ORDRE
+                    deal_info = None
+                    # Tenter 5 fois (max 2.5s) de trouver le deal correspondant
+                    for i in range(5): 
+                        # Récupérer les deals les plus récents
+                        deals = self._mt5.history_deals_get(datetime.utcnow() - timedelta(minutes=5), datetime.utcnow()) 
+                        if deals:
+                            # Chercher le deal correspondant à *notre* ordre
+                            deal_info = next((d for d in reversed(deals) if d.order == result.order), None)
+                            if deal_info:
+                                position_id = deal_info.position_id
+                                self.log.debug(f"Deal trouvé pour Ordre #{result.order} (Deal #{deal_info.ticket}, PosID #{position_id})")
+                                break # Trouvé
                         
+                        if i < 4: # Ne pas loguer la dernière attente
+                            self.log.warning(f"Deal non trouvé pour Ordre #{result.order}. Tentative {i+1}/5...")
+                            time.sleep(0.5) # Attendre que le deal apparaisse
+                    
                     if position_id == 0:
-                        self.log.error(f"Impossible de récupérer le PositionID pour le Deal #{result.deal} (Ordre #{result.order}). Contexte TP partiel échoué.")
-                        return
+                        self.log.error(f"Impossible de récupérer le PositionID (Deal) pour l'Ordre #{result.order} après 5 tentatives. Contexte TP partiel échoué.")
+                        return 
                         
                 except Exception as e:
-                     self.log.error(f"Exception récupération PositionID pour Deal #{result.deal}: {e}. Contexte TP partiel échoué.")
+                     self.log.error(f"Exception récupération PositionID pour Ordre #{result.order}: {e}. Contexte TP partiel échoué.", exc_info=True)
                      return
 
                 atr_value = 0
@@ -91,7 +102,7 @@ class MT5Executor:
                 except Exception as e:
                     self.log.warning(f"Impossible de calculer l'ATR pour le contexte du trade {symbol}: {e}")
 
-                self.log.info(f"Ordre #{result.order} (Deal #{result.deal}) a créé/modifié la Position #{position_id}.")
+                self.log.info(f"Ordre #{result.order} (PosID #{position_id}) enregistré pour le contexte R1.")
                 
                 if position_id in self._trade_context:
                      self.log.warning(f"La Position #{position_id} existe déjà dans le contexte. Écrasement (gestion renforcement non implémentée).")
@@ -130,23 +141,17 @@ class MT5Executor:
             "type_filling": mt5.ORDER_FILLING_IOC,
         }
 
-        # (R3.1) Pré-check de Marge et Validité
         self.log.debug(f"Vérification de la requête (Pré-check): {request}")
         try:
             check_result = self._mt5.order_check(request)
             
-            # (R3.1) order_check() retourne retcode=0 pour SUCCÈS
             if not check_result or check_result.retcode != 0:
                 error_code = check_result.retcode if check_result else -1
                 error_comment = check_result.comment if check_result else "order_check a retourné None"
                 
                 self.log.error(f"ÉCHEC PRÉ-CHECK Marge/Volume: Code={error_code}, Commentaire={error_comment}")
                 
-                # --- FIX R3.2 ---
-                # Ne pas afficher les détails de marge s'ils sont 0.0 car l'API MT5
-                # ne les remplit pas en cas de "No Money" (10019)
                 if check_result and check_result.retcode != TRADE_RETCODE_NO_MONEY:
-                # --- FIN FIX R3.2 ---
                     self.log.error(f"Détails Pré-check: Solde requis: {check_result.balance}, Marge requise: {check_result.margin}, Marge libre: {check_result.margin_free}")
                 
                 return None
@@ -156,7 +161,6 @@ class MT5Executor:
         except Exception as e:
             self.log.critical(f"Exception lors du Pré-check : {e}", exc_info=True)
             return None
-        # (Fin R3.1)
 
         self.log.debug(f"Envoi de la requête d'ordre : {request}")
         try:
@@ -170,6 +174,7 @@ class MT5Executor:
             return None
 
         if result.retcode == mt5.TRADE_RETCODE_DONE:
+            # (R5) Log modifié pour inclure le deal (même s'il est 0)
             self.log.info(f"Ordre placé avec succès: Ticket #{result.order}, Deal #{result.deal}, Retcode: {result.retcode}")
             return result
         else:
@@ -230,7 +235,6 @@ class MT5Executor:
                 "type_filling": mt5.ORDER_FILLING_IOC,
             }
 
-            # (R3.1) Pré-check de la clôture partielle
             check_result = self._mt5.order_check(request)
             
             if not check_result or check_result.retcode != 0:
@@ -238,12 +242,10 @@ class MT5Executor:
                  error_comment = check_result.comment if check_result else 'N/A'
                  self.log.error(f"TP Partiel: Échec Pré-check pour clôture {position_ticket}: {error_comment} (Code: {error_code})")
                  
-                 # (R3.2) Log amélioré
                  if check_result and check_result.retcode != TRADE_RETCODE_NO_MONEY:
                      self.log.error(f"Détails Pré-check Clôture: Marge requise: {check_result.margin}, Marge libre: {check_result.margin_free}")
                  return None
 
-            # Envoyer l'ordre de clôture
             result = self._mt5.order_send(request)
             
             if result and result.retcode == mt5.TRADE_RETCODE_DONE:
@@ -349,7 +351,6 @@ class MT5Executor:
             "tp": float(tp)
         }
         
-        # (R3.1) Pré-check de la modification SL/TP
         try:
             check_result = self._mt5.order_check(request)
             
@@ -358,7 +359,6 @@ class MT5Executor:
                  error_comment = check_result.comment if check_result else "order_check a retourné None"
                  self.log.error(f"Échec Pré-check modification #{ticket}: Code={error_code}, Commentaire={error_comment}")
                  
-                 # (R3.2) Log amélioré
                  if check_result and check_result.retcode != TRADE_RETCODE_NO_MONEY:
                      self.log.error(f"Détails Pré-check SLTP: Marge requise: {check_result.margin}, Marge libre: {check_result.margin_free}")
                  return
@@ -368,7 +368,6 @@ class MT5Executor:
         
         self.log.debug(f"Pré-check modification SLTP pour #{ticket} réussi. Envoi de l'ordre...")
 
-        # Envoi de l'ordre de modification
         result = self._mt5.order_send(request)
 
         if not result or result.retcode != mt5.TRADE_RETCODE_DONE:
