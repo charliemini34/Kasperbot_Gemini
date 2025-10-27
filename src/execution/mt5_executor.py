@@ -1,5 +1,5 @@
 # Fichier: src/execution/mt5_executor.py
-# Version: 18.0.3 (Fix R5 - Contexte Deal #0)
+# Version: 18.0.4 (Fix R6 - Contexte via positions_get)
 # Dépendances: MetaTrader5, pandas, logging, math, time, src.journal.professional_journal
 
 import MetaTrader5 as mt5
@@ -63,34 +63,48 @@ class MT5Executor:
             self.log.info(f"Paramètres de l'ordre: {direction} {volume:.2f} lot(s) de {symbol} @ {price:.5f}, SL={sl:.5f}, TP={tp:.5f}")
             result = self.place_order(symbol, trade_type, volume, price, sl, tp, magic_number, pattern_name)
 
-            # --- FIX R5 (Contexte Deal #0) ---
-            # Nous vérifions result.order, car result.deal peut être 0 (vu dans les logs FTMO)
+            # (R5) Vérifier si l'ordre a été accepté
             if result and result.order > 0:
-            # --- FIN FIX R5 ---
-            
                 position_id = 0
                 try:
-                    # R5: Logique robuste pour trouver le deal/position_id basé sur l'ID d'ORDRE
-                    deal_info = None
-                    # Tenter 5 fois (max 2.5s) de trouver le deal correspondant
-                    for i in range(5): 
-                        # Récupérer les deals les plus récents
-                        deals = self._mt5.history_deals_get(datetime.utcnow() - timedelta(minutes=5), datetime.utcnow()) 
-                        if deals:
-                            # Chercher le deal correspondant à *notre* ordre
-                            deal_info = next((d for d in reversed(deals) if d.order == result.order), None)
-                            if deal_info:
-                                position_id = deal_info.position_id
-                                self.log.debug(f"Deal trouvé pour Ordre #{result.order} (Deal #{deal_info.ticket}, PosID #{position_id})")
+                    # --- FIX R6 (Contexte via positions_get) ---
+                    # Logique plus robuste : interroger les positions ouvertes (instantané)
+                    # au lieu de l'historique des deals (latence).
+                    # Sur FTMO (Hedging), position.ticket == order.ticket
+                    
+                    pos_info = None
+                    for i in range(5):
+                        positions = self._mt5.positions_get(symbol=symbol)
+                        if positions:
+                            # Trouver la position où le Ticket de Position == Ticket d'Ordre
+                            pos_info = next((p for p in positions if p.ticket == result.order), None)
+                            if pos_info:
+                                position_id = pos_info.ticket # position_id EST le ticket
+                                self.log.debug(f"Position (R6) trouvée pour Ordre #{result.order} (Position Ticket #{position_id})")
                                 break # Trouvé
                         
-                        if i < 4: # Ne pas loguer la dernière attente
-                            self.log.warning(f"Deal non trouvé pour Ordre #{result.order}. Tentative {i+1}/5...")
-                            time.sleep(0.5) # Attendre que le deal apparaisse
+                        if i < 4:
+                            self.log.warning(f"Position (R6) non trouvée pour Ordre #{result.order}. Tentative {i+1}/5...")
+                            time.sleep(0.5)
                     
+                    # (R6) Fallback vers l'ancienne logique R5 si R6 échoue
                     if position_id == 0:
-                        self.log.error(f"Impossible de récupérer le PositionID (Deal) pour l'Ordre #{result.order} après 5 tentatives. Contexte TP partiel échoué.")
+                         self.log.warning(f"Position (R6) non trouvée. Fallback vers l'historique des deals (R5)...")
+                         deal_info = None
+                         for i in range(5):
+                             deals = self._mt5.history_deals_get(datetime.utcnow() - timedelta(minutes=5), datetime.utcnow())
+                             if deals:
+                                 deal_info = next((d for d in reversed(deals) if d.order == result.order), None)
+                                 if deal_info:
+                                     position_id = deal_info.position_id
+                                     self.log.debug(f"Deal (Fallback R5) trouvé pour Ordre #{result.order} (Deal #{deal_info.ticket}, PosID #{position_id})")
+                                     break
+                             if i < 4: time.sleep(0.5)
+
+                    if position_id == 0:
+                        self.log.error(f"Impossible de récupérer le PositionID (R5/R6) pour l'Ordre #{result.order} après 10 tentatives. Contexte TP partiel échoué.")
                         return 
+                    # --- FIN FIX R6 ---
                         
                 except Exception as e:
                      self.log.error(f"Exception récupération PositionID pour Ordre #{result.order}: {e}. Contexte TP partiel échoué.", exc_info=True)
@@ -174,7 +188,6 @@ class MT5Executor:
             return None
 
         if result.retcode == mt5.TRADE_RETCODE_DONE:
-            # (R5) Log modifié pour inclure le deal (même s'il est 0)
             self.log.info(f"Ordre placé avec succès: Ticket #{result.order}, Deal #{result.deal}, Retcode: {result.retcode}")
             return result
         else:
@@ -363,7 +376,7 @@ class MT5Executor:
                      self.log.error(f"Détails Pré-check SLTP: Marge requise: {check_result.margin}, Marge libre: {check_result.margin_free}")
                  return
         except Exception as e:
-            self.log.error(f"Exception lors du Pré-check de modification SL/TP pour #{ticket}: {e}", exc_info=True)
+            self.log.error(f"Exception lors du Pré-check de modification SLTP pour #{ticket}: {e}", exc_info=True)
             return
         
         self.log.debug(f"Pré-check modification SLTP pour #{ticket} réussi. Envoi de l'ordre...")
