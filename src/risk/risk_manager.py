@@ -1,5 +1,5 @@
 # Fichier: src/risk/risk_manager.py
-# Version: 19.0.8 (Fix R15 - Override Key Mapping)
+# Version: 19.0.9 (Fix R16 - AttributeError config)
 # Dépendances: MetaTrader5, pandas, numpy, logging, pytz, src.constants
 
 import MetaTrader5 as mt5
@@ -16,11 +16,11 @@ from src.constants import BUY, SELL, PATTERN_INBALANCE, PATTERN_ORDER_BLOCK
 class RiskManager:
     """
     Gère le risque avec entrée limite SMC (R7) et override contrat (R4).
-    v19.0.8: Corrige mapping clé override contract_size (R15).
+    v19.0.9: Corrige AttributeError config (R16).
     """
     def __init__(self, config: dict, executor, symbol: str):
         self.log = logging.getLogger(self.__class__.__name__)
-        self._config: Dict = config
+        self._config: Dict = config # Stocké comme _config
         self._executor = executor
         self._symbol: str = symbol
 
@@ -36,12 +36,11 @@ class RiskManager:
 
         self.symbol_info: Dict[str, Any] = self._apply_overrides(self.symbol_info_mt5)
 
-    # --- R15 : Fonction modifiée pour gérer le mapping des clés ---
     def _apply_overrides(self, mt5_info) -> Dict[str, Any]:
         """Applique overrides, gère mapping clés, retourne DICTIONNAIRE."""
         overrides = self._config.get('symbol_overrides', {}).get(self._symbol, {})
         info_dict = {}
-        fields_to_copy = [ # Clés MT5
+        fields_to_copy = [
             'name', 'description', 'currency_base', 'currency_profit', 'currency_margin',
             'trade_contract_size', 'volume_min', 'volume_max', 'volume_step',
             'point', 'digits', 'spread', 'spread_float', 'trade_mode',
@@ -50,32 +49,20 @@ class RiskManager:
         ]
         for field in fields_to_copy:
              if hasattr(mt5_info, field): info_dict[field] = getattr(mt5_info, field)
-
         if not overrides: return info_dict
-
         applied_list = []
         for config_key, value in overrides.items():
-            # --- FIX R15: Mapper la clé du config vers la clé MT5 ---
             mt5_key = config_key
-            if config_key == 'contract_size':
-                mt5_key = 'trade_contract_size'
-            # Ajoutez d'autres mappings si nécessaire
-            # --- FIN FIX R15 ---
-
-            if mt5_key in info_dict: # Vérifier avec la clé MT5 mappée
+            if config_key == 'contract_size': mt5_key = 'trade_contract_size'
+            if mt5_key in info_dict:
                 try:
                     original_type = type(info_dict[mt5_key])
-                    info_dict[mt5_key] = original_type(value) # Appliquer sur la clé MT5
-                    applied_list.append(f"{mt5_key}({config_key})={info_dict[mt5_key]}") # Log informatif
-                except Exception as e:
-                     self.log.error(f"Erreur override '{config_key}={value}' (->{mt5_key}) pour {self._symbol}: {e}")
-            else:
-                 self.log.warning(f"Override ignoré: Attribut '{config_key}' (mappé vers '{mt5_key}') non trouvé/copié pour {self._symbol}.")
-
-        if applied_list:
-             self.log.info(f"Overrides pour {self._symbol}: {', '.join(applied_list)}")
+                    info_dict[mt5_key] = original_type(value)
+                    applied_list.append(f"{mt5_key}({config_key})={info_dict[mt5_key]}")
+                except Exception as e: self.log.error(f"Erreur override '{config_key}={value}' (->{mt5_key}) pour {self._symbol}: {e}")
+            else: self.log.warning(f"Override ignoré: Attribut '{config_key}' (->'{mt5_key}') non trouvé pour {self._symbol}.")
+        if applied_list: self.log.info(f"Overrides pour {self._symbol}: {', '.join(applied_list)}")
         return info_dict
-    # --- Fin R15 ---
 
     def is_daily_loss_limit_reached(self) -> Tuple[bool, float]:
         # ... (Logique inchangée) ...
@@ -122,16 +109,28 @@ class RiskManager:
             return volume,entry_limit,sl_final,tp_final
         except Exception as e: self.log.error(f"Erreur calcul params limite : {e}",exc_info=True); return 0.0,0.0,0.0,0.0
 
+    # --- R16 : Correction AttributeError config ---
     def _calculate_limit_entry_price(self, z_start, z_end, pattern, direction) -> float:
-        # ... (Logique inchangée) ...
-        cfg=self.config.get('pattern_detection',{}).get('entry_logic',{});level=0.5
+        """Calcule prix entrée limite basé sur config."""
+        # Utiliser self._config au lieu de self.config
+        cfg = self._config.get('pattern_detection', {}).get('entry_logic', {})
+        level = 0.5 # Défaut milieu
         try:
-            if pattern==PATTERN_INBALANCE: level=cfg.get('fvg_entry_level',0.5)
-            elif pattern==PATTERN_ORDER_BLOCK: level=cfg.get('ob_entry_level',0.0)
-            zone_min,zone_max=min(z_start,z_end),max(z_start,z_end);zone_size=zone_max-zone_min
-            entry=zone_max-(zone_size*level) if direction==BUY else zone_min+(zone_size*level)
-            return round(entry,self.digits)
-        except Exception as e: self.log.error(f"Erreur calcul entrée limite {pattern}: {e}"); return 0.0
+            if pattern == PATTERN_INBALANCE:
+                 level = cfg.get('fvg_entry_level', 0.5)
+            elif pattern == PATTERN_ORDER_BLOCK:
+                 level = cfg.get('ob_entry_level', 0.0)
+
+            zone_min, zone_max = min(z_start, z_end), max(z_start, z_end)
+            zone_size = zone_max - zone_min
+
+            entry_price = zone_max - (zone_size * level) if direction == BUY else zone_min + (zone_size * level)
+
+            return round(entry_price, self.digits)
+        except Exception as e:
+            self.log.error(f"Erreur calcul entrée limite {pattern}: {e}")
+            return 0.0
+    # --- Fin R16 ---
 
     def _calculate_final_sl(self, sl_structural, direction) -> float:
         # ... (Logique inchangée) ...
@@ -140,7 +139,7 @@ class RiskManager:
         return round(sl,self.digits)
 
     def _calculate_volume(self, equity: float, risk_pct: float, entry: float, sl: float) -> float:
-        # ... (Logique inchangée depuis v19.0.5) ...
+        # ... (Logique inchangée) ...
         self.log.debug("--- Calcul Volume (R4/R9 Overrides actifs via dict) ---")
         try:
             lev = self.account_info.leverage; cs = self.symbol_info.get('trade_contract_size',0); pc = self.symbol_info.get('currency_profit','')
@@ -198,7 +197,7 @@ class RiskManager:
         if cfg.get('trailing_stop_atr', {}).get('enabled', False): self._apply_trailing_stop_atr(positions, tick, ohlc, cfg)
 
     def _apply_partial_tp(self, positions: list, tick, trade_context: dict, partial_tp_cfg: dict):
-        # ... (Logique inchangée depuis v19.0.6 - Fix R13 OK) ...
+        # ... (Logique inchangée) ...
         levels = sorted(partial_tp_cfg.get('levels', []), key=lambda x: x.get('rr', 0))
         magic_number = self._config.get('trading_settings', {}).get('magic_number', 0)
         if not levels: return
@@ -234,7 +233,7 @@ class RiskManager:
                      if is_better: self.log.info(f"SL->BE+ ({be_sl:.5f}) après TP1 #{pos.ticket}"); self._executor.modify_position(pos.ticket, be_sl, pos.tp)
 
     def _apply_breakeven(self, positions: list, tick, cfg: dict):
-        # ... (Logique inchangée depuis v19.0.6) ...
+        # ... (Logique inchangée) ...
         trig_pips, plus_pips = cfg.get('trigger_pips', 100), cfg.get('pips_plus', 10)
         for pos in positions:
             pnl_pips, be_sl = 0.0, 0.0
@@ -250,7 +249,7 @@ class RiskManager:
                     if (pos.sl==0 or be_sl < pos.sl): self.log.info(f"BE #{pos.ticket}. SL-> {be_sl:.{self.digits}f}"); self._executor.modify_position(pos.ticket, be_sl, pos.tp)
 
     def _apply_trailing_stop_atr(self, positions: list, tick, ohlc: pd.DataFrame, cfg: dict):
-        # ... (Logique inchangée depuis v19.0.6) ...
+        # ... (Logique inchangée) ...
         ts_cfg, atr_cfg = cfg.get('trailing_stop_atr', {}), cfg.get('atr_settings', {}).get('default', {})
         period, atr = atr_cfg.get('period', 14), self.calculate_atr(ohlc, atr_cfg.get('period', 14))
         if atr is None or atr <= 0: return
