@@ -1,3 +1,5 @@
+# Fichier: config.yaml
+# Version: 2.0.0 (Ajout R4, R7)
 
 ai_analysis:
   max_trades_in_prompt: 50
@@ -11,9 +13,12 @@ learning:
   enabled: false
   min_trades_for_analysis: 10
 mt5_credentials:
-  login: 1511921064
-  password: r9r?N89G@H
-  server: FTMO-Demo
+  login: 10008432
+  password: jsne80aX!
+  server: Axi-US50-Demo
+ # login: 1511921064 # Remplacez par vos identifiants
+  #password: r9r?N89G@H # Remplacez par vos identifiants
+  #server: FTMO-Demo # Remplacez par votre serveur
 pattern_detection:
   CHANGE_OF_CHARACTER: true
   INBALANCE: true
@@ -36,8 +41,8 @@ risk_management:
       tp_multiple: 3.5
     default:
       period: 14
-      sl_multiple: 1.5
-      tp_multiple: 3
+      sl_multiple: 1.5 # Utilisé pour buffer SL structurel
+      tp_multiple: 3   # Utilisé si tp_strategy = ATR_MULTIPLE
   breakeven:
     enabled: true
     pips_plus: 10
@@ -49,13 +54,13 @@ risk_management:
     levels:
     - percentage: 50
       rr: 1
-    - percentage: 30
+    - percentage: 30 # Pourcentage *additionnel* (total 80%)
       rr: 2
     move_sl_to_be_after_tp1: true
-  risk_per_trade: 0.01
-  sl_buffer_pips: 5
-  sl_strategy: SMC_STRUCTURE
-  tp_strategy: SMC_LIQUIDITY_TARGET
+  risk_per_trade: 0.01 # 1% par trade
+  sl_buffer_pips: 5 # Buffer additionnel au SL structurel (obsolète si sl_strategy=SMC_STRUCTURE?)
+  sl_strategy: SMC_STRUCTURE # Définit le SL sous/au-dessus de la zone FVG/OB
+  tp_strategy: SMC_LIQUIDITY_TARGET # Utilise la cible de liquidité du pattern_detector
   trailing_stop_atr:
     activation_multiple: 2
     enabled: true
@@ -77,16 +82,30 @@ trading_settings:
   - NZDUSD
   - AUDUSD
   - USDCAD
-  - USOIL
+  #- USOIL # Symbole invalide chez FTMO Demo
   - BTCUSD
   - ETHUSD
   timeframe: M15
-  trading_sessions:
-  - 1-00:00-23:59
-  - 2-00:00-23:59
-  - 3-00:00-23:59
-  - 4-00:00-23:59
-  - 5-00:00-21:00
+  trading_sessions: # UTC times
+  - 1-00:00-23:59 # Lundi
+  - 2-00:00-23:59 # Mardi
+  - 3-00:00-23:59 # Mercredi
+  - 4-00:00-23:59 # Jeudi
+  - 5-00:00-21:00 # Vendredi (clôture MT5)
+  idempotency_lock_seconds: 60 # (R2) Verrouillage court après signal pour éviter doublons rapides
+  pending_order_expiry_candles: 5 # (R7) Annuler ordre limite si non déclenché après 5 bougies M15
+
+# (R4) Section pour surcharger les paramètres MT5 incorrects
+symbol_overrides:
+  ETHUSD:
+    contract_size: 100 # FTMO Demo utilise 100, MT5 API dit 10
+  BTCUSD:
+    contract_size: 1   # FTMO Demo utilise 1, MT5 API dit 1
+  XAUUSD:
+    contract_size: 100
+  XAGUSD:
+    contract_size: 5000
+
 trend_filter:
   ema_period: 200
   enabled: true

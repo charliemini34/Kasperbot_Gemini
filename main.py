@@ -1,7 +1,7 @@
 # Fichier: main.py
-# Version: 18.0.0 (Implémentation R1, R2)
+# Version: 19.0.0 (R7)
 # Dépendances: MetaTrader5, pytz, PyYAML, Flask
-# Description: Ajout du verrouillage d'idempotence (R2) et passage du contexte au RiskManager (R1).
+# Description: Ajout gestion ordres limites (R7), utilise les zones de PatternDetector.
 
 import time
 import threading
@@ -9,7 +9,7 @@ import logging
 import yaml
 import webbrowser
 import os
-from datetime import datetime, time as dt_time
+from datetime import datetime, timedelta, time as dt_time
 import pytz
 
 import MetaTrader5 as mt5
@@ -20,6 +20,7 @@ from src.execution.mt5_executor import MT5Executor
 from src.api.server import start_api_server
 from src.shared_state import SharedState, LogHandler
 from src.analysis.performance_analyzer import PerformanceAnalyzer
+from src.constants import BUY, SELL
 
 # ... (fonctions setup_logging, load_yaml, get_timeframe_seconds, validate_symbols, is_within_trading_session restent inchangées) ...
 
@@ -30,6 +31,9 @@ def setup_logging(state: SharedState):
     if not os.path.exists('logs'):
         os.makedirs('logs')
 
+    # (R7) Niveau DEBUG recommandé pour la gestion des ordres limites
+    log_level = logging.DEBUG if os.environ.get("KASPERBOT_DEBUG") else logging.INFO
+
     file_handler = logging.FileHandler("logs/trading_bot.log", mode='w', encoding='utf-8')
     console_handler = logging.StreamHandler()
     ui_handler = LogHandler(state)
@@ -39,13 +43,13 @@ def setup_logging(state: SharedState):
 
     root_logger = logging.getLogger()
     if not root_logger.handlers:
-        root_logger.setLevel(logging.INFO)
+        root_logger.setLevel(log_level) # Utiliser le niveau de log défini
         root_logger.addHandler(file_handler)
         root_logger.addHandler(console_handler)
         root_logger.addHandler(ui_handler)
+        logging.info(f"Niveau de logging réglé sur: {logging.getLevelName(root_logger.level)}")
 
-    logging.getLogger('werkzeug').setLevel(logging.ERROR)
-
+    logging.getLogger('werkzeug').setLevel(logging.ERROR) # Garder Flask silencieux
 
 def load_yaml(filepath: str) -> dict:
     """Charge un fichier de configuration YAML de manière sécurisée."""
@@ -90,9 +94,7 @@ def is_within_trading_session(symbol: str, config: dict) -> bool:
         return True
 
     now_utc = datetime.now(pytz.utc)
-    # Utiliser isoweekday() où Lundi=1 ... Dimanche=7 pour correspondre au format courant dans config
     current_weekday_config_format = now_utc.isoweekday()
-
     current_time = now_utc.time()
 
     for session in sessions_config:
@@ -107,13 +109,37 @@ def is_within_trading_session(symbol: str, config: dict) -> bool:
         except (ValueError, TypeError):
             logging.error(f"Format de session invalide: '{session}'")
             continue
-    # Si aucune session ne correspond, retourner False (en dehors des heures de trading)
-    # logging.debug(f"{symbol} est en dehors des sessions de trading définies.") # Optionnel
     return False
+
+# --- R7 : Nouvelle fonction pour gérer les ordres en attente ---
+def manage_pending_orders(state: SharedState, executor: MT5Executor, config: dict):
+    magic_number = config['trading_settings'].get('magic_number', 0)
+    pending_cfg = config.get('pending_order_settings', {})
+    cancel_after_candles = pending_cfg.get('cancel_after_candles', 3)
+    timeframe_seconds = get_timeframe_seconds(config['trading_settings'].get('timeframe', 'M15'))
+    cancel_after_seconds = cancel_after_candles * timeframe_seconds
+
+    try:
+        pending_orders = executor.get_pending_orders(magic=magic_number)
+        state.update_pending_orders(pending_orders) # Mettre à jour l'état partagé
+
+        now_timestamp = datetime.now(pytz.utc).timestamp()
+
+        for order in pending_orders:
+            order_age_seconds = now_timestamp - order.time_setup
+            if order_age_seconds > cancel_after_seconds:
+                logging.warning(f"Ordre limite #{order.ticket} ({order.symbol}) annulé car trop ancien ({order_age_seconds:.0f}s > {cancel_after_seconds}s).")
+                executor.cancel_order(order.ticket)
+                # Déverrouiller le symbole si l'ordre est annulé
+                state.unlock_symbol(order.symbol)
+
+    except Exception as e:
+        logging.error(f"Erreur lors de la gestion des ordres en attente: {e}", exc_info=True)
+# --- Fin R7 ---
 
 def main_trading_loop(state: SharedState):
     """Boucle principale qui orchestre le bot de trading."""
-    logging.info("Démarrage de la boucle de trading v18.0.0 (R1, R2, R3)...")
+    logging.info("Démarrage de la boucle de trading v19.0.0 (R7 - Ordres Limites)...")
     config = load_yaml('config.yaml')
     state.update_config(config)
 
@@ -132,11 +158,13 @@ def main_trading_loop(state: SharedState):
         return
 
     state.initialize_symbol_data(symbols_to_trade)
-
     is_first_cycle = True
+    last_pending_check_time = 0 # (R7)
 
     while not state.is_shutdown():
         try:
+            current_time = time.time() # (R7)
+
             # 1. Vérifier connexion & Recharger config
             if not connector.check_connection():
                 state.update_status("Déconnecté", "Connexion MT5 perdue. Tentative de reconnexion...", is_emergency=True)
@@ -149,7 +177,7 @@ def main_trading_loop(state: SharedState):
                 logging.info("Changement de configuration détecté. Rechargement...")
                 config = load_yaml('config.yaml')
                 state.update_config(config)
-                executor = MT5Executor(connector.get_connection(), config) # Recréer l'executor avec la nouvelle config
+                executor = MT5Executor(connector.get_connection(), config)
                 symbols_to_trade = validate_symbols(config['trading_settings'].get('symbols', []), connector.get_connection())
                 state.initialize_symbol_data(symbols_to_trade)
                 state.clear_config_changed_flag()
@@ -167,11 +195,11 @@ def main_trading_loop(state: SharedState):
                 continue
             state.update_status("Connecté", f"Solde: {account_info.balance:.2f} {account_info.currency}")
 
-            # 3. Gérer trades fermés et positions ouvertes
+            # 3. Gérer trades fermés et positions ouvertes (inchangé)
             magic_number = config['trading_settings'].get('magic_number', 0)
             executor.check_for_closed_trades(magic_number)
             all_bot_positions = executor.get_open_positions(magic=magic_number)
-            state.update_positions(all_bot_positions)
+            state.update_positions(all_bot_positions) # Met à jour l'UI avec les positions actives
 
             if all_bot_positions:
                 positions_by_symbol = {}
@@ -185,45 +213,49 @@ def main_trading_loop(state: SharedState):
                         ohlc_data_for_pos = connector.get_ohlc(symbol, timeframe, 200)
                         tick = connector.get_tick(symbol)
                         if tick and ohlc_data_for_pos is not None and not ohlc_data_for_pos.empty:
-                            
-                            # (R1) Appel modifié pour passer le contexte de trade (TP Partiels)
                             rm_pos.manage_open_positions(
-                                positions, 
-                                tick, 
-                                ohlc_data_for_pos,
-                                executor._trade_context # <-- Ajout R1
+                                positions, tick, ohlc_data_for_pos, executor._trade_context
                             )
-                            
-                    except ValueError as e:
-                        logging.error(f"Erreur de validation pour la gestion des positions sur {symbol}: {e}")
-                    except Exception as e:
-                        logging.error(f"Erreur lors de la gestion des positions sur {symbol}: {e}", exc_info=True)
+                    except ValueError as e: logging.error(f"Erreur validation gestion pos {symbol}: {e}")
+                    except Exception as e: logging.error(f"Erreur gestion pos {symbol}: {e}", exc_info=True)
 
-            # 4. Vérifier limites de risque globales
+            # --- R7 : Vérifier et gérer les ordres en attente périodiquement ---
+            pending_check_interval = config.get('pending_order_settings', {}).get('check_interval_seconds', 60)
+            if current_time - last_pending_check_time > pending_check_interval:
+                manage_pending_orders(state, executor, config)
+                last_pending_check_time = current_time
+            # --- Fin R7 ---
+
+            # 4. Vérifier limites de risque globales (inchangé)
             if symbols_to_trade:
                 try:
-                    main_rm = RiskManager(config, executor, symbols_to_trade[0])
+                    main_rm = RiskManager(config, executor, symbols_to_trade[0]) # Utilise le 1er symbole pour init
                     limit_reached, _ = main_rm.is_daily_loss_limit_reached()
                     if limit_reached:
                         state.update_status("Arrêt d'Urgence", "Limite de perte journalière atteinte.", is_emergency=True)
-                        time.sleep(60)
+                        time.sleep(60) # Attendre avant prochain check
                         continue
-                except ValueError: pass # Ignorer si premier symbole invalide
-                except Exception as e: logging.error(f"Erreur vérification limite de perte: {e}", exc_info=True)
+                except ValueError: pass
+                except Exception as e: logging.error(f"Erreur vérification limite perte: {e}", exc_info=True)
 
-            # 5. Boucle d'analyse et de trading
+            # 5. Boucle d'analyse et de trading (MODIFIÉE pour R7)
             if is_first_cycle: logging.info("Premier cycle: trading désactivé pour synchro.")
+
+            # (R7) Récupérer les ordres en attente actuels pour éviter doublons
+            current_pending_orders = executor.get_pending_orders(magic=magic_number)
+            pending_symbols = {order.symbol for order in current_pending_orders}
 
             for symbol in symbols_to_trade:
                 try:
+                    # Conditions pour NE PAS chercher de signal:
                     if not is_within_trading_session(symbol, config): continue
-                    if any(pos.symbol == symbol for pos in all_bot_positions): continue
-                    
-                    # (R2) Vérification Idempotence
-                    if state.is_symbol_locked(symbol):
-                        logging.debug(f"Symbole {symbol} verrouillé (idempotence). Scan ignoré.")
+                    if any(pos.symbol == symbol for pos in all_bot_positions): continue # Déjà une position ouverte
+                    if symbol in pending_symbols: continue # Déjà un ordre limite en attente
+                    if state.is_symbol_locked(symbol): # Verrou d'idempotence/attente
+                        logging.debug(f"Symbole {symbol} verrouillé. Scan ignoré.")
                         continue
 
+                    # Obtenir les données
                     risk_manager = RiskManager(config, executor, symbol)
                     timeframe = config['trading_settings'].get('timeframe', 'M15')
                     ohlc_data = connector.get_ohlc(symbol, timeframe, 300)
@@ -232,31 +264,33 @@ def main_trading_loop(state: SharedState):
                         logging.warning(f"Données OHLC non dispo pour {symbol} sur {timeframe}.")
                         continue
 
+                    # Détecter le pattern (maintenant avec zone)
                     detector = PatternDetector(config)
-                    trade_signal = detector.detect_patterns(ohlc_data, connector, symbol)
+                    trade_signal = detector.detect_patterns(ohlc_data, connector, symbol) # Retourne zone
                     state.update_symbol_patterns(symbol, detector.get_detected_patterns_info())
 
+                    # --- R7 : Logique Ordre Limite ---
                     if trade_signal and not is_first_cycle:
-                        logging.info(f"SIGNAL VALIDE sur {symbol}: [{trade_signal['pattern']}] direction {trade_signal['direction']}.")
+                        logging.info(f"SIGNAL VALIDE sur {symbol}: [{trade_signal['pattern']}] direction {trade_signal['direction']} - ZONE [{trade_signal.get('entry_zone_start'):.5f} - {trade_signal.get('entry_zone_end'):.5f}].")
 
-                        # (R2) Verrouillage Idempotence
-                        ttl_lock = config['trading_settings'].get('idempotency_lock_seconds', 300)
-                        state.lock_symbol(symbol, ttl_lock)
-                        
-                        # Recalcul des params via RiskManager est fait DANS execute_trade
+                        # Verrouillage Idempotence (maintenu pendant la durée de l'ordre limite)
+                        ttl_lock = config['trading_settings'].get('idempotency_lock_seconds', 900)
+                        state.lock_symbol(symbol, ttl_lock) # Verrouille pour X minutes
 
-                        # --- APPEL (inchangé depuis v17.0.3) ---
+                        # Appel à execute_trade qui placera un ORDRE LIMITE
                         executor.execute_trade(
                             account_info, risk_manager, symbol, trade_signal['direction'],
                             ohlc_data, trade_signal['pattern'], magic_number,
-                            trade_signal
+                            trade_signal # Dictionnaire complet avec la zone
                         )
-                        # --- FIN APPEL ---
+                        # NOTE: Le contexte (_trade_context) sera créé par execute_trade
+                        # si l'ordre limite est placé avec succès.
+                    # --- Fin R7 ---
 
                 except ValueError as e: logging.error(f"Impossible de traiter '{symbol}': {e}.")
                 except Exception as e: logging.error(f"Erreur analyse sur {symbol}: {e}", exc_info=True)
 
-            # 6. Attendre prochaine bougie
+            # 6. Attendre prochaine bougie (inchangé)
             timeframe_str = config['trading_settings'].get('timeframe', 'M15')
             timeframe_seconds = get_timeframe_seconds(timeframe_str)
             now_utc_ts = datetime.now(pytz.utc).timestamp()
@@ -314,7 +348,6 @@ if __name__ == "__main__":
     except Exception as startup_err:
          logging.critical(f"ERREUR FATALE au démarrage: {startup_err}", exc_info=True)
          shared_state.update_status("ERREUR FATALE", str(startup_err), is_emergency=True)
-         # Maintenir l'API active si possible
          if 'api_thread' in locals() and api_thread.is_alive():
               logging.info("Tentative de maintien de l'API active...")
               while True: time.sleep(3600)
