@@ -1,16 +1,16 @@
 # Fichier: src/shared_state.py
-# Version: 9.3.0 (R7)
+# Version: 9.4.0 (Refs J.6)
 # Dépendances: threading, logging, collections.deque, time, datetime
-# Description: Ajout gestion ordres limites (R7) à l'état partagé.
+# Description: Ajout gestion ordres limites (R7) + timestamp archivage (J.6)
 
 import threading
 import logging
 import time
 from collections import deque
-from datetime import datetime
+from datetime import datetime, timedelta
 
 class SharedState:
-    """Classe thread-safe pour le partage d'état, v9.3 avec ordres limites."""
+    """Classe thread-safe pour le partage d'état, v9.4 (J.6)."""
     def __init__(self, max_logs=200):
         self.lock = threading.Lock()
         self.status = {
@@ -28,6 +28,11 @@ class SharedState:
         self._shutdown = False
         self.backtest_status = {'running': False, 'progress': 0, 'results': None}
         self.symbol_locks = {} 
+
+        # (J.6) Timestamp du dernier deal vérifié (défaut: 7 jours)
+        default_start_time = datetime.utcnow() - timedelta(days=7)
+        self.last_deal_check_timestamp = int(default_start_time.timestamp())
+        # TODO: Persister/Lire ce timestamp depuis un fichier (ex: state.json)
 
     def update_status(self, status, message, is_emergency=False):
         with self.lock:
@@ -100,6 +105,17 @@ class SharedState:
         
     def is_shutdown(self):
         with self.lock: return self._shutdown
+
+    # --- (J.6) Gestion Timestamp Archivage ---
+    def get_last_deal_check_timestamp(self) -> int:
+        with self.lock:
+            return self.last_deal_check_timestamp
+
+    def set_last_deal_check_timestamp(self, timestamp: int):
+        with self.lock:
+            self.last_deal_check_timestamp = timestamp
+            # TODO: Persister ici
+    # --- Fin J.6 ---
 
     def lock_symbol(self, symbol: str, ttl_seconds: int = 300):
         with self.lock:

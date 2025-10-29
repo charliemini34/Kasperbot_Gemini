@@ -1,5 +1,5 @@
 # Fichier: config.yaml
-# Version: 2.0.0 (Ajout R4, R7)
+# Version: 3.0.0 (Refs J.1, J.4, J.5, J.7, J.8, J.9)
 
 ai_analysis:
   max_trades_in_prompt: 50
@@ -25,6 +25,10 @@ pattern_detection:
   LIQUIDITY_GRAB: true
   ORDER_BLOCK: true
   SMC_AMD_SESSION: true
+  # (J.1) Logique d'entrée (0.0 = Proximal, 0.5 = Mean Threshold/50%, 1.0 = Distal)
+  entry_logic:
+    ob_entry_level: 0.5 # Défaut 0.5 (Mean Threshold)
+    fvg_entry_level: 0.5 # Défaut 0.5 (50% FVG)
 professional_journal:
   enabled: true
   file_path_template: Journal_Trading_{month_name}_{year}.csv
@@ -45,9 +49,12 @@ risk_management:
       tp_multiple: 3   # Utilisé si tp_strategy = ATR_MULTIPLE
   breakeven:
     enabled: true
-    pips_plus: 10
-    trigger_pips: 100
+    breakeven_trigger_rr: 1.0 # (J.7) Déclenche BE à 1R (si > 0)
+    breakeven_plus_atr_multiple: 0.2 # (J.7) SL déplacé à Entrée + 0.2*ATR
+    trigger_pips: 100 # (Fallback si breakeven_trigger_rr = 0)
+    pips_plus: 10     # (Fallback si breakeven_plus_atr_multiple = 0)
   daily_loss_limit_percent: 2
+  max_total_risk_percent: 5.0 # (J.4) Risque max cumulé (toutes positions)
   partial_tp:
     be_pips_plus_after_tp1: 5
     enabled: true
@@ -58,7 +65,8 @@ risk_management:
       rr: 2
     move_sl_to_be_after_tp1: true
   risk_per_trade: 0.01 # 1% par trade
-  sl_buffer_pips: 5 # Buffer additionnel au SL structurel (obsolète si sl_strategy=SMC_STRUCTURE?)
+  sl_buffer_atr_multiple: 1.0 # (J.5) Buffer SL = 1.0 * ATR(14)
+  sl_buffer_pips: 0 # (Fallback si sl_buffer_atr_multiple = 0)
   sl_strategy: SMC_STRUCTURE # Définit le SL sous/au-dessus de la zone FVG/OB
   tp_strategy: SMC_LIQUIDITY_TARGET # Utilise la cible de liquidité du pattern_detector
   trailing_stop_atr:
@@ -92,7 +100,7 @@ trading_settings:
   - 3-00:00-23:59 # Mercredi
   - 4-00:00-23:59 # Jeudi
   - 5-00:00-21:00 # Vendredi (clôture MT5)
-  idempotency_lock_seconds: 60 # (R2) Verrouillage court après signal pour éviter doublons rapides
+  idempotency_lock_seconds: 900 # (J.9) Verrouillage 15 min
   pending_order_expiry_candles: 5 # (R7) Annuler ordre limite si non déclenché après 5 bougies M15
 
 # (R4) Section pour surcharger les paramètres MT5 incorrects
@@ -110,3 +118,4 @@ trend_filter:
   ema_period: 200
   enabled: true
   higher_timeframe: H4
+  allow_reversals: true # (J.8) Autoriser CHOCH/Liquidity Grab contre tendance HTF
