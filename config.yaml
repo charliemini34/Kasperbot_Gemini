@@ -33,6 +33,7 @@ professional_journal:
   enabled: true
   file_path_template: Journal_Trading_{month_name}_{year}.csv
 risk_management:
+  min_required_rr: 2.0 # (NOUVEAU) Ratio R:R minimum requis pour prendre un trade
   atr_settings:
     BTCUSD:
       sl_multiple: 1.2
@@ -53,7 +54,7 @@ risk_management:
     breakeven_plus_atr_multiple: 0.2 # (J.7) SL déplacé à Entrée + 0.2*ATR
     trigger_pips: 100 # (Fallback si breakeven_trigger_rr = 0)
     pips_plus: 10     # (Fallback si breakeven_plus_atr_multiple = 0)
-  daily_loss_limit_percent: 2
+  daily_loss_limit_percent: 20
   max_total_risk_percent: 5.0 # (J.4) Risque max cumulé (toutes positions)
   partial_tp:
     be_pips_plus_after_tp1: 5
