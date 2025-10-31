@@ -1,6 +1,7 @@
-
 # Fichier: src/api/server.py
-# Version: 2.0.1 (UI Hotfix)
+# Version: 2.1.0 (SMC UI Integration)
+# Description: Met à jour le template HTML et le JS pour afficher et 
+#              configurer les nouveaux paramètres smc_strategy.
 
 from flask import Flask, jsonify, render_template_string, request
 import yaml
@@ -14,8 +15,7 @@ HTML_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Dashboard KasperBot v13.0</title>
-    <script src="https://cdn.tailwindcss.com"></script>
+    <title>Dashboard KasperBot v20.0 (SMC)</title> <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
@@ -27,14 +27,14 @@ HTML_TEMPLATE = """
         .btn { padding: 0.5rem 1rem; border-radius: 0.375rem; font-weight: 600; transition: background-color 0.2s; cursor: pointer; }
         .btn-primary { background-color: #4f46e5; color: white; } .btn-primary:hover { background-color: #4338ca; }
         .form-checkbox { accent-color: #4f46e5; width: auto; }
-        label { font-weight: 500; }
+        label { font-weight: 500; display: block; margin-bottom: 0.25rem; } /* Style de label amélioré */
         .config-section { border-top: 1px solid #374151; padding-top: 2rem; }
     </style>
 </head>
 <body class="p-4 sm:p-6 lg:p-8">
     <div class="max-w-7xl mx-auto">
         <header class="flex justify-between items-center mb-6">
-            <h1 class="text-2xl sm:text-3xl font-bold text-white">KasperBot <span class="text-sm text-gray-400">v13.0</span></h1>
+            <h1 class="text-2xl sm:text-3xl font-bold text-white">KasperBot <span class="text-sm text-gray-400">v20.0 SMC</span></h1>
             <div id="status-indicator" class="flex items-center space-x-2">
                 <div id="status-dot" class="h-4 w-4 rounded-full bg-gray-500"></div><span id="status-text" class="font-medium">Chargement...</span>
             </div>
@@ -64,12 +64,41 @@ HTML_TEMPLATE = """
                         <div><label for="mt5_server">Serveur MT5</label><input type="text" id="mt5_server"></div>
                     </div>
                 </div>
-                <div class="config-section"><h3 class="text-lg font-medium text-white">Moteur d'Apprentissage</h3>
-                    <div class="mt-4 grid grid-cols-1 gap-y-6 sm:grid-cols-2 sm:gap-x-8">
-                        <div><label for="learning_enabled">Mode Automatisé</label><select id="learning_enabled"><option value="true">Activé</option><option value="false">Désactivé (Suggestions)</option></select></div>
+                
+                <div class="config-section">
+                    <h3 class="text-lg font-medium text-white">Stratégie Smart Money Concepts (SMC)</h3>
+                    <div id="smc-config-container" class="mt-4 grid grid-cols-1 gap-y-6 sm:grid-cols-3 sm:gap-x-8">
+                        <div>
+                            <label for="smc_strategy_enabled">Statut</label>
+                            <select id="smc_strategy_enabled">
+                                <option value="true">Activé</option>
+                                <option value="false">Désactivé</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label for="smc_strategy_htf_timeframe">Timeframe Tendance (HTF)</label>
+                            <input type="text" id="smc_strategy_htf_timeframe" placeholder="ex: H4">
+                        </div>
+                        <div>
+                            <label for="smc_strategy_ltf_timeframe">Timeframe Entrée (LTF)</label>
+                            <input type="text" id="smc_strategy_ltf_timeframe" placeholder="ex: M15">
+                        </div>
+                        <div>
+                            <label for="smc_strategy_htf_swing_order">Ordre Swing HTF</label>
+                            <input type="number" id="smc_strategy_htf_swing_order" placeholder="ex: 10">
+                        </div>
+                        <div>
+                            <label for="smc_strategy_ltf_swing_order">Ordre Swing LTF</label>
+                            <input type="number" id="smc_strategy_ltf_swing_order" placeholder="ex: 5">
+                        </div>
                     </div>
                 </div>
-                <div class="config-section"><h3 class="text-lg font-medium text-white">Détection de Patterns</h3><div id="patterns-config-container" class="mt-4 grid grid-cols-2 sm:grid-cols-3 gap-4"></div></div>
+                <div class="config-section"><h3 class="text-lg font-medium text-white">Moteur d'Apprentissage (Legacy)</h3>
+                    <div class="mt-4 grid grid-cols-1 gap-y-6 sm:grid-cols-2 sm:gap-x-8">
+                        <div><label for="learning_enabled">Mode Automatisé</Vlabel><select id="learning_enabled"><option value="true">Activé</option><option value="false">Désactivé (Suggestions)</option></select></div>
+                    </div>
+                </div>
+                
                 <div class="pt-5"><div class="flex justify-end"><button type="submit" class="btn btn-primary">Sauvegarder et Appliquer</button></div></div>
             </form></div></div>
             <div id="content-backtest" class="tab-content hidden">
@@ -101,6 +130,7 @@ HTML_TEMPLATE = """
         }
         function formatProfit(profit) { return `<span class="${parseFloat(profit) >= 0 ? 'text-green-400' : 'text-red-400'}">${parseFloat(profit).toFixed(2)}</span>`; }
         
+        // Fonction fetchAllData (inchangée)
         async function fetchAllData() {
             try {
                 const res = await fetch('/api/data');
@@ -127,9 +157,11 @@ HTML_TEMPLATE = """
                         if(symbolData.patterns && Object.keys(symbolData.patterns).length > 0){
                             Object.entries(symbolData.patterns).forEach(([name, d]) => {
                                 let statusColor = 'text-gray-400';
-                                const statusText = d.status || 'En attente...';
-                                if (statusText.includes('CONFIRMÉ')) statusColor = 'text-green-400';
-                                else if (statusText.includes('INVALIDÉ')) statusColor = 'text-red-400';
+                                // Logique d'affichage SMC
+                                let statusText = d.status || 'En attente...';
+                                if (statusText.includes('SIGNAL')) statusColor = 'text-green-400';
+                                else if (statusText.includes('ERREUR')) statusColor = 'text-red-400';
+                                else if (statusText.includes('En attente OTE')) statusColor = 'text-yellow-400';
                                 patternsHTML += `<div class="flex justify-between text-sm"><span class="font-medium">${name}</span><strong class="${statusColor}">${statusText}</strong></div>`;
                             });
                         } else { patternsHTML = '<p class="text-gray-400 text-sm">En attente...</p>'; }
@@ -147,40 +179,61 @@ HTML_TEMPLATE = """
             } catch (error) { console.error("Erreur de mise à jour:", error); }
         }
         
+        // --- loadConfig (MODIFIÉE) ---
         async function loadConfig() {
             try {
                 const res = await fetch('/api/config');
                 const config = await res.json();
+                
+                // Section MT5
                 document.getElementById('mt5_login').value = config.mt5_credentials.login;
                 document.getElementById('mt5_password').value = config.mt5_credentials.password;
                 document.getElementById('mt5_server').value = config.mt5_credentials.server;
+                
+                // Section Learning (Legacy)
                 document.getElementById('learning_enabled').value = config.learning.enabled.toString();
-                const patternsContainer = document.getElementById('patterns-config-container');
-                patternsContainer.innerHTML = '';
-                Object.keys(config.pattern_detection).forEach(name => {
-                    patternsContainer.innerHTML += `<div class="flex items-center"><input id="pattern_${name}" type="checkbox" class="form-checkbox h-4 w-4 rounded" ${config.pattern_detection[name] ? 'checked' : ''}><label for="pattern_${name}" class="ml-2">${name}</label></div>`;
-                });
+                
+                // Section SMC (Nouvelle)
+                if (config.smc_strategy) {
+                    document.getElementById('smc_strategy_enabled').value = config.smc_strategy.enabled.toString();
+                    document.getElementById('smc_strategy_htf_timeframe').value = config.smc_strategy.htf_timeframe;
+                    document.getElementById('smc_strategy_ltf_timeframe').value = config.smc_strategy.ltf_timeframe;
+                    document.getElementById('smc_strategy_htf_swing_order').value = config.smc_strategy.htf_swing_order;
+                    document.getElementById('smc_strategy_ltf_swing_order').value = config.smc_strategy.ltf_swing_order;
+                }
+                
             } catch (error) { console.error("Erreur de chargement de la config:", error); }
         }
 
+        // --- saveConfig (MODIFIÉE) ---
         async function saveConfig(event) {
             event.preventDefault();
             try {
                 const res = await fetch('/api/config');
                 let config = await res.json();
+                
+                // Section MT5
                 config.mt5_credentials.login = parseInt(document.getElementById('mt5_login').value);
                 config.mt5_credentials.password = document.getElementById('mt5_password').value;
                 config.mt5_credentials.server = document.getElementById('mt5_server').value;
+                
+                // Section Learning (Legacy)
                 config.learning.enabled = document.getElementById('learning_enabled').value === 'true';
-                Object.keys(config.pattern_detection).forEach(name => {
-                    const checkbox = document.getElementById(`pattern_${name}`);
-                    if(checkbox) config.pattern_detection[name] = checkbox.checked;
-                });
+                
+                // Section SMC (Nouvelle)
+                if (!config.smc_strategy) { config.smc_strategy = {}; } // Initialiser si n'existe pas
+                config.smc_strategy.enabled = document.getElementById('smc_strategy_enabled').value === 'true';
+                config.smc_strategy.htf_timeframe = document.getElementById('smc_strategy_htf_timeframe').value;
+                config.smc_strategy.ltf_timeframe = document.getElementById('smc_strategy_ltf_timeframe').value;
+                config.smc_strategy.htf_swing_order = parseInt(document.getElementById('smc_strategy_htf_swing_order').value);
+                config.smc_strategy.ltf_swing_order = parseInt(document.getElementById('smc_strategy_ltf_swing_order').value);
+
                 await fetch('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(config) });
-                alert('Configuration sauvegardée !');
+                alert('Configuration sauvegardée ! Le bot va redémarrer.'); // Note: Le main.py gère le redémarrage
             } catch (error) { console.error("Erreur de sauvegarde:", error); }
         }
         
+        // --- Fonctions Backtest (inchangées) ---
         async function runBacktest(event) {
             event.preventDefault();
             document.getElementById('backtest-progress-card').classList.remove('hidden');
@@ -235,6 +288,7 @@ HTML_TEMPLATE = """
             });
         }
         
+        // --- window.onload (inchangé) ---
         window.onload = () => {
             setInterval(fetchAllData, 3000);
             fetchAllData();
@@ -271,11 +325,11 @@ def start_api_server(shared_state):
             with open(config_path, 'w', encoding='utf-8') as f:
                 yaml.dump(new_config, f, sort_keys=False)
             shared_state.update_config(new_config)
-            shared_state.signal_config_changed()
+            shared_state.signal_config_changed() # Signale à main.py de recharger
             return jsonify({"status": "success"})
         
-        with open(config_path, 'r', encoding='utf-8') as f:
-            config = yaml.safe_load(f)
+        # S'assurer que get_config() est appelé sur l'instance de SharedState
+        config = shared_state.get_config() 
         return jsonify(config)
 
     @app.route('/api/backtest', methods=['POST'])

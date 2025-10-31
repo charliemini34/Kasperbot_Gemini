@@ -293,26 +293,28 @@ class MT5Executor:
         """
         self.log.debug(f"Vérification des trades fermés depuis timestamp {last_check_timestamp}")
         
+        # --- CORRECTION (OSError 22) ---
         # Utiliser des timestamps (entiers)
-        current_check_timestamp = int(datetime.now(pytz.utc).timestamp())
-        start_timestamp = 0
+        current_check_timestamp_int = int(datetime.now(pytz.utc).timestamp())
+        start_timestamp_int = 0
 
         try:
             if last_check_timestamp == 0:
                 # Si premier check, prendre les 24 dernières heures
-                start_timestamp = current_check_timestamp - (24 * 3600)
+                start_timestamp_int = current_check_timestamp_int - (24 * 3600)
                 self.log.info("Premier check des trades fermés (24h).")
             else:
-                start_timestamp = last_check_timestamp
-
-            # --- CORRECTION (OSError 22) ---
-            # Passer des ENTIERS (timestamps) au lieu d'objets datetime
-            deals = self._mt5.history_deals_get(start_timestamp, current_check_timestamp)
+                # Ajouter 1 seconde pour éviter de re-scanner le dernier deal
+                start_timestamp_int = last_check_timestamp + 1
+            
+            # Appel MT5 corrigé avec des entiers
+            deals = self._mt5.history_deals_get(start_timestamp_int, current_check_timestamp_int)
             # --- FIN CORRECTION ---
             
             if deals is None:
                 self.log.error(f"Erreur check_for_closed_trades (history_deals_get): {self._mt5.last_error()}")
-                return current_check_timestamp # Retourner le temps actuel
+                # Retourner l'ancien timestamp pour forcer un nouvel essai au prochain cycle
+                return last_check_timestamp 
 
             closed_positions_processed = set()
             
@@ -344,9 +346,10 @@ class MT5Executor:
             if closed_positions_processed:
                 self.log.info(f"{len(closed_positions_processed)} nouveau(x) trade(s) fermé(s) journalisé(s).")
             
-            return current_check_timestamp
+            # Retourner le timestamp actuel pour le prochain cycle
+            return current_check_timestamp_int
 
         except Exception as e:
             self.log.error(f"Erreur majeure dans check_for_closed_trades: {e}", exc_info=True)
-            # Retourner le temps actuel pour éviter de re-scanner en boucle
-            return current_check_timestamp
+            # Retourner l'ancien timestamp pour forcer un nouvel essai
+            return last_check_timestamp
