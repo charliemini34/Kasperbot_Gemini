@@ -1,166 +1,78 @@
-# Fichier: src/shared_state.py
-# Version: 9.4.0 (Refs J.6)
-# Dépendances: threading, logging, collections.deque, time, datetime
-# Description: Ajout gestion ordres limites (R7) + timestamp archivage (J.6)
+"""
+Fichier: src/shared_state.py
+Version: SMC (Compatible API v13)
+
+État partagé global pour le bot, accessible par tous les threads.
+"""
 
 import threading
-import logging
-import time
-from collections import deque
-from datetime import datetime, timedelta
+import copy
 
-class SharedState:
-    """Classe thread-safe pour le partage d'état, v9.4 (J.6)."""
-    def __init__(self, max_logs=200):
-        self.lock = threading.Lock()
-        self.status = {
-            "status": "Initialisation", 
-            "message": "Démarrage...", 
-            "is_emergency": False, 
-            "symbol_data": {},
-            "analysis_suggestions": []
+_BOT_RUNNING = True
+_CONFIG = {}
+_STATUS = {"status": "INITIALIZING", "message": "Bot starting..."}
+_LOGS = []
+_POSITIONS = []
+_SYMBOL_DATA = {}
+_lock = threading.Lock()
+
+def is_bot_running():
+    """Vérifie si le bot est censé être en cours d'exécution."""
+    with _lock:
+        return _BOT_RUNNING
+
+def stop_bot():
+    """Signale au bot de s'arrêter."""
+    global _BOT_RUNNING
+    with _lock:
+        _BOT_RUNNING = False
+    set_status("STOPPED", "Bot stopped by user.")
+
+# --- AJOUTÉ POUR CORRIGER L'ERREUR DE L'API ---
+def set_config(config_data):
+    """Met à jour la configuration globale."""
+    global _CONFIG
+    with _lock:
+        _CONFIG = config_data
+
+def get_config():
+    """Récupère la configuration globale."""
+    with _lock:
+        # Renvoyer une copie pour éviter les modifications concurrentes
+        return copy.deepcopy(_CONFIG)
+# --- FIN DE L'AJOUT ---
+
+def set_status(status, message):
+    """Met à jour le statut du bot pour l'API."""
+    global _STATUS
+    with _lock:
+        _STATUS = {"status": status, "message": message}
+
+def add_log(log_message):
+    """Ajoute un log pour l'API."""
+    with _lock:
+        _LOGS.append(log_message)
+        if len(_LOGS) > 100: # Limiter à 100 logs
+            _LOGS.pop(0)
+
+def update_positions(positions_list):
+    """Met à jour la liste des positions ouvertes pour l'API."""
+    global _POSITIONS
+    with _lock:
+        _POSITIONS = positions_list
+
+def update_symbol_data(symbol, data):
+     """Met à jour les données d'analyse par symbole pour l'API."""
+     global _SYMBOL_DATA
+     with _lock:
+         _SYMBOL_DATA[symbol] = data
+
+def get_all_data():
+    """Point d'entrée unique pour l'API pour récupérer toutes les données."""
+    with _lock:
+        return {
+            "status": _STATUS,
+            "logs": _LOGS,
+            "positions": _POSITIONS,
+            "symbol_data": _SYMBOL_DATA
         }
-        self.positions = []
-        self.pending_orders = [] # (R7) Liste des ordres en attente
-        self.logs = deque(maxlen=max_logs)
-        self.config = {}
-        self.config_changed_flag = False
-        self._shutdown = False
-        self.backtest_status = {'running': False, 'progress': 0, 'results': None}
-        self.symbol_locks = {} 
-
-        # (J.6) Timestamp du dernier deal vérifié (défaut: 7 jours)
-        default_start_time = datetime.utcnow() - timedelta(days=7)
-        self.last_deal_check_timestamp = int(default_start_time.timestamp())
-        # TODO: Persister/Lire ce timestamp depuis un fichier (ex: state.json)
-
-    def update_status(self, status, message, is_emergency=False):
-        with self.lock:
-            self.status['status'] = status
-            self.status['message'] = message
-            self.status['is_emergency'] = is_emergency
-            
-    def update_analysis_suggestions(self, suggestions: list):
-        with self.lock: self.status['analysis_suggestions'] = suggestions
-
-    def update_positions(self, new_positions):
-        with self.lock:
-            self.positions = [
-                {"ticket": p.ticket, "symbol": p.symbol, "type": p.type, "volume": p.volume, "profit": p.profit, "magic": p.magic}
-                for p in new_positions
-            ]
-
-    # --- R7 : Nouvelle fonction ---
-    def update_pending_orders(self, new_pending_orders):
-        """Met à jour la liste des ordres en attente pour l'UI."""
-        with self.lock:
-            self.pending_orders = [
-                 {"ticket": o.ticket, "symbol": o.symbol, "type": o.type, "volume": o.volume_initial, "price": o.price_open, "sl": o.sl, "tp": o.tp, "magic": o.magic}
-                 for o in new_pending_orders
-            ]
-    # --- Fin R7 ---
-    
-    def initialize_symbol_data(self, symbols_list: list):
-        with self.lock:
-            for symbol in symbols_list:
-                if symbol not in self.status['symbol_data']:
-                    self.status['symbol_data'][symbol] = {'patterns': {}} 
-            current_symbols_in_state = list(self.status['symbol_data'].keys())
-            for symbol in current_symbols_in_state:
-                if symbol not in symbols_list:
-                    try: del self.status['symbol_data'][symbol]
-                    except KeyError: pass 
-
-    def update_symbol_patterns(self, symbol: str, new_patterns: dict):
-        with self.lock:
-            if symbol not in self.status['symbol_data']: self.status['symbol_data'][symbol] = {}
-            self.status['symbol_data'][symbol]['patterns'] = new_patterns
-
-    def add_log(self, record):
-        with self.lock: self.logs.append(record)
-
-    def update_config(self, new_config):
-        with self.lock: self.config = new_config
-
-    def get_all_data(self):
-        with self.lock:
-            return {
-                "status": self.status.copy(),
-                "positions": self.positions.copy(),
-                "pending_orders": self.pending_orders.copy(), # (R7) Ajouter ordres limites
-                "logs": list(self.logs),
-            }
-
-    def get_config(self):
-        with self.lock: return self.config.copy()
-        
-    def signal_config_changed(self):
-        with self.lock: self.config_changed_flag = True
-        
-    def clear_config_changed_flag(self):
-        with self.lock: self.config_changed_flag = False
-        
-    def shutdown(self):
-        with self.lock: self._shutdown = True
-        
-    def is_shutdown(self):
-        with self.lock: return self._shutdown
-
-    # --- (J.6) Gestion Timestamp Archivage ---
-    def get_last_deal_check_timestamp(self) -> int:
-        with self.lock:
-            return self.last_deal_check_timestamp
-
-    def set_last_deal_check_timestamp(self, timestamp: int):
-        with self.lock:
-            self.last_deal_check_timestamp = timestamp
-            # TODO: Persister ici
-    # --- Fin J.6 ---
-
-    def lock_symbol(self, symbol: str, ttl_seconds: int = 300):
-        with self.lock:
-            lock_until = time.time() + ttl_seconds
-            self.symbol_locks[symbol] = lock_until
-            logging.debug(f"Symbole {symbol} verrouillé jusqu'à {datetime.fromtimestamp(lock_until).isoformat()}")
-
-    # --- R7 : Nouvelle fonction ---
-    def unlock_symbol(self, symbol: str):
-        """Supprime le verrou d'idempotence pour un symbole (ex: après annulation ordre)."""
-        with self.lock:
-            if symbol in self.symbol_locks:
-                try:
-                    del self.symbol_locks[symbol]
-                    logging.debug(f"Verrou d'idempotence supprimé pour {symbol}.")
-                except KeyError:
-                    pass # Déjà supprimé, ok
-            # else: # Optionnel: log si on tente de déverrouiller un symbole non verrouillé
-            #     logging.debug(f"Tentative de déverrouillage de {symbol} non verrouillé.")
-    # --- Fin R7 ---
-            
-    def is_symbol_locked(self, symbol: str) -> bool:
-        with self.lock:
-            if symbol not in self.symbol_locks: return False
-            if time.time() < self.symbol_locks[symbol]: return True
-            else:
-                try: del self.symbol_locks[symbol]
-                except KeyError: pass
-                logging.debug(f"Verrou d'idempotence expiré pour {symbol}.")
-                return False
-        
-    # --- Backtest (inchangé) ---
-    def start_backtest(self):
-        with self.lock: self.backtest_status = {'running': True, 'progress': 0, 'results': None}
-    def update_backtest_progress(self, progress):
-        with self.lock:
-            if self.backtest_status['running']: self.backtest_status['progress'] = progress
-    def finish_backtest(self, results):
-        with self.lock: self.backtest_status['running'] = False; self.backtest_status['results'] = results
-    def get_backtest_status(self):
-        with self.lock: return self.backtest_status.copy()
-
-class LogHandler(logging.Handler):
-    def __init__(self, shared_state):
-        super().__init__()
-        self.shared_state = shared_state
-    def emit(self, record):
-        self.shared_state.add_log(self.format(record))

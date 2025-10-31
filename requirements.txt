@@ -1,11 +1,6 @@
-# Fichier: requirements.txt
-
+MetaTrader5
 pandas
 numpy
-MetaTrader5
-pytz
 PyYAML
-Flask
-matplotlib
-google-generativeai
-playsound==1.2.2 # <--- Ligne ajoutŽe
+flask
+scipy

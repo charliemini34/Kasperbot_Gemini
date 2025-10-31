@@ -1,144 +1,152 @@
-# Fichier: src/data_ingest/mt5_connector.py
-# Version: 1.0.0 manuel
-# Dépendances: MetaTrader5, pandas, logging, time, datetime, pytz
-# Description: Ajout de get_ohlc_range pour récupérer des données HTF.
+"""
+Module pour la connexion et l'extraction de données depuis MetaTrader 5.
+
+Ce module gère la connexion, la déconnexion, et la récupération
+des données de marché (bougies) ainsi que la vérification des positions ouvertes.
+"""
 
 import MetaTrader5 as mt5
 import pandas as pd
-import logging
-import time
 from datetime import datetime
-import pytz # Importé pour la gestion des fuseaux horaires
+import time
+import logging
 
-class MT5Connector:
-    """Gère la connexion et la récupération de données depuis MetaTrader 5."""
-    def __init__(self, credentials):
-        self._credentials = credentials
-        self._connection = mt5
-        self.log = logging.getLogger(self.__class__.__name__)
+# Configuration du logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
-    def check_connection(self):
-        """Vérifie si le terminal est toujours accessible."""
-        # Tente une opération simple pour valider la connexion
-        try:
-            # terminal_info peut parfois retourner True même si déconnecté, utiliser account_info
-            info = self._connection.account_info()
-            return info is not None
-        except Exception:
-            return False
+def connect(login, password, server):
+    """
+    Initialise la connexion à MetaTrader 5.
+    
+    Args:
+        login (int): Numéro de compte MT5.
+        password (str): Mot de passe du compte MT5.
+        server (str): Nom du serveur du courtier.
 
-
-    def connect(self):
-        """Initialise ou réinitialise la connexion au terminal MT5 avec des tentatives de reconnexion."""
-        self.log.info("Tentative de connexion à MetaTrader 5...")
-
-        for i in range(5):
-            try: # Ajouter un try/except autour de shutdown
-                 self._connection.shutdown()
-                 time.sleep(0.5) # Petite pause après shutdown
-            except Exception:
-                 pass # Ignorer si déjà déconnecté ou erreur de shutdown
-
-            if self._connection.initialize(
-                login=self._credentials['login'],
-                password=self._credentials['password'],
-                server=self._credentials['server']
-            ):
-                term_info = self._connection.terminal_info()
-                acc_info = self._connection.account_info()
-                if term_info and acc_info: # Double vérification
-                    self.log.info(f"Connexion à MT5 réussie. Compte: {acc_info.login}, Serveur: {acc_info.server}, Version MT5: {self._connection.version()}")
-                    return True
-                else:
-                     self.log.error(f"Initialisation MT5 réussie mais impossible de récupérer les infos terminal/compte (tentative {i+1}/5).")
-                     self._connection.shutdown() # Assurer la déconnexion
-                     time.sleep(i * 2 + 1)
-            else:
-                self.log.error(f"Échec de l'initialisation de MT5 (tentative {i+1}/5): {self._connection.last_error()}")
-                time.sleep(i * 2 + 1) # Augmenter l'attente
-
-        self.log.critical("Échec de la connexion à MT5 après plusieurs tentatives.")
+    Returns:
+        bool: True si la connexion est réussie, False sinon.
+    """
+    logger.info("Tentative de connexion à MetaTrader 5...")
+    if not mt5.initialize(login=login, password=password, server=server):
+        logger.error(f"Échec de l'initialisation de MT5, code d'erreur = {mt5.last_error()}")
         return False
+    
+    account_info = mt5.account_info()
+    if account_info is None:
+        logger.error(f"Échec de la récupération des informations du compte, code d'erreur = {mt5.last_error()}")
+        mt5.shutdown()
+        return False
+        
+    logger.info(f"Connexion réussie au compte {account_info.name} (Serveur: {account_info.server})")
+    return True
 
-    def disconnect(self):
-        """Ferme la connexion à MT5."""
-        try:
-            self._connection.shutdown()
-            self.log.info("Déconnecté de MetaTrader 5.")
-        except Exception as e:
-            self.log.error(f"Erreur lors de la déconnexion de MT5: {e}")
+def disconnect():
+    """Ferme la connexion à MetaTrader 5."""
+    logger.info("Fermeture de la connexion MetaTrader 5.")
+    mt5.shutdown()
 
+def get_data(symbol, timeframe, num_candles):
+    """
+    Récupère les données de marché (bougies) pour un symbole et une timeframe donnés.
 
-    def get_connection(self):
-        """Retourne l'objet de connexion MT5 brut."""
-        return self._connection
+    Args:
+        symbol (str): Le symbole à trader (ex: "EURUSD").
+        timeframe (int): La constante de timeframe MT5 (ex: mt5.TIMEFRAME_M15).
+        num_candles (int): Le nombre de bougies à récupérer.
 
-    def get_ohlc(self, symbol: str, timeframe_str: str, num_bars: int) -> pd.DataFrame | None:
-        """Récupère les N dernières barres OHLC."""
-        try:
-            timeframe = getattr(mt5, f"TIMEFRAME_{timeframe_str.upper()}")
-            # Utiliser copy_rates_from_pos pour obtenir les N dernières barres
-            rates = self._connection.copy_rates_from_pos(symbol, timeframe, 0, num_bars)
-
-            if rates is None or len(rates) < num_bars: # Vérifier si on a bien reçu le nombre demandé
-                # Log moins sévère si simplement pas assez de données disponibles
-                log_func = self.log.warning if rates is not None else self.log.error
-                log_func(f"Données OHLC insuffisantes ou indisponibles pour {symbol} sur {timeframe_str}. Reçu {len(rates) if rates is not None else 0}/{num_bars} barres. Erreur MT5: {self._connection.last_error()}")
-                return None
-
-            df = pd.DataFrame(rates)
-            # Convertir en DatetimeIndex UTC directement
-            df['time'] = pd.to_datetime(df['time'], unit='s', utc=True)
-            df.set_index('time', inplace=True)
-            return df
-
-        except AttributeError:
-            self.log.error(f"Le timeframe '{timeframe_str}' est invalide.")
+    Returns:
+        pd.DataFrame: Un DataFrame pandas avec les données (time, open, high, low, close, tick_volume),
+                      ou None si la récupération échoue.
+    """
+    logger.debug(f"Récupération de {num_candles} bougies pour {symbol} en {timeframe}...")
+    try:
+        rates = mt5.copy_rates_from_pos(symbol, timeframe, 0, num_candles)
+        
+        if rates is None:
+            logger.warning(f"Aucune donnée récupérée pour {symbol} en {timeframe}. Code d'erreur = {mt5.last_error()}")
             return None
-        except Exception as e:
-            self.log.error(f"Erreur inattendue lors de la récupération des données OHLC (get_ohlc) pour {symbol}: {e}", exc_info=True)
-            return None
-
-    # --- NOUVELLE FONCTION ---
-    def get_ohlc_range(self, symbol: str, timeframe_str: str, start_time_utc: datetime, end_time_utc: datetime) -> pd.DataFrame | None:
-        """Récupère les données OHLC dans un intervalle de temps UTC."""
-        if start_time_utc.tzinfo is None or end_time_utc.tzinfo is None:
-             self.log.error("get_ohlc_range requiert des datetimes UTC avec fuseau horaire.")
-             return None
-        try:
-            timeframe = getattr(mt5, f"TIMEFRAME_{timeframe_str.upper()}")
-            # Utiliser copy_rates_range pour obtenir les données dans l'intervalle
-            rates = self._connection.copy_rates_range(symbol, timeframe, start_time_utc, end_time_utc)
-
-            if rates is None: # Ne pas vérifier len() ici, 0 barre est possible
-                self.log.warning(f"Impossible de récupérer les données OHLC pour {symbol} sur {timeframe_str} entre {start_time_utc} et {end_time_utc}. Erreur MT5: {self._connection.last_error()}")
-                return None
-            if len(rates) == 0:
-                 # self.log.debug(f"Aucune donnée OHLC trouvée pour {symbol} sur {timeframe_str} dans l'intervalle demandé.")
-                 return pd.DataFrame() # Retourner un DF vide
-
-            df = pd.DataFrame(rates)
-            # Convertir en DatetimeIndex UTC directement
-            df['time'] = pd.to_datetime(df['time'], unit='s', utc=True)
-            df.set_index('time', inplace=True)
-            return df
-
-        except AttributeError:
-            self.log.error(f"Le timeframe '{timeframe_str}' est invalide pour get_ohlc_range.")
-            return None
-        except Exception as e:
-            self.log.error(f"Erreur inattendue lors de la récupération des données OHLC (get_ohlc_range) pour {symbol}: {e}", exc_info=True)
+            
+        if len(rates) == 0:
+            logger.warning(f"Données vides (0 bougies) pour {symbol} en {timeframe}.")
             return None
 
-    def get_tick(self, symbol: str) -> mt5.Tick | None:
-        """Récupère le dernier tick de prix pour un symbole."""
-        try:
-            tick = self._connection.symbol_info_tick(symbol)
-            if tick and tick.time > 0: # Vérifier si le tick est valide
-                return tick
-            # Log moins sévère si tick invalide
-            self.log.warning(f"Tick invalide ou indisponible pour {symbol}. Dernier tick reçu: {tick}. Erreur MT5: {self._connection.last_error()}")
-            return None
-        except Exception as e:
-            self.log.error(f"Erreur lors de la récupération du tick pour {symbol}: {e}", exc_info=False) # Pas besoin de trace complète souvent
-            return None
+        # Conversion en DataFrame pandas pour une manipulation facile
+        data = pd.DataFrame(rates)
+        data['time'] = pd.to_datetime(data['time'], unit='s')
+        data.set_index('time', inplace=True)
+        
+        logger.debug(f"Données récupérées avec succès pour {symbol}. Dernier prix 'close' : {data['close'].iloc[-1]}")
+        return data
+
+    except Exception as e:
+        logger.error(f"Exception lors de la récupération des données pour {symbol}: {e}")
+        return None
+
+# --- NOUVELLE FONCTION AJOUTÉE ---
+def get_mtf_data(symbol: str, timeframes_config: dict):
+    """
+    Récupère les données de marché pour plusieurs timeframes en un seul appel.
+
+    Args:
+        symbol (str): Le symbole à trader (ex: "EURUSD").
+        timeframes_config (dict): Un dictionnaire mappant la timeframe (str) 
+                                  au nombre de bougies.
+                                  Ex: {'H4': 100, 'M15': 200, 'M1': 100}
+
+    Returns:
+        dict: Un dictionnaire où les clés sont les timeframes (str) et 
+              les valeurs sont les DataFrames de données.
+              Ex: {'H4': pd.DataFrame(...), 'M15': pd.DataFrame(...)}
+    """
+    # Dictionnaire de mapping pour convertir les strings en constantes MT5
+    TIMEFRAME_MAP = {
+        "M1": mt5.TIMEFRAME_M1,
+        "M5": mt5.TIMEFRAME_M5,
+        "M15": mt5.TIMEFRAME_M15,
+        "M30": mt5.TIMEFRAME_M30,
+        "H1": mt5.TIMEFRAME_H1,
+        "H4": mt5.TIMEFRAME_H4,
+        "D1": mt5.TIMEFRAME_D1,
+    }
+
+    mtf_data = {}
+    logger.info(f"Récupération des données multi-timeframe pour {symbol}...")
+
+    for tf_str, num_candles in timeframes_config.items():
+        if tf_str not in TIMEFRAME_MAP:
+            logger.warning(f"Timeframe '{tf_str}' non reconnue. Elle sera ignorée.")
+            continue
+        
+        timeframe_mt5 = TIMEFRAME_MAP[tf_str]
+        data = get_data(symbol, timeframe_mt5, num_candles)
+        
+        if data is not None:
+            mtf_data[tf_str] = data
+            logger.info(f"Données pour {tf_str} ({len(data)} bougies) récupérées.")
+        else:
+            logger.error(f"Échec de la récupération des données pour {tf_str}.")
+            # Si une timeframe cruciale échoue, nous devrions peut-être arrêter.
+            # Pour l'instant, nous continuons et retournons ce que nous avons.
+            mtf_data[tf_str] = None
+
+    return mtf_data
+# --- FIN DE LA NOUVELLE FONCTION ---
+
+def check_open_positions(symbol):
+    """
+    Vérifie s'il y a des positions ouvertes pour un symbole spécifique.
+
+    Args:
+        symbol (str): Le symbole à vérifier.
+
+    Returns:
+        int: Le nombre de positions ouvertes pour ce symbole.
+    """
+    positions = mt5.positions_get(symbol=symbol)
+    if positions is None:
+        logger.error(f"Échec de la récupération des positions pour {symbol}. Code d'erreur = {mt5.last_error()}")
+        # En cas d'erreur, on suppose qu'il n'y a pas de position pour éviter les doublons
+        return 0
+    
+    return len(positions)

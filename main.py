@@ -1,383 +1,270 @@
-# Fichier: main.py
-# Version: 19.1.1 (Fix J.9/R7)
-# Dépendances: MetaTrader5, pytz, PyYAML, Flask
-# Description: Corrige la recherche de 'pending_check_interval_seconds' (J.9/R7).
+"""
+Kasperbot - Bot de Trading MT5
+Fichier principal pour l'exécution du bot.
+"""
 
+import sys
+import os
 import time
-import threading
 import logging
 import yaml
-import webbrowser
-import os
-from datetime import datetime, timedelta, time as dt_time
-import pytz
+import threading
 
+# --- Imports des modules du Bot ---
 import MetaTrader5 as mt5
-from src.data_ingest.mt5_connector import MT5Connector
-from src.patterns.pattern_detector import PatternDetector
-from src.risk.risk_manager import RiskManager
-from src.execution.mt5_executor import MT5Executor
-from src.api.server import start_api_server
-from src.shared_state import SharedState, LogHandler
-from src.analysis.performance_analyzer import PerformanceAnalyzer
-from src.constants import BUY, SELL
+from src.data_ingest import mt5_connector
+from src.execution import mt5_executor
+from src.risk import risk_manager
+from src.journal import professional_journal as journal
+from src.api import server as api_server
+from src import shared_state
 
-# ... (fonctions setup_logging, load_yaml, get_timeframe_seconds, validate_symbols, is_within_trading_session restent inchangées) ...
 
-def setup_logging(state: SharedState):
-    """Configure la journalisation pour la console, les fichiers et l'interface utilisateur."""
-    log_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+# --- IMPORTS MODIFIÉS POUR LA STRATÉGIE SMC ---
+from src.strategy import smc_entry_logic as smc_strategy
+# --- FIN DES IMPORTS MODIFIÉS ---
 
-    if not os.path.exists('logs'):
-        os.makedirs('logs')
+# Configuration du logging
+log_dir = 'logs'
+if not os.path.exists(log_dir):
+    os.makedirs(log_dir)
 
-    log_level = logging.DEBUG if os.environ.get("KASPERBOT_DEBUG") else logging.INFO
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(os.path.join(log_dir, "kasperbot.log")),
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+logger = logging.getLogger(__name__)
 
-    file_handler = logging.FileHandler("logs/trading_bot.log", mode='w', encoding='utf-8')
-    console_handler = logging.StreamHandler()
-    ui_handler = LogHandler(state)
-
-    for handler in [file_handler, console_handler, ui_handler]:
-        handler.setFormatter(log_formatter)
-
-    root_logger = logging.getLogger()
-    if not root_logger.handlers:
-        root_logger.setLevel(log_level) # Utiliser le niveau de log défini
-        root_logger.addHandler(file_handler)
-        root_logger.addHandler(console_handler)
-        root_logger.addHandler(ui_handler)
-        logging.info(f"Niveau de logging réglé sur: {logging.getLevelName(root_logger.level)}")
-
-    logging.getLogger('werkzeug').setLevel(logging.ERROR) # Garder Flask silencieux
-
-def load_yaml(filepath: str) -> dict:
-    """Charge un fichier de configuration YAML de manière sécurisée."""
+def load_config():
+    """Charge la configuration depuis config.yaml."""
+    logger.info("Chargement de la configuration...")
+    if not os.path.exists("config.yaml"):
+        logger.critical("Fichier config.yaml introuvable !")
+        return None
+        
     try:
-        with open(filepath, 'r', encoding='utf-8') as f:
-            return yaml.safe_load(f)
-    except FileNotFoundError:
-        logging.critical(f"FATAL: Fichier de configuration '{filepath}' introuvable. Le programme va s'arrêter.")
-        exit()
-    except yaml.YAMLError as e:
-        logging.critical(f"FATAL: Erreur de syntaxe dans le fichier '{filepath}': {e}. Le programme va s'arrêter.")
-        exit()
-    return {}
+        with open("config.yaml", 'r') as f:
+            config = yaml.safe_load(f)
+        
+        log_level = config.get('logging', {}).get('level', 'INFO').upper()
+        logging.getLogger().setLevel(log_level)
+        logger.info(f"Niveau de logging réglé sur {log_level}")
+        
+        # --- CORRECTION POUR L'API (shared_state) ---
+        # L'API (v13) a besoin d'accéder à la config.
+        shared_state.set_config(config)
+        # --- FIN CORRECTION ---
+        
+        return config
+    except Exception as e:
+        logger.critical(f"Erreur lors du chargement de config.yaml: {e}")
+        return None
 
-def get_timeframe_seconds(timeframe_str: str) -> int:
-    """Convertit une chaîne de caractères de timeframe (ex: 'M15') en secondes."""
-    if 'M' in timeframe_str: return int(timeframe_str.replace('M', '')) * 60
-    if 'H' in timeframe_str: return int(timeframe_str.replace('H', '')) * 3600
-    if 'D' in timeframe_str: return int(timeframe_str.replace('D', '')) * 86400
-    logging.warning(f"Timeframe inconnu '{timeframe_str}', utilisation de 60 secondes par défaut.")
-    return 60
+def initialize_bot(config):
+    """Initialise la connexion MT5 et les modules dépendants."""
+    logger.info("Initialisation du bot...")
+    mt5_config = config.get('mt5')
+    
+    if not mt5_config:
+        logger.critical("Section 'mt5' manquante dans config.yaml.")
+        return False
 
-def validate_symbols(symbols_list, mt5_connection):
-    """Vérifie que les symboles sont disponibles sur la plateforme MT5."""
-    valid_symbols = []
-    for symbol in symbols_list:
-        if mt5_connection.symbol_info(symbol):
-            valid_symbols.append(symbol)
+    if not mt5_connector.connect(
+        mt5_config.get('login'), 
+        mt5_config.get('password'), 
+        mt5_config.get('server')
+    ):
+        logger.critical("Échec de l'initialisation du bot. Vérifiez vos identifiants MT5.")
+        return False
+    
+    # Initialisation des modules (versions procédurales)
+    risk_manager.initialize_risk_manager(mt5_connector)
+    mt5_executor.initialize_executor(mt5_connector)
+    
+    logger.info("Bot initialisé avec succès.")
+    return True
+
+# --- REFACTORING POUR MULTI-SYMBOLES ---
+def check_symbol_logic(symbol, config):
+    """
+    Exécute la logique de trading complète pour UN SEUL symbole.
+    Cette fonction est appelée en boucle par run_bot.
+    """
+    try:
+        logger.info(f"--- Analyse du symbole : {symbol} ---")
+        
+        # 1. Vérifier les positions ouvertes
+        open_positions = mt5_connector.check_open_positions(symbol)
+        if open_positions > 0:
+            logger.info(f"Position déjà ouverte pour {symbol}, attente...")
+            return # Passer au symbole suivant
+
+        # 2. Récupérer les données
+        timeframes_config = config['strategy'].get('timeframes_config')
+        logger.debug(f"Récupération des données multi-timeframe pour {symbol}...")
+        mtf_data = mt5_connector.get_mtf_data(symbol, timeframes_config)
+        
+        if not mtf_data or any(v is None for v in mtf_data.values()):
+            logger.warning(f"Données MTF ({symbol}) incomplètes. Symbole suivant.")
+            return
+        
+        logger.debug(f"Données MTF ({symbol}) récupérées avec succès.")
+
+        # 3. Analyser les patterns SMC
+        signal, reason, sl_price, tp_price = smc_strategy.check_smc_signal(
+            mtf_data, 
+            config
+        )
+        
+        # 4. Exécution
+        if signal:
+            logger.warning(f"SIGNAL DE TRADING DÉTECTÉ ({symbol}) : {signal} | {reason}")
+            
+            # A. Calcul du risque
+            lot_size = risk_manager.calculate_lot_size(
+                config['risk']['risk_percent'],
+                sl_price,
+                symbol=symbol # Passage du symbole (crucial !)
+            )
+            
+            if lot_size is None or lot_size <= 0:
+                logger.error(f"Calcul de lot invalide ({lot_size}) pour {symbol}. Annulation.")
+                return
+            
+            logger.info(f"Taille de lot calculée ({symbol}) : {lot_size} (pour {config['risk']['risk_percent']}% de risque)")
+
+            # B. Exécution de l'ordre
+            trade_id = mt5_executor.place_order(
+                symbol=symbol,
+                order_type=signal,
+                volume=lot_size,
+                sl_price=sl_price,
+                tp_price=tp_price
+            )
+            
+            # C. Journalisation
+            if trade_id:
+                logger.warning(f"Ordre {trade_id} ({symbol}) placé avec succès.")
+                entry_price = mt5_executor.get_last_entry_price(trade_id)
+                
+                journal.log_trade(
+                    timestamp=time.strftime('%Y-%m-%d %H:%M:%S'),
+                    symbol=symbol,
+                    order_type=signal,
+                    volume=lot_size,
+                    entry_price=entry_price,
+                    sl_price=sl_price,
+                    tp_price=tp_price,
+                    reason=reason,
+                    status="OPEN"
+                )
+            else:
+                logger.error(f"Échec lors de la tentative de placement de l'ordre pour {symbol}.")
+
         else:
-            logging.error(f"Le symbole '{symbol}' n'est pas disponible ou est mal orthographié. Il sera ignoré.")
-    return valid_symbols
-
-def is_within_trading_session(symbol: str, config: dict) -> bool:
-    """Vérifie si le symbole peut être tradé à l'heure UTC actuelle."""
-    sessions_config = config.get('trading_settings', {}).get('trading_sessions', [])
-    crypto_symbols = config.get('trading_settings', {}).get('crypto_symbols', [])
-
-    if symbol in crypto_symbols:
-        return True
-
-    if not sessions_config:
-        return True
-
-    now_utc = datetime.now(pytz.utc)
-    current_weekday_config_format = now_utc.isoweekday()
-    current_time = now_utc.time()
-
-    for session in sessions_config:
-        try:
-            day_str, start_str, end_str = session.split('-')
-            day = int(day_str)
-            start_time = dt_time.fromisoformat(start_str)
-            end_time = dt_time.fromisoformat(end_str)
-
-            if day == current_weekday_config_format and start_time <= current_time < end_time:
-                return True
-        except (ValueError, TypeError):
-            logging.error(f"Format de session invalide: '{session}'")
-            continue
-    return False
-
-def manage_pending_orders(state: SharedState, executor: MT5Executor, config: dict):
-    magic_number = config['trading_settings'].get('magic_number', 0)
-    
-    # (Fix J.9/R7) Utiliser 'trading_settings' pour 'pending_order_expiry_candles' (logique v19.0.0 originale)
-    pending_cfg_trading = config.get('trading_settings', {})
-    cancel_after_candles = pending_cfg_trading.get('pending_order_expiry_candles', 5) 
-    
-    timeframe_seconds = get_timeframe_seconds(config['trading_settings'].get('timeframe', 'M15'))
-    cancel_after_seconds = cancel_after_candles * timeframe_seconds
-
-    try:
-        pending_orders = executor.get_pending_orders(magic=magic_number)
-        state.update_pending_orders(pending_orders) # Mettre à jour l'état partagé
-
-        now_timestamp = datetime.now(pytz.utc).timestamp()
-
-        for order in pending_orders:
-            order_age_seconds = now_timestamp - order.time_setup
-            if order_age_seconds > cancel_after_seconds:
-                logging.warning(f"Ordre limite #{order.ticket} ({order.symbol}) annulé car trop ancien ({order_age_seconds:.0f}s > {cancel_after_seconds}s).")
-                if executor.cancel_order(order.ticket): # (J.3) Utilise retry
-                    # Déverrouiller le symbole si l'ordre est annulé
-                    state.unlock_symbol(order.symbol)
+            logger.info(f"Aucun signal SMC valide pour {symbol} pour le moment.")
 
     except Exception as e:
-        logging.error(f"Erreur lors de la gestion des ordres en attente: {e}", exc_info=True)
+        logger.critical(f"Erreur critique lors de l'analyse de {symbol}: {e}", exc_info=True)
 
-def main_trading_loop(state: SharedState):
-    """Boucle principale qui orchestre le bot de trading."""
-    logging.info("Démarrage de la boucle de trading v19.1.1 (Fix J.9/R7)...")
-    config = load_yaml('config.yaml')
-    state.update_config(config)
+# --- FIN REFACTORING ---
 
-    connector = MT5Connector(config['mt5_credentials'])
-    if not connector.connect():
-        state.update_status("Déconnecté", "La connexion initiale à MT5 a échoué.", is_emergency=True)
+
+def run_bot():
+    """
+    Boucle principale d'exécution du bot.
+    """
+    logger.info("Démarrage de la boucle principale du bot...")
+    config = load_config()
+    if not config:
+        shared_state.stop_bot()
         return
 
-    executor = MT5Executor(connector.get_connection(), config)
-    analyzer = PerformanceAnalyzer(state)
-
-    symbols_to_trade = validate_symbols(config['trading_settings'].get('symbols', []), connector.get_connection())
-    if not symbols_to_trade:
-        logging.critical("Aucun symbole valide à trader. Arrêt du bot.")
-        state.update_status("Arrêté", "Aucun symbole valide.", is_emergency=True)
+    # --- MODIFICATION POUR MULTI-SYMBOLES ---
+    # On récupère la LISTE des symboles
+    symbols_list = config['mt5'].get('symbols')
+    if not symbols_list or not isinstance(symbols_list, list):
+        logger.error("Configuration 'mt5.symbols' manquante ou invalide. Doit être une liste. Arrêt.")
+        shared_state.stop_bot()
         return
+    
+    logger.info(f"Le bot va surveiller les symboles suivants : {symbols_list}")
+    # --- FIN MODIFICATION ---
+    
+    check_interval = config.get('check_interval', 60)
 
-    state.initialize_symbol_data(symbols_to_trade)
-    is_first_cycle = True
-    last_pending_check_time = 0
-    # (J.6) Récupérer le timestamp du dernier check
-    last_deal_check_timestamp = state.get_last_deal_check_timestamp()
-
-    while not state.is_shutdown():
+    strategy_name = config['strategy'].get('name', 'N/A')
+    if strategy_name != "SMC_OTE":
+        logger.error(f"Stratégie '{strategy_name}' non reconnue. Arrêt.")
+        shared_state.stop_bot()
+        return
+    
+    while shared_state.is_bot_running():
         try:
-            current_time = time.time() 
-
-            # 1. Vérifier connexion & Recharger config
-            if not connector.check_connection():
-                state.update_status("Déconnecté", "Connexion MT5 perdue. Tentative de reconnexion...", is_emergency=True)
-                if not connector.connect():
-                    time.sleep(20)
-                    continue
-                state.update_status("Connecté", "Reconnexion à MT5 réussie.")
-
-            if state.config_changed_flag:
-                logging.info("Changement de configuration détecté. Rechargement...")
-                config = load_yaml('config.yaml')
-                state.update_config(config)
-                # Recréer executor/RM au cas où config MT5 ou symboles changent
-                executor = MT5Executor(connector.get_connection(), config)
-                symbols_to_trade = validate_symbols(config['trading_settings'].get('symbols', []), connector.get_connection())
-                state.initialize_symbol_data(symbols_to_trade)
-                state.clear_config_changed_flag()
-                logging.info("Configuration rechargée.")
-                if not symbols_to_trade:
-                     logging.critical("Aucun symbole valide à trader après rechargement. Arrêt du bot.")
-                     state.update_status("Arrêté", "Aucun symbole valide après rechargement.", is_emergency=True)
-                     break
-
-            # 2. Infos compte
-            account_info = executor.get_account_info()
-            if not account_info:
-                logging.warning("Impossible de récupérer les informations du compte.")
-                time.sleep(10)
-                continue
-            state.update_status("Connecté", f"Solde: {account_info.balance:.2f} {account_info.currency}")
-
-            # 3. Gérer trades fermés et positions ouvertes
-            magic_number = config['trading_settings'].get('magic_number', 0)
+            logger.info(f"--- Nouveau cycle (Intervalle: {check_interval}s) ---")
             
-            # (J.6) Gérer l'archivage des trades fermés
-            new_timestamp = executor.check_for_closed_trades(magic_number, last_deal_check_timestamp)
-            if new_timestamp > last_deal_check_timestamp:
-                state.set_last_deal_check_timestamp(new_timestamp)
-                last_deal_check_timestamp = new_timestamp
-            
-            all_bot_positions = executor.get_open_positions(magic=magic_number)
-            state.update_positions(all_bot_positions) # Met à jour l'UI
+            # --- BOUCLE MULTI-SYMBOLES ---
+            for symbol in symbols_list:
+                if not shared_state.is_bot_running():
+                    break # Sortir de la boucle si le bot est arrêté
+                
+                # Appel de la logique pour chaque symbole, un par un
+                check_symbol_logic(symbol, config)
+                
+                # Petite pause entre chaque symbole pour ne pas surcharger MT5
+                time.sleep(1) 
+            # --- FIN BOUCLE ---
 
-            # (J.2) Mettre à jour le contexte pour les ordres limites exécutés
-            executor.update_context_for_new_positions(all_bot_positions)
+            if shared_state.is_bot_running():
+                logger.info(f"Cycle terminé. Prochaine vérification dans {check_interval} secondes.")
+                time.sleep(check_interval)
 
-            if all_bot_positions:
-                positions_by_symbol = {}
-                for pos in all_bot_positions:
-                    positions_by_symbol.setdefault(pos.symbol, []).append(pos)
-
-                for symbol, positions in positions_by_symbol.items():
-                    try:
-                        # (J.5, J.7) S'assurer que RM est initialisé pour le bon symbole
-                        rm_pos = RiskManager(config, executor, symbol) 
-                        timeframe = config['trading_settings'].get('timeframe', 'M15')
-                        ohlc_data_for_pos = connector.get_ohlc(symbol, timeframe, 200)
-                        tick = connector.get_tick(symbol)
-                        if tick and ohlc_data_for_pos is not None and not ohlc_data_for_pos.empty:
-                            rm_pos.manage_open_positions(
-                                positions, tick, ohlc_data_for_pos, executor._trade_context
-                            )
-                    except ValueError as e: logging.error(f"Erreur validation gestion pos {symbol}: {e}")
-                    except Exception as e: logging.error(f"Erreur gestion pos {symbol}: {e}", exc_info=True)
-
-            # --- R7 : Vérifier et gérer les ordres en attente périodiquement ---
-            # (Fix J.9/R7) Utiliser 'pending_order_settings' (logique v19.0.0 originale)
-            pending_check_interval = config.get('pending_order_settings', {}).get('check_interval_seconds', 60) # Fallback 60s
-            if current_time - last_pending_check_time > pending_check_interval:
-                manage_pending_orders(state, executor, config)
-                last_pending_check_time = current_time
-            # --- Fin Fix J.9/R7 ---
-
-            # 4. Vérifier limites de risque globales
-            skip_new_signals = False
-            if symbols_to_trade:
-                try:
-                    # (J.4) Utiliser un RM (ex: le premier) pour accéder aux fonctions globales
-                    main_rm = RiskManager(config, executor, symbols_to_trade[0])
-                    
-                    # Limite Perte Jour (inchangé)
-                    limit_reached, _ = main_rm.is_daily_loss_limit_reached()
-                    if limit_reached:
-                        state.update_status("Arrêt d'Urgence", "Limite de perte journalière atteinte.", is_emergency=True)
-                        skip_new_signals = True # Ne pas ouvrir de nouveaux trades
-                    
-                    # (J.4) Limite Risque Total
-                    max_total_risk = config.get('risk_management', {}).get('max_total_risk_percent', 5.0) / 100.0
-                    if max_total_risk > 0 and not skip_new_signals:
-                        current_total_risk = main_rm.get_current_total_risk(all_bot_positions, account_info.equity)
-                        if current_total_risk >= max_total_risk:
-                            logging.warning(f"Limite risque globale atteinte ({current_total_risk*100:.2f}% >= {max_total_risk*100:.2f}%). Scan de nouveaux signaux suspendu.")
-                            skip_new_signals = True
-                        elif current_total_risk > 0:
-                             logging.info(f"Risque global actuel: {current_total_risk*100:.2f}% / {max_total_risk*100:.2f}%")
-
-                except ValueError: pass
-                except Exception as e: logging.error(f"Erreur vérification limite risque: {e}", exc_info=True)
-
-            # 5. Boucle d'analyse et de trading
-            if is_first_cycle: logging.info("Premier cycle: trading désactivé pour synchro.")
-
-            current_pending_orders = executor.get_pending_orders(magic=magic_number)
-            pending_symbols = {order.symbol for order in current_pending_orders}
-
-            # (J.4) Si limite atteinte, sauter tout le scan
-            if skip_new_signals and not is_first_cycle:
-                 logging.debug("Scan de nouveaux signaux ignoré (Limites atteintes).")
-            else:
-                for symbol in symbols_to_trade:
-                    try:
-                        # Conditions pour NE PAS chercher de signal:
-                        if not is_within_trading_session(symbol, config): continue
-                        if any(pos.symbol == symbol for pos in all_bot_positions): continue 
-                        if symbol in pending_symbols: continue 
-                        if state.is_symbol_locked(symbol): 
-                            logging.debug(f"Symbole {symbol} verrouillé. Scan ignoré.")
-                            continue
-
-                        # Obtenir les données
-                        risk_manager = RiskManager(config, executor, symbol)
-                        timeframe = config['trading_settings'].get('timeframe', 'M15')
-                        ohlc_data = connector.get_ohlc(symbol, timeframe, 300)
-
-                        if ohlc_data is None or ohlc_data.empty:
-                            logging.warning(f"Données OHLC non dispo pour {symbol} sur {timeframe}.")
-                            continue
-
-                        # Détecter le pattern (maintenant avec zone)
-                        detector = PatternDetector(config)
-                        trade_signal = detector.detect_patterns(ohlc_data, connector, symbol) # Retourne zone
-                        state.update_symbol_patterns(symbol, detector.get_detected_patterns_info())
-
-                        # --- R7 : Logique Ordre Limite ---
-                        if trade_signal and not is_first_cycle:
-                            logging.info(f"SIGNAL VALIDE sur {symbol}: [{trade_signal['pattern']}] direction {trade_signal['direction']} - ZONE [{trade_signal.get('entry_zone_start'):.5f} - {trade_signal.get('entry_zone_end'):.5f}].")
-
-                            # (J.9) Utiliser la durée du config.yaml
-                            ttl_lock = config['trading_settings'].get('idempotency_lock_seconds', 900)
-                            state.lock_symbol(symbol, ttl_lock) 
-
-                            executor.execute_trade(
-                                account_info, risk_manager, symbol, trade_signal['direction'],
-                                ohlc_data, trade_signal['pattern'], magic_number,
-                                trade_signal 
-                            )
-                        # --- Fin R7 ---
-
-                    except ValueError as e: logging.error(f"Impossible de traiter '{symbol}': {e}.")
-                    except Exception as e: logging.error(f"Erreur analyse sur {symbol}: {e}", exc_info=True)
-
-            # 6. Attendre prochaine bougie (inchangé)
-            timeframe_str = config['trading_settings'].get('timeframe', 'M15')
-            timeframe_seconds = get_timeframe_seconds(timeframe_str)
-            now_utc_ts = datetime.now(pytz.utc).timestamp()
-            next_candle_epoch = (now_utc_ts // timeframe_seconds + 1) * timeframe_seconds
-            sleep_duration = max(1, next_candle_epoch - now_utc_ts)
-
-            if is_first_cycle:
-                logging.info("Fin cycle synchro. Trading activé.")
-                is_first_cycle = False
-
-            logging.info(f"Cycle terminé. Attente de {sleep_duration:.1f}s.")
-            time.sleep(sleep_duration)
-
-        except (ConnectionError, BrokenPipeError, TimeoutError) as conn_err:
-            logging.error(f"Erreur connexion critique: {conn_err}", exc_info=False)
-            state.update_status("Déconnecté", f"Erreur connexion: {conn_err}", is_emergency=True)
-            time.sleep(30)
         except KeyboardInterrupt:
-             logging.info("Arrêt manuel demandé (Ctrl+C).")
-             state.shutdown()
-             break
-        except Exception as loop_err:
-            logging.critical(f"ERREUR CRITIQUE boucle principale: {loop_err}", exc_info=True)
-            state.update_status("ERREUR CRITIQUE", str(loop_err), is_emergency=True)
-            time.sleep(60)
+            logger.info("Arrêt manuel du bot (KeyboardInterrupt).")
+            shared_state.stop_bot()
+            
+        except Exception as e:
+            # Erreur critique hors de la boucle de symbole (ex: chargement config)
+            logger.critical(f"Erreur critique dans la boucle principale: {e}", exc_info=True)
+            time.sleep(check_interval * 2)
 
-    connector.disconnect()
-    logging.info("Boucle de trading terminée.")
+    logger.info("Boucle principale du bot terminée.")
+    mt5_connector.disconnect()
 
-
-# ... (le bloc if __name__ == "__main__": reste inchangé) ...
-if __name__ == "__main__":
-    shared_state = SharedState()
-    setup_logging(shared_state)
-
-    try:
-        config = load_yaml('config.yaml')
-
-        host = config.get('api', {}).get('host', '127.0.0.1')
-        port = config.get('api', {}).get('port', 5000)
-        url = f"http://{host}:{port}"
-
-        api_thread = threading.Thread(target=start_api_server, args=(shared_state,), daemon=True)
-        api_thread.start()
-        logging.info(f"Interface web démarrée sur {url}")
-
+def start_api_server(config):
+    """Démarre le serveur Flask dans un thread séparé."""
+    if not config.get('api', {}).get('enabled', False):
+        logger.info("API server est désactivé dans la configuration.")
+        return
+        
+    def run_server():
+        logger.info(f"Démarrage du serveur API...")
         try:
-            time.sleep(1) # Laisse le temps au serveur de démarrer
-            webbrowser.open(url)
-        except Exception:
-            logging.warning("Impossible d'ouvrir le navigateur web automatiquement.")
+            # Appel de la fonction de votre fichier 'src/api/server.py'
+            api_server.start_api_server(shared_state)
+        except Exception as e:
+            logger.critical(f"Échec du démarrage du serveur API: {e}", exc_info=True)
 
-        main_trading_loop(shared_state)
+    api_thread = threading.Thread(target=run_server, daemon=True)
+    api_thread.start()
+    logger.info(f"Serveur API démarré (voir logs API pour le port).")
 
-    except Exception as startup_err:
-         logging.critical(f"ERREUR FATALE au démarrage: {startup_err}", exc_info=True)
-         shared_state.update_status("ERREUR FATALE", str(startup_err), is_emergency=True)
-         if 'api_thread' in locals() and api_thread.is_alive():
-              logging.info("Tentative de maintien de l'API active...")
-              while True: time.sleep(3600)
 
-    logging.info("Programme principal terminé.")
+if __name__ == "__main__":
+    config = load_config()
+    
+    if config:
+        start_api_server(config)
+        
+        if initialize_bot(config):
+            run_bot()
+        else:
+            logger.critical("Échec de l'initialisation du bot. Arrêt.")
+    else:
+        logger.critical("Échec du chargement de la configuration. Arrêt.")
+
+    logger.info("Programme principal terminé.")
