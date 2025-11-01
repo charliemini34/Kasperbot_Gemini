@@ -2,14 +2,15 @@
 
 import time
 import datetime
-import pandas as pd
 import pytz  # Nécessaire pour les fuseaux horaires
+import pandas as pd
 from src.analysis.market_structure import MarketStructure
 from src.patterns.pattern_detector import PatternDetector
 from src.strategy.smc_entry_logic import SMCEntryLogic
 
 class SMCOrchestrator:
-    def __init__(self, connector, executor, risk_manager, journal, config, shared_state):
+    def __init__(self, connector, executor, risk_manager, journal, config, shared_state, symbol):
+        # CORRECTION: Signature __init__ restaurée pour inclure 'symbol'
         self.connector = connector
         self.executor = executor
         self.risk_manager = risk_manager
@@ -32,7 +33,10 @@ class SMCOrchestrator:
         
         # Récupération des paramètres de la config
         self.strategy_config = config.get('strategy', {})
-        self.symbol = self.strategy_config.get('symbol', 'XAUUSD')
+        
+        # CORRECTION: Utiliser le 'symbol' passé par main.py
+        self.symbol = symbol 
+        
         self.htf = self.strategy_config.get('htf', 'H1')
         self.ltf = self.strategy_config.get('ltf', 'M5')
         self.num_htf_candles = self.strategy_config.get('num_htf_candles', 200)
@@ -222,13 +226,16 @@ class SMCOrchestrator:
         # 6. Vérifier si le prix actuel est revenu sur ce FVG
         current_candle = ltf_data.iloc[-1]
         
+        trade_opportunity = None # Réinitialiser
         if trade_type == "BUY" and current_candle['low'] <= target_fvg['top']:
             print(f"KZ NY: Opportunité d'ACHAT (retracement FVG) détectée.")
+            trade_opportunity = "BUY"
             # TP = 2R (comme dans la vidéo de scalping)
             target_price = None # Le Risk Manager le calculera avec 2R
         
         elif trade_type == "SELL" and current_candle['high'] >= target_fvg['bottom']:
             print(f"KZ NY: Opportunité de VENTE (retracement FVG) détectée.")
+            trade_opportunity = "SELL"
             target_price = None
         
         else:
@@ -236,19 +243,22 @@ class SMCOrchestrator:
             return False # Le prix n'est pas encore revenu
 
         # 7. Exécution
-        # Nous avons une opportunité A+ basée sur la Kill Zone
-        self.entry_logic.check_entry_confirmation(
-            symbol=self.symbol,
-            trade_type=trade_type,
-            poi_zone=target_fvg, # Notre zone d'entrée est l'Imbalance
-            target_price=target_price, # Mettre None force le R:R fixe
-            current_candle=current_candle,
-            force_rr_target=2.0 # Forcer un R:R de 2:1 pour cette stratégie
-        )
+        if trade_opportunity:
+            # Nous avons une opportunité A+ basée sur la Kill Zone
+            self.entry_logic.check_entry_confirmation(
+                symbol=self.symbol,
+                trade_type=trade_opportunity,
+                poi_zone=target_fvg, # Notre zone d'entrée est l'Imbalance
+                target_price=target_price, # Mettre None force le R:R fixe
+                current_candle=current_candle,
+                force_rr_target=2.0 # Forcer un R:R de 2:1 pour cette stratégie
+            )
+            
+            # Marquer comme exécuté pour aujourd'hui
+            self.ny_strategy_executed = True
+            return True
         
-        # Marquer comme exécuté pour aujourd'hui
-        self.ny_strategy_executed = True
-        return True
+        return False
 
     # --- FIN NOUVELLE FONCTION ---
 
@@ -267,22 +277,25 @@ class SMCOrchestrator:
             if (self.ny_kz_start <= current_time_utc <= self.ny_kz_end) and not self.ny_strategy_executed:
                 
                 # Récupérer les données LTF (plus de données pour l'analyse KZ)
-                ltf_data = self.connector.get_market_data(self.symbol, self.ltf, self.num_ltf_candles)
-                if not ltf_data.empty:
+                ltf_data_kz = self.connector.get_market_data(self.symbol, self.ltf, self.num_ltf_candles)
+                
+                if not ltf_data_kz.empty:
                     # Tenter d'exécuter la stratégie de Kill Zone
                     # Nous passons une analyse de structure vide car non nécessaire pour cette strat
-                    strategy_ran = self._run_ny_kill_zone_strategy(ltf_data, {})
+                    strategy_ran = self._run_ny_kill_zone_strategy(ltf_data_kz, {})
                     if strategy_ran:
                         # Si la stratégie KZ a trouvé et exécuté un trade, on s'arrête là pour ce cycle
+                        print("KZ NY: Trade exécuté. Cycle terminé.")
                         return 
                 # Si la strat KZ a échoué (ex: pas de bougie), on passe à la strat normale
-                print("KZ NY: Stratégie KZ terminée, passage à la stratégie SMC normale.")
+                print("KZ NY: Stratégie KZ vérifiée (pas de trade), passage à la stratégie SMC normale.")
             
             # --- Fin Logique Kill Zone ---
 
 
             # 1. Récupérer les données Multi-Timeframe
-            print(f"Récupération des données: {self.num_htf_candles}x {self.htf}, {self.num_ltf_candles}x {self.ltf}")
+            # Note: self.symbol est maintenant défini par main.py
+            print(f"Récupération des données: {self.num_htf_candles}x {self.htf} / {self.num_ltf_candles}x {self.ltf} pour {self.symbol}")
             htf_data = self.connector.get_market_data(self.symbol, self.htf, self.num_htf_candles)
             ltf_data = self.connector.get_market_data(self.symbol, self.ltf, self.num_ltf_candles)
             
@@ -296,7 +309,7 @@ class SMCOrchestrator:
             htf_swings = structure_analysis['htf_swings']
             
             if bias == "RANGING":
-                print("Biais HTF en Ranging. Aucune action.")
+                print(f"Biais HTF en Ranging pour {self.symbol}. Aucune action.")
                 return
 
             # 3. Phase 2: Détecter les "Aimants" (POI et Liquidité)
@@ -305,7 +318,7 @@ class SMCOrchestrator:
             liquidity_targets = patterns['liquidity']
             
             if not all_poi:
-                print("Aucun POI (OB/FVG) valide trouvé. Attente.")
+                print(f"Aucun POI (OB/FVG) valide trouvé pour {self.symbol}. Attente.")
                 return
 
             # 4. Phase 3: Filtrage "Checklist A+"
@@ -313,13 +326,13 @@ class SMCOrchestrator:
             # 4a. Filtrer les POI par Biais
             biased_poi = self._filter_poi_by_bias(all_poi, bias)
             if not biased_poi:
-                print(f"Aucun POI aligné avec le biais {bias}. Attente.")
+                print(f"Aucun POI aligné avec le biais {bias} pour {self.symbol}. Attente.")
                 return
 
             # 4b. Filtrer les POI par OTE (Premium/Discount)
             high_probability_pois = self._filter_poi_by_ote(biased_poi, bias, htf_swings)
             if not high_probability_pois:
-                print("Aucun POI dans la zone OTE (Premium/Discount). Attente.")
+                print(f"Aucun POI dans la zone OTE (Premium/Discount) pour {self.symbol}. Attente.")
                 return
 
             # 5. Vérification d'Entrée
@@ -334,12 +347,12 @@ class SMCOrchestrator:
                 # Vérifier si le prix actuel touche le POI
                 if bias == "BULLISH" and current_price_low <= poi['top']:
                     # Le prix touche un POI haussier A+
-                    print(f"Opportunité d'ACHAT détectée: Prix touche POI {poi['type']} à {poi['top']:.2f}")
+                    print(f"Opportunité d'ACHAT détectée: Prix touche POI {poi['type']} à {poi['top']:.2f} sur {self.symbol}")
                     trade_opportunity = "BUY"
                     
                 elif bias == "BEARISH" and current_price_high >= poi['bottom']:
                     # Le prix touche un POI baissier A+
-                    print(f"Opportunité de VENTE détectée: Prix touche POI {poi['type']} à {poi['bottom']:.2f}")
+                    print(f"Opportunité de VENTE détectée: Prix touche POI {poi['type']} à {poi['bottom']:.2f} sur {self.symbol}")
                     trade_opportunity = "SELL"
                 
                 if trade_opportunity:
@@ -359,5 +372,5 @@ class SMCOrchestrator:
                     break 
 
         except Exception as e:
-            print(f"Erreur dans l'orchestrateur SMC: {e}")
+            print(f"Erreur dans l'orchestrateur SMC pour {self.symbol}: {e}")
             # Gérer l'exception (ex: logging)
