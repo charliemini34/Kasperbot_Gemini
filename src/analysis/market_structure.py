@@ -1,158 +1,149 @@
-"""
-Fichier: src/analysis/market_structure.py
-Version: 1.0.0
-Description: Module d'analyse de la structure de marché (SMC).
-             Identifie les points pivots (swings), les BOS et les CHOCH.
-"""
+# src/analysis/market_structure.py
 
 import pandas as pd
 import numpy as np
 from scipy.signal import argrelextrema
-import logging
 
-logger = logging.getLogger(__name__)
+class MarketStructure:
+    def __init__(self, config):
+        self.config = config
+        self.htf_order = config.get('htf_swing_order', 5)  # Ordre pour les swings HTF (plus larges)
+        self.ltf_order = config.get('ltf_swing_order', 3)  # Ordre pour les swings LTF (plus fins)
 
-def find_swing_highs_lows(data: pd.DataFrame, order: int = 5):
-    """
-    Identifie les points de swing (highs et lows) dans les données de marché.
-    
-    Args:
-        data (pd.DataFrame): DataFrame avec 'high' et 'low'.
-        order (int): Le nombre de bougies de chaque côté à considérer.
+    def _find_swing_points(self, df, order):
+        """
+        Trouve les points de swing (highs et lows) dans un DataFrame.
+        Utilise argrelextrema pour une détection efficace.
+        'order' détermine le nombre de bougies de chaque côté pour définir un swing.
+        """
+        # Ajout de padding pour détecter les swings aux extrémités
+        n = order
+        
+        # Trouver les indices des extrema
+        high_indices = argrelextrema(df['high'].values, np.greater, order=order)[0]
+        low_indices = argrelextrema(df['low'].values, np.less, order=order)[0]
+        
+        # Filtrer pour s'assurer qu'ils sont valides
+        high_indices = [i for i in high_indices if i >= order and i < len(df) - order]
+        low_indices = [i for i in low_indices if i >= order and i < len(df) - order]
 
-    Returns:
-        tuple: (list_of_swing_highs, list_of_swing_lows)
-               Chaque élément est un tuple (index, prix).
-    """
-    
-    try:
-        # Utilise scipy pour trouver les indices des extrema locaux
-        high_indices = argrelextrema(data['high'].values, np.greater_equal, order=order)[0]
-        low_indices = argrelextrema(data['low'].values, np.less_equal, order=order)[0]
-
-        # Filtre pour ne garder que les points valides (ignorer les bords)
-        valid_high_indices = [i for i in high_indices if i >= order and i < len(data) - order]
-        valid_low_indices = [i for i in low_indices if i >= order and i < len(data) - order]
-
-        # Formatte la sortie en (index, prix)
-        swing_highs = [(data.index[i], data['high'].iloc[i]) for i in valid_high_indices]
-        swing_lows = [(data.index[i], data['low'].iloc[i]) for i in valid_low_indices]
+        # Stocker les swings sous forme de liste de tuples (index, prix)
+        swing_highs = [(df.index[i], df['high'].iloc[i]) for i in high_indices]
+        swing_lows = [(df.index[i], df['low'].iloc[i]) for i in low_indices]
+        
+        # Trier par index (temps) pour s'assurer de l'ordre chronologique
+        swing_highs.sort(key=lambda x: x[0])
+        swing_lows.sort(key=lambda x: x[0])
 
         return swing_highs, swing_lows
-    
-    except Exception as e:
-        logger.error(f"Erreur dans find_swing_highs_lows: {e}", exc_info=True)
-        return [], []
 
-def identify_structure(swing_highs: list, swing_lows: list):
-    """
-    Analyse la séquence de swings pour identifier la tendance, les BOS et les CHOCH.
+    def _get_market_bias(self, swing_highs, swing_lows):
+        """
+        Détermine le biais du marché (tendance) en se basant sur les 2 derniers swing highs et lows.
+        """
+        if len(swing_highs) < 2 or len(swing_lows) < 2:
+            return "RANGING"  # Pas assez de points pour déterminer une tendance
 
-    Args:
-        swing_highs (list): Liste de tuples (index, prix) des swing highs.
-        swing_lows (list): Liste de tuples (index, prix) des swing lows.
+        # Récupérer les deux derniers swings de chaque type
+        last_high = swing_highs[-1][1]
+        prev_high = swing_highs[-2][1]
+        
+        last_low = swing_lows[-1][1]
+        prev_low = swing_lows[-2][1]
 
-    Returns:
-        tuple: (list_of_structure_events, str_current_trend, last_significant_high, last_significant_low)
-    """
-    
-    all_swings = sorted(swing_highs + swing_lows, key=lambda x: x[0])
-    structure_events = []
-    current_trend = "SIDEWAYS"
-    
-    last_high = None
-    last_low = None
-    last_significant_high = None
-    last_significant_low = None
+        # Logique SMC : Higher Highs (HH) et Higher Lows (HL)
+        if last_high > prev_high and last_low > prev_low:
+            return "BULLISH"
+        # Logique SMC : Lower Lows (LL) et Lower Highs (LH)
+        elif last_low < prev_low and last_high < prev_high:
+            return "BEARISH"
+        # Autres cas (ex: HH et LL, ou LH et HL) sont des ranges ou des retournements
+        else:
+            return "RANGING"
 
-    if not all_swings:
-        return [], "SIDEWAYS", None, None
+    def _identify_structure_breaks(self, df, swing_highs, swing_lows, bias):
+        """
+        Identifie les événements BOS (Break of Structure) et CHoCH (Change of Character)
+        en se basant sur le dernier prix de clôture et le biais actuel.
+        """
+        bos_event = None
+        choch_event = None
+        
+        if not swing_highs or not swing_lows:
+            return bos_event, choch_event  # Ne peut rien faire sans swings
 
-    # Initialisation
-    first_swing = all_swings[0]
-    if first_swing in swing_highs:
-        last_high = first_swing
-        last_significant_high = first_swing
-    else:
-        last_low = first_swing
-        last_significant_low = first_swing
+        last_close = df['close'].iloc[-1]
+        last_high = swing_highs[-1][1]  # Le plus récent Lower High (LH) en tendance baissière
+        last_low = swing_lows[-1][1]    # Le plus récent Higher Low (HL) en tendance haussière
 
-    for i in range(1, len(all_swings)):
-        current_swing = all_swings[i]
-        is_high = current_swing in swing_highs
+        if bias == "BULLISH":
+            # Un BOS est une cassure du dernier High (continuation)
+            if last_close > last_high:
+                bos_event = "BULLISH_BOS"
+            # Un CHoCH est une cassure du dernier Low (retournement)
+            elif last_close < last_low:
+                choch_event = "BEARISH_CHOCH"
+                
+        elif bias == "BEARISH":
+            # Un BOS est une cassure du dernier Low (continuation)
+            if last_close < last_low:
+                bos_event = "BEARISH_BOS"
+            # Un CHoCH est une cassure du dernier High (retournement)
+            elif last_close > last_high:
+                choch_event = "BULLISH_CHOCH"
+        
+        # Si en RANGING, une cassure d'un côté ou de l'autre peut être un CHoCH
+        elif bias == "RANGING":
+            if last_close > last_high:
+                choch_event = "BULLISH_CHOCH"
+            elif last_close < last_low:
+                choch_event = "BEARISH_CHOCH"
 
-        if is_high:
-            last_high = current_swing
-            if last_significant_high is None:
-                last_significant_high = current_swing
-                continue
+        return bos_event, choch_event
 
-            # Scénario Haussier
-            if current_trend == "BULLISH":
-                if current_swing[1] > last_significant_high[1]:
-                    # Break of Structure (BOS) Haussier
-                    structure_events.append({
-                        "type": "BOS", "trend": "BULLISH",
-                        "level": last_significant_high[1], "timestamp": current_swing[0]
-                    })
-                    last_significant_high = current_swing
-                    if last_low and (last_significant_low is None or last_low[0] > last_significant_low[0]):
-                         last_significant_low = last_low
+    def analyze(self, htf_data, ltf_data):
+        """
+        Analyse la structure de marché multi-timeframe (HTF/LTF).
+        C'est la méthode principale appelée par l'orchestrateur.
+        
+        'htf_data' est le DataFrame pour le High Timeframe (Biais).
+        'ltf_data' est le DataFrame pour le Low Timeframe (Structure d'entrée).
+        """
+        
+        # 1. Analyse du HTF (High Timeframe) pour le BIAIS
+        htf_swing_highs, htf_swing_lows = self._find_swing_points(htf_data, order=self.htf_order)
+        market_bias = self._get_market_bias(htf_swing_highs, htf_swing_lows)
 
-            # Scénario Baissier
-            elif current_trend == "BEARISH":
-                if current_swing[1] > last_significant_high[1]:
-                    # Change of Character (CHOCH) Haussier
-                    structure_events.append({
-                        "type": "CHOCH", "trend": "BULLISH",
-                        "level": last_significant_high[1], "timestamp": current_swing[0]
-                    })
-                    current_trend = "BULLISH"
-                    last_significant_high = current_swing
-                    if last_low: 
-                        last_significant_low = last_low
-            
-            # Initialisation Tendance
-            elif current_trend == "SIDEWAYS" and last_significant_low:
-                if current_swing[1] > last_significant_high[1]:
-                    current_trend = "BULLISH"
-                    last_significant_high = current_swing
+        # 2. Analyse du LTF (Low Timeframe) pour la STRUCTURE
+        ltf_swing_highs, ltf_swing_lows = self._find_swing_points(ltf_data, order=self.ltf_order)
+        
+        # 3. Identification des événements (BOS/CHOCH) sur le LTF, en utilisant le BIAIS du HTF
+        bos_event, choch_event = self._identify_structure_breaks(
+            ltf_data, 
+            ltf_swing_highs, 
+            ltf_swing_lows, 
+            market_bias
+        )
 
-        else: # C'est un Swing Low
-            last_low = current_swing
-            if last_significant_low is None:
-                last_significant_low = current_swing
-                continue
+        print(f"Analyse Structure: Biais HTF = {market_bias}, Événement LTF_BOS = {bos_event}, Événement LTF_CHOCH = {choch_event}")
 
-            # Scénario Haussier
-            if current_trend == "BULLISH":
-                if current_swing[1] < last_significant_low[1]:
-                    # Change of Character (CHOCH) Baissier
-                    structure_events.append({
-                        "type": "CHOCH", "trend": "BEARISH",
-                        "level": last_significant_low[1], "timestamp": current_swing[0]
-                    })
-                    current_trend = "BEARISH"
-                    last_significant_low = current_swing
-                    if last_high: 
-                        last_significant_high = last_high
+        # 4. Retourne l'analyse complète
+        structure_analysis = {
+            "bias": market_bias,  # "BULLISH", "BEARISH", "RANGING"
+            "ltf_structure": {
+                "bos": bos_event,
+                "choch": choch_event
+            },
+            "htf_swings": {
+                "highs": htf_swing_highs,
+                "lows": htf_swing_lows
+            },
+            "ltf_swings": {
+                "highs": ltf_swing_highs,
+                "lows": ltf_swing_lows
+            }
+        }
+        
+        return structure_analysis
 
-            # Scénario Baissier
-            elif current_trend == "BEARISH":
-                if current_swing[1] < last_significant_low[1]:
-                    # Break of Structure (BOS) Baissier
-                    structure_events.append({
-                        "type": "BOS", "trend": "BEARISH",
-                        "level": last_significant_low[1], "timestamp": current_swing[0]
-                    })
-                    last_significant_low = current_swing
-                    if last_high and (last_significant_high is None or last_high[0] > last_significant_high[0]):
-                        last_significant_high = last_high
-            
-            # Initialisation Tendance
-            elif current_trend == "SIDEWAYS" and last_significant_high:
-                if current_swing[1] < last_significant_low[1]:
-                    current_trend = "BEARISH"
-                    last_significant_low = current_swing
-
-    return structure_events, current_trend, last_significant_high, last_significant_low
+    # D'autres méthodes peuvent être ajoutées pour des analyses spécifiques

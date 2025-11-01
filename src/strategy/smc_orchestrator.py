@@ -1,202 +1,363 @@
-"""
-Fichier: src/strategy/smc_orchestrator.py
-Version: 1.0.0
-Description: Module d'orchestration de la stratégie SMC.
-             Combine l'analyse MTF (structure, POI) pour générer 
-             un signal de trade compatible avec le RiskManager v13.
-"""
+# src/strategy/smc_orchestrator.py
 
-import logging
+import time
+import datetime
 import pandas as pd
-import numpy as np
+import pytz  # Nécessaire pour les fuseaux horaires
+from src.analysis.market_structure import MarketStructure
+from src.patterns.pattern_detector import PatternDetector
+from src.strategy.smc_entry_logic import SMCEntryLogic
 
-# Importation de nos nouveaux modules et des modules de patterns existants
-from src.analysis import market_structure as structure
-from src.patterns import pattern_detector as patterns # Nous l'importerons (il sera modifié)
-from src.constants import BUY, SELL
-
-logger = logging.getLogger(__name__)
-
-def _get_fibonacci_zones(start_price: float, end_price: float) -> dict:
-    """
-    Calcule les niveaux clés de Fibonacci (Discount, Premium, OTE) pour un swing.
-    """
-    if start_price == 0 or end_price == 0 or start_price == end_price:
-        return {}
+class SMCOrchestrator:
+    def __init__(self, connector, executor, risk_manager, journal, config, shared_state):
+        self.connector = connector
+        self.executor = executor
+        self.risk_manager = risk_manager
+        self.journal = journal
+        self.config = config
+        self.shared_state = shared_state
         
-    is_bullish_swing = end_price > start_price
-    diff = end_price - start_price
-
-    zones = {
-        'equilibrium': start_price + diff * 0.5,
-        'ote_top': start_price + diff * (1.0 - 0.62),  # 0.62
-        'ote_bottom': start_price + diff * (1.0 - 0.786), # 0.786
-    }
-    
-    # 
-    if is_bullish_swing:
-        # Pour un swing haussier, la zone "discount" est en bas
-        zones['discount_top'] = zones['equilibrium']
-        zones['premium_bottom'] = zones['equilibrium']
-        # L'OTE est dans la zone Discount. 'ote_top' est le 0.62 (plus haut), 'ote_bottom' est le 0.786 (plus bas)
-        zones['ote_top'] = start_price + diff * (1.0 - 0.62)
-        zones['ote_bottom'] = start_price + diff * (1.0 - 0.786)
-
-    # 
-    else: # Swing Baissier
-        # Pour un swing baissier, la zone "premium" est en haut
-        zones['discount_top'] = zones['equilibrium']
-        zones['premium_bottom'] = zones['equilibrium']
-        # L'OTE est dans la zone Premium. 'ote_top' est le 0.786 (plus haut), 'ote_bottom' est le 0.62 (plus bas)
-        zones['ote_top'] = start_price + diff * (1.0 - 0.786) 
-        zones['ote_bottom'] = start_price + diff * (1.0 - 0.62)
-
-    return zones
-
-def find_smc_signal(mtf_data: dict, config: dict):
-    """
-    Orchestre l'analyse SMC complète et retourne un signal compatible RiskManager v13.
-
-    Args:
-        mtf_data (dict): Dictionnaire de DataFrames. 
-                         Ex: {'H4': pd.DataFrame, 'M15': pd.DataFrame}
-        config (dict): Dictionnaire de configuration.
-
-    Returns:
-        dict: Un dictionnaire de signal (ex: {'direction': BUY, ...}) 
-              ou None si aucun signal n'est trouvé.
-    """
-    
-    try:
-        # --- Étape 1: Récupérer les paramètres et données ---
-        strategy_params = config.get('smc_strategy', {}) # Nouveaux params de config
-        htf_tf = strategy_params.get('htf_timeframe', 'H4')
-        ltf_tf = strategy_params.get('ltf_timeframe', 'M15')
+        # Initialisation des modules d'analyse et de détection
+        self.market_structure = MarketStructure(config.get('analysis', {}))
+        self.pattern_detector = PatternDetector(config.get('patterns', {}))
         
-        htf_data = mtf_data.get(htf_tf)
-        ltf_data = mtf_data.get(ltf_tf)
-
-        if htf_data is None or ltf_data is None:
-            logger.warning(f"SMC: Données manquantes pour {htf_tf} or {ltf_tf}. Signal ignoré.")
-            return None
-
-        current_low = ltf_data['low'].iloc[-1]
-        current_high = ltf_data['high'].iloc[-1]
+        # Initialisation de la logique d'entrée (la gâchette)
+        self.entry_logic = SMCEntryLogic(
+            executor=self.executor,
+            risk_manager=self.risk_manager,
+            journal=self.journal,
+            config=config.get('strategy', {}),
+            shared_state=self.shared_state
+        )
         
-        # --- Étape 2: Définir la tendance de fond (Bias HTF) ---
-        htf_swing_order = strategy_params.get('htf_swing_order', 10)
-        htf_swings_high, htf_swings_low = structure.find_swing_highs_lows(htf_data, order=htf_swing_order)
-        _htf_events, htf_trend, _h, _l = structure.identify_structure(htf_swings_high, htf_swings_low)
+        # Récupération des paramètres de la config
+        self.strategy_config = config.get('strategy', {})
+        self.symbol = self.strategy_config.get('symbol', 'XAUUSD')
+        self.htf = self.strategy_config.get('htf', 'H1')
+        self.ltf = self.strategy_config.get('ltf', 'M5')
+        self.num_htf_candles = self.strategy_config.get('num_htf_candles', 200)
+        self.num_ltf_candles = self.strategy_config.get('num_ltf_candles', 100)
         
-        if htf_trend not in ["BULLISH", "BEARISH"]:
-            logger.info(f"SMC: Tendance HTF ({htf_tf}) non claire ({htf_trend}). Pas de signal.")
-            return None
+        # Paramètres Fibo/OTE
+        self.ote_premium_level = self.strategy_config.get('ote_premium_level', 0.5)
+        self.ote_discount_level = self.strategy_config.get('ote_discount_level', 0.5)
+
+        # --- AJOUT PHASE 4 : Kill Zones ---
+        # Définir le fuseau horaire du serveur MT5 (généralement UTC)
+        self.mt5_timezone = pytz.utc
+        # Définir la Kill Zone de New York (ex: 14h30 - 17h00 Paris -> 12h30 - 15h00 UTC en hiver)
+        # Note : MT5 utilise souvent l'heure UTC. Ajustez selon votre broker.
+        # Nous utilisons les heures UTC ici.
+        self.ny_kz_start = datetime.time(12, 30) # 12:30 UTC
+        self.ny_kz_end = datetime.time(16, 0)  # 16:00 UTC
+        # Bougie d'ouverture NY (ex: 14h30 Paris -> 12:30 UTC)
+        self.ny_opening_candle_time = datetime.time(12, 30)
+        self.ny_strategy_executed = False # Pour n'exécuter qu'une fois par jour
+        # --- FIN AJOUT PHASE 4 ---
+
+    def _get_fibonacci_levels(self, last_swing_low, last_swing_high):
+        """Calcule les niveaux de Fibo OTE pour le dernier swing."""
+        if last_swing_low is None or last_swing_high is None:
+            return None, None
             
-        logger.info(f"SMC: Tendance HTF ({htf_tf}) confirmée : {htf_trend}")
+        swing_range = last_swing_high - last_swing_low
+        
+        # Niveaux Premium (pour les Ventes, au-dessus)
+        premium_level = last_swing_low + (swing_range * self.ote_premium_level)
+        
+        # Niveaux Discount (pour les Achats, en dessous)
+        discount_level = last_swing_high - (swing_range * self.ote_discount_level)
+        
+        return premium_level, discount_level
 
-        # --- Étape 3: Analyser la structure LTF pour le retracement ---
-        ltf_swing_order = strategy_params.get('ltf_swing_order', 5)
-        ltf_swings_high, ltf_swings_low = structure.find_swing_highs_lows(ltf_data, order=ltf_swing_order)
-        if len(ltf_swings_high) < 2 or len(ltf_swings_low) < 2:
-            logger.info("SMC: Pas assez de points de structure LTF. En attente...")
-            return None
+    def _filter_poi_by_bias(self, poi_list, bias):
+        """Filtre les POI pour ne garder que ceux alignés avec le biais."""
+        if bias == "BULLISH":
+            return [poi for poi in poi_list if "BULLISH" in poi['type']]
+        elif bias == "BEARISH":
+            return [poi for poi in poi_list if "BEARISH" in poi['type']]
+        return [] # Ne rien faire si en Ranging
+
+    def _filter_poi_by_ote(self, poi_list, bias, htf_swings):
+        """
+        Filtre les POI alignés par biais en fonction de la zone OTE (Premium/Discount).
+        """
+        if not htf_swings['highs'] or not htf_swings['lows']:
+            print("Filtre OTE: Manque de swings HTF pour le calcul Fibo.")
+            return [] # Ne peut pas filtrer sans swings
+
+        # Utiliser le dernier swing HTF complet pour le Fibo
+        last_htf_high = htf_swings['highs'][-1][1]
+        last_htf_low = htf_swings['lows'][-1][1]
+        
+        premium_level, discount_level = self._get_fibonacci_levels(last_htf_low, last_htf_high)
+        
+        if premium_level is None:
+            return [] # Erreur de calcul Fibo
+
+        high_prob_poi = []
+        
+        if bias == "BULLISH":
+            # Pour un Achat, le POI doit être en zone "Discount" (en dessous de 0.5)
+            for poi in poi_list:
+                if poi['bottom'] < discount_level:
+                    high_prob_poi.append(poi)
+            print(f"Filtre OTE (Achat): {len(poi_list)} POI -> {len(high_prob_poi)} POI en zone Discount (< {discount_level:.2f})")
+
+        elif bias == "BEARISH":
+            # Pour une Vente, le POI doit être en zone "Premium" (au-dessus de 0.5)
+            for poi in poi_list:
+                if poi['top'] > premium_level:
+                    high_prob_poi.append(poi)
+            print(f"Filtre OTE (Vente): {len(poi_list)} POI -> {len(high_prob_poi)} POI en zone Premium (> {premium_level:.2f})")
             
-        # --- Étape 4: Logique d'ACHAT (HTF Bullish) ---
-        if htf_trend == "BULLISH":
-            # 1. Trouver le dernier swing haussier LTF à retracer
-            last_high_point = ltf_swings_high[-1]
-            relevant_low_points = [s for s in ltf_swings_low if s[0] < last_high_point[0]]
-            if not relevant_low_points:
-                logger.info("SMC (Bullish): Structure LTF non claire pour le retracement.")
-                return None
-            last_low_point = relevant_low_points[-1]
+        return high_prob_poi
 
-            # 2. Calculer les zones Fib de ce swing haussier
-            fib_zones = _get_fibonacci_zones(last_low_point[1], last_high_point[1])
-            if not fib_zones: return None
-
-            # 3. Vérifier si le prix est dans la zone Discount
-            if current_low > fib_zones['discount_top']:
-                logger.debug("SMC: Le prix est toujours en 'Premium'. En attente de retracement.")
-                return None
-
-            # 4. Trouver des POI (Bullish OB/FVG) dans la zone OTE
-            # (Nous allons modifier 'patterns.py' pour contenir ces fonctions)
-            pois_in_ote = []
-            all_bullish_obs = patterns.find_order_blocks(ltf_data, config) # Modifié
-            for ob in [o for o in all_bullish_obs if o['type'] == BUY]:
-                if (ob['top'] <= fib_zones['ote_top'] and ob['bottom'] >= fib_zones['ote_bottom']):
-                    pois_in_ote.append({'poi_type': 'OB', **ob})
-
-            all_bullish_fvgs = patterns.find_imbalances(ltf_data, config) # Modifié
-            for fvg in [f for f in all_bullish_fvgs if f['type'] == BUY and not f['mitigated_at']]:
-                if (fvg['top'] <= fib_zones['ote_top'] and fvg['bottom'] >= fib_zones['ote_bottom']):
-                    pois_in_ote.append({'poi_type': 'FVG', **fvg})
-
-            # 5. Chercher le signal d'entrée (Prioriser le POI le plus haut)
-            best_poi = max(pois_in_ote, key=lambda x: x['top'], default=None)
-            
-            if best_poi and current_low <= best_poi['top']:
-                # Formatage du signal pour RiskManager v13
-                return {
-                    "direction": BUY,
-                    "pattern": f"SMC_OTE_{best_poi['poi_type']}",
-                    "entry_zone_start": best_poi['top'],
-                    "entry_zone_end": best_poi['bottom'],
-                    "stop_loss_level": best_poi['bottom'], # SL structurel (sera bufferisé par RM)
-                    "target_price": last_high_point[1],  # Cible = Liquidité du dernier High
-                    "reason": f"ACHAT: HTF({htf_tf}) {htf_trend} + LTF({ltf_tf}) OTE + {best_poi['poi_type']}"
-                }
-
-        # --- Étape 5: Logique de VENTE (HTF Bearish) ---
-        elif htf_trend == "BEARISH":
-            # 1. Trouver le dernier swing baissier LTF
-            last_low_point = ltf_swings_low[-1]
-            relevant_high_points = [s for s in ltf_swings_high if s[0] < last_low_point[0]]
-            if not relevant_high_points:
-                logger.info("SMC (Bearish): Structure LTF non claire pour le retracement.")
-                return None
-            last_high_point = relevant_high_points[-1]
-            
-            # 2. Calculer les zones Fib
-            fib_zones = _get_fibonacci_zones(last_high_point[1], last_low_point[1])
-            if not fib_zones: return None
-
-            # 3. Vérifier si le prix est dans la zone Premium
-            if current_high < fib_zones['premium_bottom']:
-                logger.debug("SMC: Le prix est toujours en 'Discount'. En attente de retracement.")
-                return None
-
-            # 4. Trouver des POI (Bearish OB/FVG) dans la zone OTE
-            pois_in_ote = []
-            all_bearish_obs = patterns.find_order_blocks(ltf_data, config) # Modifié
-            for ob in [o for o in all_bearish_obs if o['type'] == SELL]:
-                if (ob['top'] <= fib_zones['ote_top'] and ob['bottom'] >= fib_zones['ote_bottom']):
-                    pois_in_ote.append({'poi_type': 'OB', **ob})
-
-            all_bearish_fvgs = patterns.find_imbalances(ltf_data, config) # Modifié
-            for fvg in [f for f in all_bearish_fvgs if f['type'] == SELL and not f['mitigated_at']]:
-                if (fvg['top'] <= fib_zones['ote_top'] and fvg['bottom'] >= fib_zones['ote_bottom']):
-                    pois_in_ote.append({'poi_type': 'FVG', **fvg})
-
-            # 5. Chercher le signal d'entrée (Prioriser le POI le plus bas)
-            best_poi = min(pois_in_ote, key=lambda x: x['bottom'], default=None)
-
-            if best_poi and current_high >= best_poi['bottom']:
-                # Formatage du signal pour RiskManager v13
-                return {
-                    "direction": SELL,
-                    "pattern": f"SMC_OTE_{best_poi['poi_type']}",
-                    "entry_zone_start": best_poi['top'],
-                    "entry_zone_end": best_poi['bottom'],
-                    "stop_loss_level": best_poi['top'], # SL structurel (sera bufferisé par RM)
-                    "target_price": last_low_point[1], # Cible = Liquidité du dernier Low
-                    "reason": f"VENTE: HTF({htf_tf}) {htf_trend} + LTF({ltf_tf}) OTE + {best_poi['poi_type']}"
-                }
-
-    except Exception as e:
-        logger.error(f"Erreur majeure dans l'orchestrateur SMC: {e}", exc_info=True)
+    def _find_trade_target(self, bias, liquidity_zones):
+        """Trouve la cible de liquidité (TP) la plus proche."""
+        if bias == "BULLISH":
+            # Cible = le EQH (Equal High) le plus proche
+            if liquidity_zones['eqh']:
+                return min(liquidity_zones['eqh']) # Le plus bas des "highs"
+        elif bias == "BEARISH":
+            # Cible = le EQL (Equal Low) le plus proche
+            if liquidity_zones['eql']:
+                return max(liquidity_zones['eql']) # Le plus haut des "lows"
         return None
-    
-    logger.debug("SMC: Aucune opportunité OTE trouvée pour le moment.")
-    return None
+
+    # --- NOUVELLE FONCTION PHASE 4 ---
+    def _run_ny_kill_zone_strategy(self, ltf_data, structure_analysis):
+        """
+        Implémente la stratégie de scalping d'ouverture NY (Vidéo: 14h30 M5).
+        """
+        print("--- Stratégie KILL ZONE NEW YORK activée ---")
+        
+        # 1. Trouver la bougie d'ouverture de NY (ex: 12:30 UTC en M5)
+        try:
+            # S'assurer que les données sont indexées par datetime
+            ltf_data.index = pd.to_datetime(ltf_data.index)
+            opening_candle = ltf_data.at_time(self.ny_opening_candle_time)
+            
+            if opening_candle.empty:
+                print(f"KZ NY: Bougie d'ouverture de {self.ny_opening_candle_time} non trouvée.")
+                return False
+                
+            # Prendre la première si plusieurs (ne devrait pas arriver en M5)
+            opening_candle = opening_candle.iloc[0]
+            
+        except Exception as e:
+            print(f"Erreur lors de la recherche de la bougie d'ouverture: {e}")
+            return False
+
+        opening_high = opening_candle['high']
+        opening_low = opening_candle['low']
+        print(f"KZ NY: Bougie d'ouverture M5 ({self.ny_opening_candle_time}) détectée. High: {opening_high}, Low: {opening_low}")
+
+        # 2. Analyser les bougies *après* la bougie d'ouverture
+        data_after_open = ltf_data[ltf_data.index > opening_candle.name]
+        if data_after_open.empty:
+            print("KZ NY: Pas de données après la bougie d'ouverture.")
+            return False
+
+        trade_type = None
+        breakout_candle = None
+        
+        # 3. Chercher la cassure (Breakout)
+        for i in range(len(data_after_open)):
+            candle = data_after_open.iloc[i]
+            
+            # Cassure Haussière (clôture au-dessus du High)
+            if candle['close'] > opening_high:
+                print(f"KZ NY: Cassure Haussière détectée à {candle.name}")
+                trade_type = "BUY"
+                breakout_candle = candle
+                break
+                
+            # Cassure Baissière (clôture en dessous du Low)
+            elif candle['close'] < opening_low:
+                print(f"KZ NY: Cassure Baissière détectée à {candle.name}")
+                trade_type = "SELL"
+                breakout_candle = candle
+                break
+        
+        if trade_type is None:
+            print("KZ NY: Pas de cassure des niveaux d'ouverture pour l'instant.")
+            return False
+
+        # 4. Chercher "Displacement" (Imbalance) après la cassure
+        # (Stratégie vidéo: la cassure crée une Imbalance, on rentre dessus)
+        data_since_breakout = data_after_open[data_after_open.index >= breakout_candle.name]
+        
+        # Nous avons besoin d'au moins 3 bougies pour une Imbalance
+        if len(data_since_breakout) < 3:
+            print("KZ NY: Pas assez de bougies après la cassure pour détecter une Imbalance.")
+            return False
+            
+        # Ré-analyser les patterns (surtout FVG) uniquement sur les nouvelles données
+        # (Nous passons une analyse de structure vide car non pertinente ici)
+        breakout_patterns = self.pattern_detector.detect(data_since_breakout, {'ltf_swings': {'highs': [], 'lows': []}})
+        new_fvgs = breakout_patterns.get('poi', [])
+        
+        if not new_fvgs:
+            print("KZ NY: Cassure sans Imbalance (Displacement). Pas de trade.")
+            return False
+
+        # 5. Trouver le FVG A+ (le premier FVG non-mitigé dans le sens du trade)
+        target_fvg = None
+        if trade_type == "BUY":
+            bullish_fvgs = [fvg for fvg in new_fvgs if fvg['type'] == 'BULLISH_FVG' and not fvg['mitigated']]
+            if bullish_fvgs:
+                target_fvg = bullish_fvgs[0] # Prendre le premier FVG créé
+        elif trade_type == "SELL":
+            bearish_fvgs = [fvg for fvg in new_fvgs if fvg['type'] == 'BEARISH_FVG' and not fvg['mitigated']]
+            if bearish_fvgs:
+                target_fvg = bearish_fvgs[0]
+                
+        if target_fvg is None:
+            print("KZ NY: Aucune Imbalance (FVG) valide trouvée après la cassure.")
+            return False
+
+        print(f"KZ NY: Imbalance (Displacement) trouvée. POI: {target_fvg}")
+
+        # 6. Vérifier si le prix actuel est revenu sur ce FVG
+        current_candle = ltf_data.iloc[-1]
+        
+        if trade_type == "BUY" and current_candle['low'] <= target_fvg['top']:
+            print(f"KZ NY: Opportunité d'ACHAT (retracement FVG) détectée.")
+            # TP = 2R (comme dans la vidéo de scalping)
+            target_price = None # Le Risk Manager le calculera avec 2R
+        
+        elif trade_type == "SELL" and current_candle['high'] >= target_fvg['bottom']:
+            print(f"KZ NY: Opportunité de VENTE (retracement FVG) détectée.")
+            target_price = None
+        
+        else:
+            print("KZ NY: En attente de retracement vers le FVG...")
+            return False # Le prix n'est pas encore revenu
+
+        # 7. Exécution
+        # Nous avons une opportunité A+ basée sur la Kill Zone
+        self.entry_logic.check_entry_confirmation(
+            symbol=self.symbol,
+            trade_type=trade_type,
+            poi_zone=target_fvg, # Notre zone d'entrée est l'Imbalance
+            target_price=target_price, # Mettre None force le R:R fixe
+            current_candle=current_candle,
+            force_rr_target=2.0 # Forcer un R:R de 2:1 pour cette stratégie
+        )
+        
+        # Marquer comme exécuté pour aujourd'hui
+        self.ny_strategy_executed = True
+        return True
+
+    # --- FIN NOUVELLE FONCTION ---
+
+    def run_strategy(self):
+        """Boucle principale de la stratégie, appelée par main.py."""
+        
+        try:
+            # --- Logique de Kill Zone (Phase 4) ---
+            current_time_utc = datetime.datetime.now(self.mt5_timezone).time()
+            
+            # Réinitialiser le flag d'exécution chaque jour
+            if current_time_utc < self.ny_kz_start:
+                self.ny_strategy_executed = False
+
+            # Vérifier si nous sommes dans la Kill Zone NY et que la strat n'a pas déjà été exécutée
+            if (self.ny_kz_start <= current_time_utc <= self.ny_kz_end) and not self.ny_strategy_executed:
+                
+                # Récupérer les données LTF (plus de données pour l'analyse KZ)
+                ltf_data = self.connector.get_market_data(self.symbol, self.ltf, self.num_ltf_candles)
+                if not ltf_data.empty:
+                    # Tenter d'exécuter la stratégie de Kill Zone
+                    # Nous passons une analyse de structure vide car non nécessaire pour cette strat
+                    strategy_ran = self._run_ny_kill_zone_strategy(ltf_data, {})
+                    if strategy_ran:
+                        # Si la stratégie KZ a trouvé et exécuté un trade, on s'arrête là pour ce cycle
+                        return 
+                # Si la strat KZ a échoué (ex: pas de bougie), on passe à la strat normale
+                print("KZ NY: Stratégie KZ terminée, passage à la stratégie SMC normale.")
+            
+            # --- Fin Logique Kill Zone ---
+
+
+            # 1. Récupérer les données Multi-Timeframe
+            print(f"Récupération des données: {self.num_htf_candles}x {self.htf}, {self.num_ltf_candles}x {self.ltf}")
+            htf_data = self.connector.get_market_data(self.symbol, self.htf, self.num_htf_candles)
+            ltf_data = self.connector.get_market_data(self.symbol, self.ltf, self.num_ltf_candles)
+            
+            if htf_data.empty or ltf_data.empty:
+                print("Données vides reçues de MT5. Attente.")
+                return
+
+            # 2. Phase 1: Analyser la Structure et le Biais
+            structure_analysis = self.market_structure.analyze(htf_data, ltf_data)
+            bias = structure_analysis['bias']
+            htf_swings = structure_analysis['htf_swings']
+            
+            if bias == "RANGING":
+                print("Biais HTF en Ranging. Aucune action.")
+                return
+
+            # 3. Phase 2: Détecter les "Aimants" (POI et Liquidité)
+            patterns = self.pattern_detector.detect(ltf_data, structure_analysis)
+            all_poi = patterns['poi']
+            liquidity_targets = patterns['liquidity']
+            
+            if not all_poi:
+                print("Aucun POI (OB/FVG) valide trouvé. Attente.")
+                return
+
+            # 4. Phase 3: Filtrage "Checklist A+"
+            
+            # 4a. Filtrer les POI par Biais
+            biased_poi = self._filter_poi_by_bias(all_poi, bias)
+            if not biased_poi:
+                print(f"Aucun POI aligné avec le biais {bias}. Attente.")
+                return
+
+            # 4b. Filtrer les POI par OTE (Premium/Discount)
+            high_probability_pois = self._filter_poi_by_ote(biased_poi, bias, htf_swings)
+            if not high_probability_pois:
+                print("Aucun POI dans la zone OTE (Premium/Discount). Attente.")
+                return
+
+            # 5. Vérification d'Entrée
+            # Le "cerveau" a trouvé des zones A+. Il vérifie si le prix actuel est dans l'une d'elles.
+            current_price_low = ltf_data['low'].iloc[-1]
+            current_price_high = ltf_data['high'].iloc[-1]
+            
+            for poi in high_probability_pois:
+                
+                trade_opportunity = None
+                
+                # Vérifier si le prix actuel touche le POI
+                if bias == "BULLISH" and current_price_low <= poi['top']:
+                    # Le prix touche un POI haussier A+
+                    print(f"Opportunité d'ACHAT détectée: Prix touche POI {poi['type']} à {poi['top']:.2f}")
+                    trade_opportunity = "BUY"
+                    
+                elif bias == "BEARISH" and current_price_high >= poi['bottom']:
+                    # Le prix touche un POI baissier A+
+                    print(f"Opportunité de VENTE détectée: Prix touche POI {poi['type']} à {poi['bottom']:.2f}")
+                    trade_opportunity = "SELL"
+                
+                if trade_opportunity:
+                    # Trouver la cible (TP)
+                    target_price = self._find_trade_target(bias, liquidity_targets)
+                    
+                    # 6. Phase 3 (Gâchette): Déléguer à la logique d'entrée
+                    # Transmettre la zone (POI) et la cible (TP) pour confirmation finale
+                    self.entry_logic.check_entry_confirmation(
+                        symbol=self.symbol,
+                        trade_type=trade_opportunity,
+                        poi_zone=poi,
+                        target_price=target_price,
+                        current_candle=ltf_data.iloc[-1] # Transmettre la dernière bougie pour confirmation
+                    )
+                    # On ne traite qu'une seule opportunité à la fois
+                    break 
+
+        except Exception as e:
+            print(f"Erreur dans l'orchestrateur SMC: {e}")
+            # Gérer l'exception (ex: logging)

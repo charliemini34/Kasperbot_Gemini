@@ -1,163 +1,245 @@
-# Fichier: src/patterns/pattern_detector.py
-# Version: 20.0.0 (SMC Brain Transplant)
-# Description: Remplacement de la logique de détection par le nouvel orchestrateur SMC.
-#              Conserve la structure de classe pour la compatibilité v19.
+# src/patterns/pattern_detector.py
 
-import logging
 import pandas as pd
-from typing import Dict, Any, Optional
-
-# Importation du nouveau "cerveau" SMC
-from src.strategy import smc_orchestrator
-from src.constants import BUY, SELL
+import numpy as np
 
 class PatternDetector:
-    """
-    Détecte les signaux de trading.
-    Si la stratégie SMC est activée, il délègue l'analyse à l'orchestrateur SMC.
-    Sinon, il utilise l'ancienne logique (désormais désactivée/simplifiée).
-    """
-
-    def __init__(self, config: dict):
-        self.log = logging.getLogger(self.__class__.__name__)
+    def __init__(self, config):
         self.config = config
-        self
-        # Initialiser les informations sur les patterns détectés (pour l'API)
-        self.detected_patterns_info = {}
-        self.log.info("PatternDetector (v20.0.0 SMC) initialisé.")
+        self.eql_threshold_pct = config.get('eql_threshold_pct', 0.0005)  # 0.05% de tolérance
+        self.ob_imbalance_check_candles = config.get('ob_imbalance_check_candles', 5)
+        self.ob_structure_check_candles = config.get('ob_structure_check_candles', 10)
 
-    def get_detected_patterns_info(self) -> Dict[str, Any]:
-        """Retourne les informations sur les derniers patterns détectés pour l'API."""
-        return self.detected_patterns_info
-
-    def detect_patterns(self, mtf_data: Dict[str, pd.DataFrame], connector: Any, symbol: str) -> Optional[Dict[str, Any]]:
+    def _find_imbalances(self, df):
         """
-        Méthode principale pour la détection de pattern.
-        Accepte maintenant mtf_data au lieu de ohlc_data.
+        Détecte les Imbalances (Fair Value Gaps - FVG) dans le DataFrame.
+        Un FVG est un "trou" de prix entre 3 bougies.
         """
-        # Réinitialiser les infos pour ce cycle
-        self.detected_patterns_info = {}
+        fvgs = []
+        # Nous avons besoin d'au moins 3 bougies (indices i, i+1, i+2)
+        for i in range(len(df) - 2):
+            candle1_high = df['high'].iloc[i]
+            candle3_low = df['low'].iloc[i+2]
+            
+            candle1_low = df['low'].iloc[i]
+            candle3_high = df['high'].iloc[i+2]
+            
+            timestamp = df.index[i+1] # Le FVG est associé à la 2ème bougie
 
-        # --- NOUVELLE LOGIQUE SMC ---
-        smc_config = self.config.get('smc_strategy', {})
-        if smc_config.get('enabled', False):
-            try:
-                # Déléguer toute l'analyse au nouveau cerveau
-                trade_signal = smc_orchestrator.find_smc_signal(mtf_data, self.config)
-                
-                if trade_signal:
-                    # Mettre à jour l'info pour l'API
-                    self.detected_patterns_info[trade_signal['pattern']] = {
-                        "status": f"SIGNAL {trade_signal['direction']}",
-                        "details": trade_signal['reason']
-                    }
-                    return trade_signal
-                else:
-                    # Mettre à jour l'info (aucun signal)
-                    self.detected_patterns_info["SMC_OTE"] = {"status": "En attente OTE..."}
-                    return None
+            # Bullish FVG (Gap entre la mèche haute de la 1ère et basse de la 3ème)
+            if candle1_high < candle3_low:
+                fvg = {
+                    "timestamp": timestamp,
+                    "type": "BULLISH_FVG",
+                    "top": candle3_low,
+                    "bottom": candle1_high,
+                    "mitigated": False, # Sera vérifié plus tard
+                }
+                fvgs.append(fvg)
 
-            except Exception as e:
-                self.log.error(f"Erreur critique dans l'orchestrateur SMC pour {symbol}: {e}", exc_info=True)
-                self.detected_patterns_info["SMC_ERROR"] = {"status": "ERREUR", "details": str(e)}
-                return None
+            # Bearish FVG (Gap entre la mèche basse de la 1ère et haute de la 3ème)
+            elif candle1_low > candle3_high:
+                fvg = {
+                    "timestamp": timestamp,
+                    "type": "BEARISH_FVG",
+                    "top": candle1_low,
+                    "bottom": candle3_high,
+                    "mitigated": False, # Sera vérifié plus tard
+                }
+                fvgs.append(fvg)
         
-        # --- ANCIENNE LOGIQUE (FALLBACK) ---
-        else:
-            self.log.warning(f"La stratégie SMC est désactivée pour {symbol}. Aucune autre logique de pattern n'est configurée.")
-            self.detected_patterns_info["SMC_DISABLED"] = {"status": "Désactivé"}
-            # (Ici se trouvait votre ancienne logique de détection v19)
-            return None
+        # Vérification de la mitigation (simple)
+        # Un FVG est mitigé si le prix futur y est revenu
+        for i, fvg in enumerate(fvgs):
+            future_df = df[df.index > fvg['timestamp']]
+            if not future_df.empty:
+                if fvg['type'] == 'BULLISH_FVG':
+                    # Mitigé si le low futur a touché le FVG
+                    if future_df['low'].min() <= fvg['top']:
+                        fvgs[i]['mitigated'] = True
+                elif fvg['type'] == 'BEARISH_FVG':
+                    # Mitigé si le high futur a touché le FVG
+                    if future_df['high'].max() >= fvg['bottom']:
+                        fvgs[i]['mitigated'] = True
 
-# --- FONCTIONS DE BASE REQUISES PAR L'ORCHESTRATEUR ---
-# Ces fonctions sont appelées par 'smc_orchestrator.py'
-# Elles sont placées ici pour garder la logique de "pattern" au même endroit.
-
-def find_imbalances(data: pd.DataFrame, config: dict) -> list:
-    """
-    Identifie les Imbalances (Fair Value Gaps - FVG) dans les données.
-    """
-    fvgs = []
-    if len(data) < 3:
         return fvgs
 
-    highs = data['high'].values
-    lows = data['low'].values
-    times = data.index
-
-    for i in range(len(data) - 2):
-        candle_1_high = highs[i]
-        candle_1_low = lows[i]
-        candle_3_high = highs[i+2]
-        candle_3_low = lows[i+2]
-
-        fvg_info = None
-
-        # Bullish Imbalance (FVG Haussier)
-        if candle_1_high < candle_3_low:
-            fvg_info = {
-                'type': BUY, 'top': candle_3_low, 'bottom': candle_1_high,
-                'start_time': times[i], 'end_time': times[i+2]
-            }
+    def _find_liquidity(self, ltf_swings):
+        """
+        Identifie la liquidité (Equal Highs/Lows) à partir des points de swing.
+        Utilise 'ltf_swings' de l'analyse de structure.
+        """
+        liquidity_zones = {"eqh": [], "eql": []}
+        
+        # Trouver Equal Highs (EQH)
+        highs = ltf_swings['highs']
+        for i in range(len(highs) - 1):
+            price1 = highs[i][1]
+            price2 = highs[i+1][1]
             
-        # Bearish Imbalance (FVG Baissier)
-        elif candle_1_low > candle_3_high:
-            fvg_info = {
-                'type': SELL, 'top': candle_1_low, 'bottom': candle_3_high,
-                'start_time': times[i], 'end_time': times[i+2]
-            }
+            # Si les prix sont très proches (ex: 0.05%)
+            if abs(price1 - price2) <= price1 * self.eql_threshold_pct:
+                zone = min(price1, price2)
+                if zone not in liquidity_zones['eqh']:
+                    liquidity_zones['eqh'].append(zone)
 
-        if fvg_info:
-            mitigated_at = None
-            for j in range(i + 3, len(data)):
-                if fvg_info['type'] == BUY and lows[j] <= fvg_info['top']:
-                    mitigated_at = times[j]
-                    break 
-                elif fvg_info['type'] == SELL and highs[j] >= fvg_info['bottom']:
-                    mitigated_at = times[j]
-                    break
+        # Trouver Equal Lows (EQL)
+        lows = ltf_swings['lows']
+        for i in range(len(lows) - 1):
+            price1 = lows[i][1]
+            price2 = lows[i+1][1]
             
-            fvg_info['mitigated_at'] = mitigated_at
-            fvgs.append(fvg_info)
+            if abs(price1 - price2) <= price1 * self.eql_threshold_pct:
+                zone = max(price1, price2)
+                if zone not in liquidity_zones['eql']:
+                    liquidity_zones['eql'].append(zone)
+                    
+        return liquidity_zones
+
+    def _find_order_blocks(self, df, ltf_swings, fvgs):
+        """
+        Détecte les Order Blocks (OB) valides.
+        Un OB est valide s'il :
+        1. Est la bonne bougie (dernière inverse).
+        2. Le mouvement suivant crée une Imbalance (FVG).
+        3. Le mouvement suivant casse la structure (BOS/CHOCH, ici simplifié par "casse le dernier swing").
+        4. N'est pas encore mitigé.
+        """
+        valid_obs = []
+        
+        # Nous avons besoin d'au moins N bougies pour l'analyse
+        if len(df) < self.ob_structure_check_candles:
+            return []
+
+        for i in range(1, len(df) - self.ob_structure_check_candles):
+            ob_candidate = None
+            ob_type = None
+
+            # 1. Trouver un candidat Bullish OB (dernière bougie baissière)
+            if df['close'].iloc[i] < df['open'].iloc[i] and df['close'].iloc[i+1] > df['open'].iloc[i+1]:
+                # i = Bougie baissière (l'OB)
+                # i+1 = Bougie haussière (le début du mouvement)
+                ob_candidate = df.iloc[i]
+                ob_type = "BULLISH_OB"
+                zone_top = ob_candidate['high']
+                zone_bottom = ob_candidate['low']
+
+            # 1. Trouver un candidat Bearish OB (dernière bougie haussière)
+            elif df['close'].iloc[i] > df['open'].iloc[i] and df['close'].iloc[i+1] < df['open'].iloc[i+1]:
+                # i = Bougie haussière (l'OB)
+                # i+1 = Bougie baissière (le début du mouvement)
+                ob_candidate = df.iloc[i]
+                ob_type = "BEARISH_OB"
+                zone_top = ob_candidate['high']
+                zone_bottom = ob_candidate['low']
+                
+            if ob_candidate is None:
+                continue
+
+            # === Validation du Candidat ===
             
-    return fvgs
-
-def find_order_blocks(data: pd.DataFrame, config: dict) -> list:
-    """
-    Identifie les Order Blocks (OB) potentiels.
-    """
-    obs = []
-    if len(data) < 2:
-        return obs
-    
-    opens = data['open'].values
-    closes = data['close'].values
-    highs = data['high'].values
-    lows = data['low'].values
-    times = data.index
-
-    for i in range(1, len(data)):
-        prev_open, prev_close = opens[i-1], closes[i-1]
-        prev_high, prev_low = highs[i-1], lows[i-1]
-        curr_open, curr_close = opens[i], closes[i]
-        curr_low, curr_high = lows[i], highs[i]
-
-        # Bullish OB (Haussier): Bougie baissière suivie d'une impulsion haussière
-        if (prev_close < prev_open and      # Bougie 1 baissière
-            curr_close > curr_open and      # Bougie 2 haussière
-            curr_close > prev_high):        # Impulsion
+            # 2. Le mouvement suivant crée-t-il une Imbalance (FVG) ?
+            move_start_index = i + 1
+            move_end_index = i + 1 + self.ob_imbalance_check_candles
+            move_fvgs = [
+                fvg for fvg in fvgs 
+                if fvg['timestamp'] >= df.index[move_start_index] and 
+                   fvg['timestamp'] <= df.index[move_end_index] and
+                   not fvg['mitigated']
+            ]
             
-            obs.append({
-                'type': BUY, 'top': prev_high, 'bottom': prev_low, 'time': times[i-1]
+            has_imbalance = False
+            if ob_type == "BULLISH_OB" and any(f['type'] == 'BULLISH_FVG' for f in move_fvgs):
+                has_imbalance = True
+            if ob_type == "BEARISH_OB" and any(f['type'] == 'BEARISH_FVG' for f in move_fvgs):
+                has_imbalance = True
+
+            if not has_imbalance:
+                continue # Invalide, pas de "displacement"
+
+            # 3. Le mouvement suivant casse-t-il la structure ?
+            # (Simplifié : casse le dernier swing high/low pertinent)
+            structure_broken = False
+            move_df = df.iloc[move_start_index : i + 1 + self.ob_structure_check_candles]
+
+            if ob_type == "BULLISH_OB":
+                # Doit casser le dernier swing high
+                last_swing_high = max(h[1] for h in ltf_swings['highs'] if h[0] < ob_candidate.name)
+                if not last_swing_high: continue
+                if move_df['high'].max() > last_swing_high:
+                    structure_broken = True
+            
+            elif ob_type == "BEARISH_OB":
+                # Doit casser le dernier swing low
+                last_swing_low = min(l[1] for l in ltf_swings['lows'] if l[0] < ob_candidate.name)
+                if not last_swing_low: continue
+                if move_df['low'].min() < last_swing_low:
+                    structure_broken = True
+
+            if not structure_broken:
+                continue # Invalide, n'a pas cassé la structure
+
+            # 4. L'OB est-il déjà mitigé ?
+            # (Le prix est-il revenu dans l'OB *après* le mouvement ?)
+            future_df = df.iloc[i + 2:] # Bougies après le début du mouvement
+            mitigated = False
+            if ob_type == "BULLISH_OB":
+                # Mitigé si le prix est revenu toucher le 'high' de l'OB
+                if future_df['low'].min() <= zone_top:
+                    mitigated = True
+            elif ob_type == "BEARISH_OB":
+                # Mitigé si le prix est revenu toucher le 'low' de l'OB
+                if future_df['high'].max() >= zone_bottom:
+                    mitigated = True
+                    
+            if mitigated:
+                continue # Invalide, déjà mitigé
+
+            # === Si tout est OK, c'est un OB valide ===
+            valid_obs.append({
+                "timestamp": ob_candidate.name,
+                "type": ob_type,
+                "top": zone_top,
+                "bottom": zone_bottom,
+                "mitigated": False
             })
 
-        # Bearish OB (Baissier): Bougie haussière suivie d'une impulsion baissière
-        elif (prev_close > prev_open and    # Bougie 1 haussière
-              curr_close < curr_open and    # Bougie 2 baissière
-              curr_close < prev_low):       # Impulsion
-            
-            obs.append({
-                'type': SELL, 'top': prev_high, 'bottom': prev_low, 'time': times[i-1]
-            })
+        return valid_obs
 
-    return obs
+
+    def detect(self, df, structure_analysis):
+        """
+        Méthode principale pour détecter tous les patterns SMC.
+        'df' est le DataFrame du Low Timeframe (LTF).
+        'structure_analysis' est le dictionnaire de la Phase 1.
+        """
+        
+        # Récupérer les swings LTF pour l'analyse des POI
+        ltf_swings = structure_analysis.get('ltf_swings', {'highs': [], 'lows': []})
+
+        # 1. Trouver les Imbalances (FVG)
+        # On ne garde que les FVGs non mitigés
+        all_fvgs = self._find_imbalances(df)
+        unmitigated_fvgs = [fvg for fvg in all_fvgs if not fvg['mitigated']]
+        
+        # 2. Trouver la Liquidité (Cibles)
+        liquidity_zones = self._find_liquidity(ltf_swings)
+
+        # 3. Trouver les Order Blocks valides
+        # Note: _find_order_blocks utilise les 'all_fvgs' pour sa validation interne
+        valid_order_blocks = self._find_order_blocks(df, ltf_swings, all_fvgs)
+        
+        
+        # 4. Combiner tous les POI (Points of Interest)
+        # Les POI sont les zones où nous cherchons à entrer
+        points_of_interest = unmitigated_fvgs + valid_order_blocks
+        
+        # Trier les POI par timestamp pour l'orchestrateur
+        points_of_interest.sort(key=lambda x: x['timestamp'])
+
+        print(f"Détection Patterns: {len(points_of_interest)} POI trouvés, {len(liquidity_zones['eqh'])} Cibles EQH, {len(liquidity_zones['eql'])} Cibles EQL.")
+
+        return {
+            "poi": points_of_interest,  # Zones d'entrée (OBs, FVGs)
+            "liquidity": liquidity_zones # Cibles (EQH, EQL)
+        }
