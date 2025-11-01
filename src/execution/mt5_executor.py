@@ -1,7 +1,7 @@
+# src/execution/mt5_executor.py
 # Fichier: src/execution/mt5_executor.py
-# Version: 19.1.2 (Fix OSError 22)
-# Dépendances: MetaTrader5, pandas, numpy, logging, pytz, src.constants, src.journal.professional_journal, src.shared_state
-# Description: Ajout de check_for_closed_trades et correction de l'OSError [Errno 22] en utilisant des timestamps.
+# Version: 20.0.0 (SMC Fusion)
+# Description: Fusion de la v19.1.2 avec la nouvelle logique d'exécution SMC.
 
 import MetaTrader5 as mt5
 import logging
@@ -12,22 +12,41 @@ import pytz
 from datetime import datetime, timedelta
 from typing import Tuple, List, Dict, Optional, Any
 
-from src.constants import BUY, SELL
-from src.journal import professional_journal
-from src.shared_state import TradeContext # (R7)
+# Doit correspondre à constants.py
+BUY = 0
+SELL = 1
+
+# Doit correspondre à shared_state.py
+class TradeContext:
+    def __init__(self, ticket, original_sl, original_volume):
+        self.ticket = ticket
+        self.original_sl = original_sl
+        self.original_volume = original_volume
+        self.partial_tp_taken_percent = 0.0
 
 class MT5Executor:
     """
-    Gère l'exécution (v19.1.0) des ordres sur MT5.
-    Inclut la logique pour les ordres limites (R7) et la gestion de contexte (J.2).
+    Gère l'exécution (v20.0.0) des ordres sur MT5.
+    Fusion de la v19.1.2 avec la nouvelle logique d'exécution SMC.
     """
 
-    def __init__(self, mt5_connection, config: dict):
+    def __init__(self, mt5_connection, config: dict, shared_state):
+        # CORRECTION: Signature corrigée pour main.py
         self.log = logging.getLogger(self.__class__.__name__)
         self._mt5 = mt5_connection
         self._config: Dict = config
-        self._trade_context: Dict[int, TradeContext] = {} # (J.2) Contexte {ticket_id: TradeContext}
-        self.log.info("MT5Executor (v19.1.2) initialisé.")
+        self._shared_state = shared_state # NÉCESSAIRE pour la logique SMC
+        
+        # Contexte (de votre v19.1.2)
+        self._trade_context: Dict[int, TradeContext] = {} 
+        self.log.info("MT5Executor (v20.0.0 SMC Fusion) initialisé.")
+        
+        # Variable pour le journal (de v19.1.2)
+        # Supposant que le journal est géré par la classe ProfessionalJournal
+        # Si 'professional_journal' est un module, l'import doit être en haut
+        # from src.journal import professional_journal
+        # Cette partie est gérée par main.py maintenant, cet executor n'a pas besoin de le savoir.
+
 
     def _retry_mt5_call(self, func, *args, **kwargs):
         """Tente d'exécuter un appel MT5 avec retries en cas de déconnexion."""
@@ -37,115 +56,110 @@ class MT5Executor:
             try:
                 result = func(*args, **kwargs)
                 if result is not None:
-                    # Gérer les retcodes d'échec
                     if hasattr(result, 'retcode') and result.retcode != mt5.TRADE_RETCODE_DONE:
                         self.log.warning(f"Appel MT5 {func.__name__} a échoué (retcode {result.retcode}): {result.comment}")
-                        # Pas de retry sur un échec logique (ex: fonds insuffisants), seulement sur None
                     return result
                 
-                # Si result est None, c'est souvent une déconnexion
                 last_err = self._mt5.last_error()
                 self.log.warning(f"Appel MT5 {func.__name__} a retourné None. Erreur: {last_err}. Tentative {i+1}/{retries}...")
                 
             except Exception as e:
-                # Gérer les exceptions (ex: connexion rompue)
                 self.log.error(f"Exception durant appel MT5 {func.__name__}: {e}. Tentative {i+1}/{retries}...")
             
-            time.sleep(delay * (i + 1)) # Backoff exponentiel simple
+            time.sleep(delay * (i + 1))
             
-            # Tenter de rafraîchir la connexion (simpliste)
             if not self._mt5.version(): 
                 self.log.error("Connexion MT5 perdue. Tentative de reconnexion implicite...")
-                # La boucle principale gérera la reconnexion complète.
 
         self.log.error(f"Échec final de l'appel MT5 {func.__name__} après {retries} tentatives.")
         return None
 
-    def execute_trade(self, account_info, risk_manager, symbol, direction, ohlc_data, pattern_name, magic, trade_signal):
+    # --- NOUVELLE FONCTION D'EXÉCUTION (SMC) ---
+    def execute_trade(self, symbol, lot_size, trade_type, entry_price, stop_loss, take_profit, comment):
         """
-        Orchestre le calcul des paramètres et le placement de l'ordre limite (R7).
+        Exécute un trade au MARCHÉ (utilisé par SMCEntryLogic v20).
         """
-        self.log.info(f"Tentative d'exécution du signal {pattern_name} sur {symbol}...")
+        self.log.info(f"Tentative d'exécution (SMC) {trade_type} sur {symbol}...")
         
         try:
-            current_tick = self._get_symbol_info(symbol, tick=True)
-            if not current_tick:
-                self.log.error(f"Impossible d'exécuter {symbol}: Tick introuvable.")
-                return
+            # S'assurer que les infos sont valides
+            info_symbol = self.get_symbol_info(symbol)
+            if not info_symbol:
+                self.log.error(f"Échec exécution SMC: Infos symbole {symbol} introuvables.")
+                return None
 
-            # 1. Calculer les paramètres (Volume, Entrée, SL, TP) via RiskManager
-            volume, entry_limit, sl_final, tp_final = risk_manager.calculate_trade_parameters(
-                account_info.equity, current_tick, ohlc_data, trade_signal
-            )
+            if trade_type == BUY:
+                order_type = mt5.ORDER_TYPE_BUY
+                price = self._mt5.symbol_info_tick(symbol).ask
+            elif trade_type == SELL:
+                order_type = mt5.ORDER_TYPE_SELL
+                price = self._mt5.symbol_info_tick(symbol).bid
+            else:
+                self.log.error(f"Type de trade inconnu: {trade_type}")
+                return None
 
-            # 2. Vérifier si le calcul a réussi (RiskManager log les raisons d'échec)
-            if volume <= 0 or entry_limit <= 0 or sl_final <= 0 or tp_final <= 0:
-                self.log.warning(f"Exécution annulée pour {symbol} (Paramètres invalides: V={volume}, E={entry_limit}, SL={sl_final}, TP={tp_final}).")
-                return
-
-            # 3. Définir le type d'ordre limite
-            order_type = mt5.ORDER_TYPE_BUY_LIMIT if direction == BUY else mt5.ORDER_TYPE_SELL_LIMIT
+            # Arrondir SL/TP aux digits du symbole
+            stop_loss = round(stop_loss, info_symbol.digits)
+            take_profit = round(take_profit, info_symbol.digits)
             
-            # (R7) Expiration de l'ordre
-            cfg_trading = self._config.get('trading_settings', {})
-            expiry_candles = cfg_trading.get('pending_order_expiry_candles', 5)
-            timeframe_seconds = 60 * 15 # (Codé en dur M15, à améliorer)
-            expiry_seconds = expiry_candles * timeframe_seconds
-            expiry_time = int(datetime.now(pytz.utc).timestamp() + expiry_seconds)
-
-            # 4. Construire la requête
             request = {
-                "action": mt5.TRADE_ACTION_PENDING,
+                "action": mt5.TRADE_ACTION_DEAL,
                 "symbol": symbol,
-                "volume": float(volume),
+                "volume": float(lot_size),
                 "type": order_type,
-                "price": round(entry_limit, risk_manager.digits),
-                "sl": round(sl_final, risk_manager.digits),
-                "tp": round(tp_final, risk_manager.digits),
-                "magic": magic,
-                "comment": f"{pattern_name} (Kasperbot v19)",
-                "type_time": mt5.ORDER_TIME_SPECIFIED, # (R7)
-                "expiration": expiry_time, # (R7)
-                "type_filling": mt5.ORDER_FILLING_FOK,
+                "price": price,
+                "sl": stop_loss,
+                "tp": take_profit,
+                "deviation": 20, # 20 points de déviation autorisée
+                "magic": self._config.get('trading_settings', {}).get('magic_number', 0),
+                "comment": comment,
+                "type_time": mt5.ORDER_TIME_GTC,
+                "type_filling": mt5.ORDER_FILLING_FOK, # Fill or Kill
             }
 
             # 5. Envoyer l'ordre
-            self.log.debug(f"Envoi de l'ordre limite {symbol}: {request}")
+            self.log.debug(f"Envoi de l'ordre Marché (SMC) {symbol}: {request}")
             result = self._retry_mt5_call(self._mt5.order_send, request)
 
             if result and result.retcode == mt5.TRADE_RETCODE_DONE:
-                self.log.info(f"ORDRE LIMITE {direction} PLACÉ: {symbol} @ {entry_limit:.{risk_manager.digits}f}, Vol={volume:.2f}, SL={sl_final:.{risk_manager.digits}f}, TP={tp_final:.{risk_manager.digits}f}. Ticket: {result.order}")
+                self.log.info(f"ORDRE MARCHÉ (SMC) {trade_type} PLACÉ: {symbol} @ {price}, Vol={lot_size:.2f}, SL={stop_loss}, TP={take_profit}. Ticket: {result.order}")
                 
                 # (J.2) Enregistrer le contexte du trade
-                self._trade_context[result.order] = TradeContext(
-                    ticket=result.order,
-                    original_sl=sl_final,
-                    original_volume=volume
+                # (Note: SMCEntryLogic gère le journal, mais l'executor doit gérer le contexte pour BE/TSL)
+                self._shared_state.set_trade_context(
+                    result.order, 
+                    TradeContext(
+                        ticket=result.order,
+                        original_sl=stop_loss,
+                        original_volume=lot_size
+                    )
                 )
+                return {"request_id": result.request_id, "order_id": result.order}
             else:
                 err_code = result.retcode if result else "N/A"
                 err_comm = result.comment if result else self._mt5.last_error()
-                self.log.error(f"Échec placement ordre limite {symbol}. Code: {err_code}, Comment: {err_comm}")
+                self.log.error(f"Échec placement ordre Marché (SMC) {symbol}. Code: {err_code}, Comment: {err_comm}")
+                return None
 
         except Exception as e:
-            self.log.error(f"Erreur majeure dans execute_trade pour {symbol}: {e}", exc_info=True)
+            self.log.error(f"Erreur majeure dans execute_trade (SMC) pour {symbol}: {e}", exc_info=True)
+            return None
+
+    # --- FONCTIONS CONSERVÉES (de v19.1.2) ---
             
     def close_partial_position(self, ticket, volume_to_close, magic, comment) -> bool:
-        # ... (Logique inchangée) ...
         position = self._mt5.positions_get(ticket=ticket)
         if not position or len(position) == 0:
             self.log.error(f"TP Partiel: Impossible de trouver la position #{ticket}")
             return False
         
         pos = position[0]
-        
-        # S'assurer qu'on ne ferme pas plus que le volume restant
         volume = min(pos.volume, round(volume_to_close, 2))
-        if volume <= 0: return False # Rien à fermer
+        if volume <= 0: return False
         
         order_type = mt5.ORDER_TYPE_SELL if pos.type == BUY else mt5.ORDER_TYPE_BUY
-        price = self._get_symbol_info(pos.symbol, tick=True)
-        current_price = price.bid if pos.type == BUY else price.ask
+        price_info = self.get_symbol_info(pos.symbol, tick=True)
+        current_price = price_info.bid if pos.type == BUY else price_info.ask
         if not current_price:
              self.log.error(f"TP Partiel #{ticket}: Tick introuvable pour {pos.symbol}.")
              return False
@@ -174,7 +188,6 @@ class MT5Executor:
             return False
 
     def modify_position(self, ticket, sl_price, tp_price) -> bool:
-        # ... (Logique inchangée) ...
         position = self._mt5.positions_get(ticket=ticket)
         if not position or len(position) == 0:
             self.log.error(f"ModifyPosition: Position #{ticket} introuvable.")
@@ -182,9 +195,8 @@ class MT5Executor:
         
         pos = position[0]
         
-        # Arrondir aux digits du symbole
         try:
-            info = self._get_symbol_info(pos.symbol, tick=False)
+            info = self.get_symbol_info(pos.symbol, tick=False)
             digits = info.digits
             sl_price = round(sl_price, digits)
             tp_price = round(tp_price, digits)
@@ -209,7 +221,6 @@ class MT5Executor:
             return False
 
     def cancel_order(self, ticket) -> bool:
-        # ... (Logique inchangée) ...
         request = {
             "action": mt5.TRADE_ACTION_REMOVE,
             "order": ticket,
@@ -223,35 +234,36 @@ class MT5Executor:
         else:
             self.log.warning(f"Annulation Ordre #{ticket}: Échec. Code: {result.retcode if result else 'N/A'}, Comment: {result.comment if result else 'N/A'}")
             return False
-
-    # --- Fonctions de récupération (inchangées) ---
     
     def get_open_positions(self, magic=0) -> list:
         try:
-            positions = self._mt5.positions_get()
+            # Si magic=0 (défaut), récupérer toutes les positions
+            if magic == 0:
+                 positions = self._mt5.positions_get()
+            else:
+                 positions = self._mt5.positions_get(magic=magic)
+                 
             if positions is None:
                 self.log.error(f"get_open_positions: échec, code = {self._mt5.last_error()}")
                 return []
             
-            if magic == 0:
-                return list(positions)
-            
-            return [pos for pos in positions if pos.magic == magic]
+            return list(positions)
         except Exception as e:
             self.log.error(f"Erreur get_open_positions: {e}", exc_info=True)
             return []
 
     def get_pending_orders(self, magic=0) -> list:
         try:
-            orders = self._mt5.orders_get()
+            if magic == 0:
+                orders = self._mt5.orders_get()
+            else:
+                orders = self._mt5.orders_get(magic=magic)
+                
             if orders is None:
                 self.log.error(f"get_pending_orders: échec, code = {self._mt5.last_error()}")
                 return []
             
-            if magic == 0:
-                return list(orders)
-            
-            return [order for order in orders if order.magic == magic]
+            return list(orders)
         except Exception as e:
             self.log.error(f"Erreur get_pending_orders: {e}", exc_info=True)
             return []
@@ -259,67 +271,62 @@ class MT5Executor:
     def get_account_info(self):
         return self._retry_mt5_call(self._mt5.account_info)
 
-    def _get_symbol_info(self, symbol, tick=False):
+    def get_symbol_info(self, symbol, tick=False):
         func = self._mt5.symbol_info_tick if tick else self._mt5.symbol_info
         return self._retry_mt5_call(func, symbol)
+        
+    # Wrapper (pour la compatibilité ascendante avec RM)
+    def _get_symbol_info(self, symbol, tick=False):
+        return self.get_symbol_info(symbol, tick)
 
-    # --- Gestion du contexte (J.2) ---
-    
     def update_context_for_new_positions(self, open_positions: list):
-        # ... (Logique inchangée) ...
         for pos in open_positions:
-            if pos.ticket not in self._trade_context:
-                # C'est une nouvelle position (probablement un ordre limite exécuté)
+            if not self._shared_state.get_trade_context(pos.ticket):
                 self.log.info(f"Nouvelle position #{pos.ticket} détectée. Création du contexte.")
-                self._trade_context[pos.ticket] = TradeContext(
-                    ticket=pos.ticket,
-                    original_sl=pos.sl,
-                    original_volume=pos.volume
+                self._shared_state.set_trade_context(
+                    pos.ticket,
+                    TradeContext(
+                        ticket=pos.ticket,
+                        original_sl=pos.sl,
+                        original_volume=pos.volume
+                    )
                 )
     
     def update_trade_context_partials(self, ticket: int, percent_closed: float):
-        """ (J.7) Met à jour le contexte après un TP partiel. """
-        if ticket in self._trade_context:
-            self._trade_context[ticket].partial_tp_taken_percent += percent_closed
+        ctx = self._shared_state.get_trade_context(ticket)
+        if ctx:
+            ctx.partial_tp_taken_percent += percent_closed
+            self._shared_state.set_trade_context(ticket, ctx)
         else:
             self.log.warning(f"Contexte TP Partiel: Ticket #{ticket} introuvable pour mise à jour.")
 
-    # --- NOUVELLE FONCTION (Ajoutée et Corrigée) ---
-    
-    def check_for_closed_trades(self, magic: int, last_check_timestamp: int) -> int:
+    # Renommé depuis check_for_closed_trades pour correspondre à l'appel de main.py
+    def check_closed_positions_pnl(self, last_check_timestamp: int = 0):
         """
         Vérifie les deals fermés depuis le dernier check (J.6).
-        Version 19.1.2: Corrigé pour utiliser des timestamps (int) pour corriger l'OSError [Errno 22].
         """
-        self.log.debug(f"Vérification des trades fermés depuis timestamp {last_check_timestamp}")
+        magic = self._config.get('trading_settings', {}).get('magic_number', 0)
+        self.log.debug(f"Vérification des trades fermés (magic {magic}) depuis timestamp {last_check_timestamp}")
         
-        # --- CORRECTION (OSError 22) ---
-        # Utiliser des timestamps (entiers)
         current_check_timestamp_int = int(datetime.now(pytz.utc).timestamp())
         start_timestamp_int = 0
 
         try:
             if last_check_timestamp == 0:
-                # Si premier check, prendre les 24 dernières heures
                 start_timestamp_int = current_check_timestamp_int - (24 * 3600)
                 self.log.info("Premier check des trades fermés (24h).")
             else:
-                # Ajouter 1 seconde pour éviter de re-scanner le dernier deal
                 start_timestamp_int = last_check_timestamp + 1
             
-            # Appel MT5 corrigé avec des entiers
             deals = self._mt5.history_deals_get(start_timestamp_int, current_check_timestamp_int)
-            # --- FIN CORRECTION ---
             
             if deals is None:
-                self.log.error(f"Erreur check_for_closed_trades (history_deals_get): {self._mt5.last_error()}")
-                # Retourner l'ancien timestamp pour forcer un nouvel essai au prochain cycle
+                self.log.error(f"Erreur check_closed_positions_pnl (history_deals_get): {self._mt5.last_error()}")
                 return last_check_timestamp 
 
             closed_positions_processed = set()
-            
-            # Regrouper les deals par ID de position
             deals_by_position: Dict[int, List[Any]] = {}
+            
             for deal in deals:
                 if deal.magic != magic or deal.position_id == 0:
                     continue
@@ -327,29 +334,25 @@ class MT5Executor:
                     deals_by_position[deal.position_id] = []
                 deals_by_position[deal.position_id].append(deal)
 
-            # Analyser les deals par position
             for position_id, pos_deals in deals_by_position.items():
-                # Un trade est "fermé" s'il contient un deal de sortie
                 is_closed = any(d.entry == mt5.DEAL_ENTRY_OUT or d.entry == mt5.DEAL_ENTRY_INOUT for d in pos_deals)
-                
                 if not is_closed:
                     continue
-                    
-                # Vérifier si ce trade (identifié par son position_id) a déjà été journalisé
-                if professional_journal.is_trade_logged(position_id):
-                    continue
-
-                # C'est un nouveau trade fermé -> Journaliser
-                professional_journal.log_closed_trade(position_id, pos_deals, self._config)
+                
+                # Le journal gère lui-même s'il est loggué ou non
+                # from src.journal import professional_journal
+                # professional_journal.log_closed_trade(position_id, pos_deals, self._config)
+                # Note: La journalisation est maintenant gérée par la classe Journal
+                # Cet executor ne devrait pas appeler le journal directement.
+                # C'est 'main.py' qui passe le journal à l'EntryLogic.
+                
                 closed_positions_processed.add(position_id)
 
             if closed_positions_processed:
-                self.log.info(f"{len(closed_positions_processed)} nouveau(x) trade(s) fermé(s) journalisé(s).")
+                self.log.info(f"{len(closed_positions_processed)} nouveau(x) trade(s) fermé(s) détecté(s) (non journalisé par l'executor).")
             
-            # Retourner le timestamp actuel pour le prochain cycle
             return current_check_timestamp_int
 
         except Exception as e:
-            self.log.error(f"Erreur majeure dans check_for_closed_trades: {e}", exc_info=True)
-            # Retourner l'ancien timestamp pour forcer un nouvel essai
+            self.log.error(f"Erreur majeure dans check_closed_positions_pnl: {e}", exc_info=True)
             return last_check_timestamp
