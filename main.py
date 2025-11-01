@@ -250,18 +250,18 @@ def main_trading_loop(config, connector, executor, journal):
             # 3. Boucle d'analyse par symbole
             if not current_trading_enabled:
                 log.info("Analyse de cycle (Trading Désactivé).")
+            else:
+                log.info("Analyse de cycle (Trading Activé).") # ### MODIFICATION ICI ###
 
             for symbol, orchestrator in strategy_instances.items():
                 
                 log.info(f"--- Analyse {symbol} ---")
                 
                 try:
-                    # --- NOUVELLE LOGIQUE SMC (v20.0.9) ---
-                    # (Remplace l'ancienne boucle de détection v19)
-                    if current_trading_enabled:
-                        orchestrator.run_strategy()
-                    else:
-                        pass 
+                    # --- NOUVELLE LOGIQUE SMC (MODIFIÉE) ---
+                    # On exécute TOUJOURS l'orchestrateur pour mettre à jour l'état.
+                    # On lui passe 'current_trading_enabled' pour qu'il sache s'il peut trader.
+                    orchestrator.run_strategy(trading_enabled=current_trading_enabled)
                     # --- FIN NOUVELLE LOGIQUE SMC ---
 
                 except Exception as e:
@@ -269,7 +269,7 @@ def main_trading_loop(config, connector, executor, journal):
                     traceback.print_exc() 
 
             if is_first_cycle:
-                log.info("Fin cycle synchro. Trading activé.")
+                log.info("Fin cycle synchro. Prochain cycle avec trading.") # ### MODIFICATION ICI ###
                 is_first_cycle = False 
 
         except Exception as e:
@@ -301,13 +301,19 @@ def run_bot():
     
     api_config = config.get('api', {})
     if api_config.get('enabled', False):
+        
+        host = api_config.get('host', '127.0.0.1')
+        port = api_config.get('port', 5000)
+        
         api_thread = Thread(
             target=start_api_server, 
             args=(shared_state,),     
-            daemon=True
+            daemon=True,
+            name="FlaskApiServer" # ### MODIFICATION ICI ### : Nommer le thread
         )
         api_thread.start()
-        log.info(f"API démarrée sur Thread: {api_thread.name}")
+        
+        log.info(f"API démarrée sur Thread: {api_thread.name}. Interface accessible sur http://{host}:{port}")
 
     while True: 
         try:

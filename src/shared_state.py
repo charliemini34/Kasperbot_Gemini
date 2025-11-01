@@ -1,6 +1,7 @@
 # Fichier: src/shared_state.py
 # Version: 20.0.1 (Fix NameError)
 # Description: Ajout de 'import time' pour corriger le NameError dans lock_symbol.
+# MODIFIÉ: Ajout des méthodes de statut pour l'orchestrateur SMC.
 
 import threading
 import logging
@@ -105,6 +106,38 @@ class SharedState:
         with self._lock:
             self._symbol_data = {symbol: {"patterns": {}} for symbol in symbols}
             
+    # ### MODIFICATION ICI : Ajout des méthodes manquantes ###
+    
+    def initialize_symbol_status(self, symbol: str):
+        """Assure que le dictionnaire de statut existe pour ce symbole."""
+        with self._lock:
+            if symbol not in self._symbol_data:
+                self._symbol_data[symbol] = {"patterns": {}}
+            
+    def update_symbol_pattern_status(self, symbol: str, pattern_name: str, status: str):
+        """Met à jour le statut d'un pattern spécifique pour l'UI."""
+        with self._lock:
+            if symbol not in self._symbol_data:
+                # Initialise le symbole s'il n'existe pas
+                self._symbol_data[symbol] = {"patterns": {}}
+            
+            # Mettre à jour le statut du pattern (ex: "Biais HTF": "Bullish")
+            self._symbol_data[symbol]["patterns"][pattern_name] = {"status": status}
+            
+    def update_analysis_data(self, symbol: str, htf_bias: str, ltf_patterns: dict, htf_structure: dict):
+        """Stocke les données d'analyse complètes (pour le graph API, etc.)."""
+        with self._lock:
+            if symbol not in self._symbol_data:
+                # Initialise le symbole s'il n'existe pas
+                self._symbol_data[symbol] = {"patterns": {}}
+            
+            # Stocker les données brutes pour un éventuel affichage sur le chart
+            self._symbol_data[symbol]['raw_bias'] = htf_bias
+            self._symbol_data[symbol]['raw_patterns'] = ltf_patterns
+            self._symbol_data[symbol]['raw_structure'] = htf_structure
+            
+    # ### FIN DES MODIFICATIONS ###
+
     def update_symbol_patterns(self, symbol: str, patterns_info: Dict[str, Any]):
         """Met à jour les informations de pattern pour un symbole."""
         with self._lock:
@@ -175,6 +208,32 @@ class SharedState:
             
             # Le verrou est toujours actif
             return True
+            
+    # --- (R7) Gestion du Contexte de Trade ---
+    # (Ces méthodes n'existent pas dans ton fichier mais sont requises par l'executor)
+    
+    def set_trade_context(self, ticket: int, context: TradeContext):
+        """Stocke le contexte d'un trade ouvert."""
+        with self._lock:
+            # Assurer que _trade_context existe (il n'est pas dans ton __init__)
+            if not hasattr(self, '_trade_context'):
+                self._trade_context = {}
+            self._trade_context[ticket] = context
+
+    def get_trade_context(self, ticket: int) -> Optional[TradeContext]:
+        """Récupère le contexte d'un trade."""
+        with self._lock:
+            if not hasattr(self, '_trade_context'):
+                self._trade_context = {}
+            return self._trade_context.get(ticket)
+
+    def remove_trade_context(self, ticket: int):
+        """Supprime le contexte d'un trade fermé."""
+        with self._lock:
+            if not hasattr(self, '_trade_context'):
+                self._trade_context = {}
+            if ticket in self._trade_context:
+                del self._trade_context[ticket]
 
     # --- Fonctions utilitaires de conversion (pour l'API) ---
     

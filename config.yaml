@@ -5,6 +5,7 @@
 ai_analysis:
   max_trades_in_prompt: 50
 api:
+  enabled: true
   host: 127.0.0.1
   port: 5000
 backtest_settings:

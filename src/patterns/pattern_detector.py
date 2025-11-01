@@ -164,15 +164,17 @@ class PatternDetector:
 
             if ob_type == "BULLISH_OB":
                 # Doit casser le dernier swing high
-                last_swing_high = max(h[1] for h in ltf_swings['highs'] if h[0] < ob_candidate.name)
-                if not last_swing_high: continue
+                relevant_highs = [h[1] for h in ltf_swings['highs'] if h[0] < ob_candidate.name]
+                if not relevant_highs: continue # Pas de structure à casser
+                last_swing_high = max(relevant_highs)
                 if move_df['high'].max() > last_swing_high:
                     structure_broken = True
             
             elif ob_type == "BEARISH_OB":
                 # Doit casser le dernier swing low
-                last_swing_low = min(l[1] for l in ltf_swings['lows'] if l[0] < ob_candidate.name)
-                if not last_swing_low: continue
+                relevant_lows = [l[1] for l in ltf_swings['lows'] if l[0] < ob_candidate.name]
+                if not relevant_lows: continue # Pas de structure à casser
+                last_swing_low = min(relevant_lows)
                 if move_df['low'].min() < last_swing_low:
                     structure_broken = True
 
@@ -185,11 +187,11 @@ class PatternDetector:
             mitigated = False
             if ob_type == "BULLISH_OB":
                 # Mitigé si le prix est revenu toucher le 'high' de l'OB
-                if future_df['low'].min() <= zone_top:
+                if not future_df.empty and future_df['low'].min() <= zone_top:
                     mitigated = True
             elif ob_type == "BEARISH_OB":
                 # Mitigé si le prix est revenu toucher le 'low' de l'OB
-                if future_df['high'].max() >= zone_bottom:
+                if not future_df.empty and future_df['high'].max() >= zone_bottom:
                     mitigated = True
                     
             if mitigated:
@@ -239,7 +241,11 @@ class PatternDetector:
 
         print(f"Détection Patterns: {len(points_of_interest)} POI trouvés, {len(liquidity_zones['eqh'])} Cibles EQH, {len(liquidity_zones['eql'])} Cibles EQL.")
 
+        # ### MODIFICATION ICI ###
+        # Retourner le format attendu par l'orchestrateur
         return {
-            "poi": points_of_interest,  # Zones d'entrée (OBs, FVGs)
-            "liquidity": liquidity_zones # Cibles (EQH, EQL)
+            "order_blocks": valid_order_blocks,
+            "imbalances": unmitigated_fvgs,
+            "liquidity_zones": liquidity_zones # 'liquidity_zones' est déjà {'eqh': [], 'eql': []}
         }
+        # ### FIN MODIFICATION ###

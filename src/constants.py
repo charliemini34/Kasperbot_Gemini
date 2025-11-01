@@ -1,5 +1,6 @@
 # Fichier: src/constants.py
 # Version: 1.2.0 (Sugg 4.2)
+# MODIFIÉ: Ajout des constantes d'exécution MT5
 
 # --- Noms des Patterns ---
 PATTERN_ORDER_BLOCK = "ORDER_BLOCK"
@@ -11,10 +12,38 @@ PATTERN_AMD = "SMC_AMD_SESSION"
 PATTERN_BOS = "BREAK_OF_STRUCTURE" # Continuation (Anciennement CHOCH dans le code)
 PATTERN_CHOCH = "CHANGE_OF_CHARACTER" # Renversement (Nouveau)
 
-# --- Directions de Trade ---
+# --- Directions de Trade (Analyse) ---
 BUY = "BUY"
 SELL = "SELL"
 NEUTRAL = "NEUTRAL"
 
 # Constante pour les zones Premium/Discount (SMC)
 PREMIUM_THRESHOLD = 0.5
+
+# ### MODIFICATION ICI ###
+# --- Types d'Ordres MT5 (Exécution) ---
+# Nous importons MetaTrader5 ici pour obtenir les valeurs numériques officielles
+# et les stocker dans nos constantes.
+try:
+    import MetaTrader5 as mt5
+    
+    # Types d'ordres au marché (Market Orders)
+    ORDER_TYPE_BUY = mt5.ORDER_TYPE_BUY       # Valeur = 0
+    ORDER_TYPE_SELL = mt5.ORDER_TYPE_SELL     # Valeur = 1
+    
+    # Types d'ordres en attente (Pending Orders)
+    ORDER_TYPE_BUY_LIMIT = mt5.ORDER_TYPE_BUY_LIMIT     # Valeur = 2
+    ORDER_TYPE_SELL_LIMIT = mt5.ORDER_TYPE_SELL_LIMIT   # Valeur = 3
+    ORDER_TYPE_BUY_STOP = mt5.ORDER_TYPE_BUY_STOP       # Valeur = 4
+    ORDER_TYPE_SELL_STOP = mt5.ORDER_TYPE_SELL_STOP     # Valeur = 5
+
+except ImportError:
+    # Fallback au cas où MetaTrader5 n'est pas installé (ex: tests unitaires)
+    print("Avertissement: MetaTrader5 non trouvé. Utilisation de valeurs fallback pour les constantes d'ordre.")
+    ORDER_TYPE_BUY = 0
+    ORDER_TYPE_SELL = 1
+    ORDER_TYPE_BUY_LIMIT = 2
+    ORDER_TYPE_SELL_LIMIT = 3
+    ORDER_TYPE_BUY_STOP = 4
+    ORDER_TYPE_SELL_STOP = 5
+# ### FIN MODIFICATION ###

@@ -2,6 +2,7 @@
 # Fichier: src/execution/mt5_executor.py
 # Version: 20.0.0 (SMC Fusion)
 # Description: Fusion de la v19.1.2 avec la nouvelle logique d'exécution SMC.
+# MODIFIÉ: Utilise les constantes importées au lieu de variables locales.
 
 import MetaTrader5 as mt5
 import logging
@@ -12,9 +13,13 @@ import pytz
 from datetime import datetime, timedelta
 from typing import Tuple, List, Dict, Optional, Any
 
-# Doit correspondre à constants.py
-BUY = 0
-SELL = 1
+# ### MODIFICATION ICI ###
+# Importer les constantes centralisées
+from ..constants import (
+    ORDER_TYPE_BUY, ORDER_TYPE_SELL,
+    ORDER_TYPE_BUY_LIMIT, ORDER_TYPE_SELL_LIMIT
+)
+# ### FIN MODIFICATION ###
 
 # Doit correspondre à shared_state.py
 class TradeContext:
@@ -88,12 +93,14 @@ class MT5Executor:
                 self.log.error(f"Échec exécution SMC: Infos symbole {symbol} introuvables.")
                 return None
 
-            if trade_type == BUY:
+            # ### MODIFICATION ICI ### : Utilise les constantes importées
+            if trade_type == ORDER_TYPE_BUY:
                 order_type = mt5.ORDER_TYPE_BUY
                 price = self._mt5.symbol_info_tick(symbol).ask
-            elif trade_type == SELL:
+            elif trade_type == ORDER_TYPE_SELL:
                 order_type = mt5.ORDER_TYPE_SELL
                 price = self._mt5.symbol_info_tick(symbol).bid
+            # ### FIN MODIFICATION ###
             else:
                 self.log.error(f"Type de trade inconnu: {trade_type}")
                 return None
@@ -157,9 +164,16 @@ class MT5Executor:
         volume = min(pos.volume, round(volume_to_close, 2))
         if volume <= 0: return False
         
-        order_type = mt5.ORDER_TYPE_SELL if pos.type == BUY else mt5.ORDER_TYPE_BUY
+        # ### MODIFICATION ICI ### : Utilise les constantes importées
+        order_type = ORDER_TYPE_SELL if pos.type == ORDER_TYPE_BUY else ORDER_TYPE_BUY
+        # ### FIN MODIFICATION ###
+        
         price_info = self.get_symbol_info(pos.symbol, tick=True)
-        current_price = price_info.bid if pos.type == BUY else price_info.ask
+        
+        # ### MODIFICATION ICI ### : Utilise les constantes importées
+        current_price = price_info.bid if pos.type == ORDER_TYPE_BUY else price_info.ask
+        # ### FIN MODIFICATION ###
+        
         if not current_price:
              self.log.error(f"TP Partiel #{ticket}: Tick introuvable pour {pos.symbol}.")
              return False

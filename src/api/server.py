@@ -6,8 +6,10 @@
 from flask import Flask, jsonify, render_template_string, request
 import yaml
 import threading
-import logging
+import logging 
 import os
+import webbrowser         # ### MODIFICATION ICI ### : Import pour ouvrir le navigateur
+from threading import Timer # ### MODIFICATION ICI ### : Pour temporiser l'ouverture
 
 HTML_TEMPLATE = """
 <!DOCTYPE html>
@@ -15,7 +17,7 @@ HTML_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Dashboard KasperBot v20.0 (SMC)</title> <script src="https://cdn.tailwindcss.com"></script>
+    <title>Dashboard KasperBot v20.0 (SMC)</title>    <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
@@ -306,8 +308,11 @@ HTML_TEMPLATE = """
 """
 
 def start_api_server(shared_state):
+    
+    log = logging.getLogger('root')
+    
     app = Flask(__name__)
-    logging.getLogger('werkzeug').setLevel(logging.ERROR)
+    logging.getLogger('werkzeug').setLevel(logging.ERROR) 
 
     @app.route('/')
     def index():
@@ -325,10 +330,9 @@ def start_api_server(shared_state):
             with open(config_path, 'w', encoding='utf-8') as f:
                 yaml.dump(new_config, f, sort_keys=False)
             shared_state.update_config(new_config)
-            shared_state.signal_config_changed() # Signale à main.py de recharger
+            shared_state.signal_config_changed() 
             return jsonify({"status": "success"})
         
-        # S'assurer que get_config() est appelé sur l'instance de SharedState
         config = shared_state.get_config() 
         return jsonify(config)
 
@@ -361,5 +365,14 @@ def start_api_server(shared_state):
     host = config.get('api', {}).get('host', '127.0.0.1')
     port = config.get('api', {}).get('port', 5000)
     
-# On désactive le debug et le reloader car le serveur est lancé dans un thread par main.py
-    app.run_server(debug=False, host=host, port=port, use_reloader=False)
+    try:
+        log.info(f"Tentative de démarrage du serveur API Flask sur http://{host}:{port}...")
+        
+        # ### MODIFICATION ICI ### : Ouvre le navigateur après 1 seconde
+        url = f"http://{host}:{port}"
+        Timer(1, lambda: webbrowser.open_new_tab(url)).start()
+        # ### FIN MODIFICATION ###
+        
+        app.run(host=host, port=port, debug=False, use_reloader=False)
+    except Exception as e:
+        log.critical(f"ÉCHEC CRITIQUE DU SERVEUR API: {e}", exc_info=True)
