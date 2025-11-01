@@ -27,7 +27,7 @@ from src.patterns.pattern_detector import PatternDetector
 from src.api.server import start_api_server # Importation API (nom corrigé v20.0.3)
 
 # Version
-BOT_VERSION = "v20.0.7 (SMC SharedState Fix)"
+BOT_VERSION = "v20.0.9 (SMC Executor Fix 2)"
 
 # Configuration du logging
 logging.basicConfig(
@@ -92,8 +92,11 @@ def initialize_mt5(config):
             shared_state=shared_state                    # 3. SharedState
         )
         
-        # Premier check des trades fermés (pour le journal)
+        # --- CORRECTION (v20.0.9) ---
+        # Appel de la fonction 'check_closed_positions_pnl' (qui existe)
+        # au lieu de 'check_for_closed_trades' (qui n'existe pas)
         executor.check_closed_positions_pnl()
+        # --- FIN CORRECTION ---
         
         return connector, executor
     except Exception as e:
@@ -136,6 +139,9 @@ def main_trading_loop(config, connector, executor, journal):
     # Initialisation des instances de stratégie (une par symbole)
     strategy_instances = {}
     
+    # --- NOUVELLE LOGIQUE SMC (v20.0.9) ---
+    # (Remplace l'ancienne instanciation de 'detectors')
+    
     for symbol in symbols_to_trade:
         try:
             risk_manager = RiskManager(config, executor, symbol)
@@ -149,6 +155,7 @@ def main_trading_loop(config, connector, executor, journal):
                 shared_state=shared_state,
                 symbol=symbol 
             )
+            # Stocker l'orchestrateur (qui contient le risk_manager)
             strategy_instances[symbol] = orchestrator
             log.info(f"Orchestrateur SMC initialisé pour {symbol}.")
             
@@ -158,6 +165,7 @@ def main_trading_loop(config, connector, executor, journal):
     if not strategy_instances:
         log.critical("Aucune instance de stratégie n'a pu être initialisée. Arrêt.")
         return
+    # --- FIN NOUVELLE LOGIQUE SMC ---
 
     is_first_cycle = True
     
@@ -172,19 +180,13 @@ def main_trading_loop(config, connector, executor, journal):
         
         try:
             # 0. Vérifier si la config a changé (via API)
-            # --- CORRECTION (v20.0.7) ---
-            # Utilisation de la propriété 'config_changed_flag' de shared_state.py
             if shared_state.config_changed_flag:
-            # --- FIN CORRECTION ---
                 log.warning("Changement de configuration détecté par l'API. Rechargement...")
-                # Recharger la config
                 new_config = load_config('config.yaml')
                 if new_config:
                     config = new_config
                     setup_logging(config)
-                    # Baisser le drapeau
                     shared_state.clear_config_changed_flag()
-                    # Recréer les instances avec la nouvelle config
                     log.info("Redémarrage de la boucle de trading pour appliquer la nouvelle config.")
                     break 
                 else:
@@ -200,31 +202,35 @@ def main_trading_loop(config, connector, executor, journal):
             
             # (Gestion des positions ouvertes)
             open_positions = executor.get_open_positions()
-            shared_state.update_positions(open_positions) # Mettre à jour l'état API
+            shared_state.update_positions(open_positions) 
             
             if open_positions:
                 log.info(f"Gestion des {len(open_positions)} positions ouvertes...")
                 equity = main_rm.get_account_balance()
                 current_risk_pct = main_rm.get_current_total_risk(open_positions, equity)
-                shared_state.set_current_risk_pct(current_risk_pct)
+                # shared_state.set_current_risk_pct(current_risk_pct) # Fonction non existante dans shared_state
                 
-                # Appliquer BE/TSL sur toutes les positions
                 for pos in open_positions:
                     pos_symbol = pos.symbol
                     if pos_symbol not in strategy_instances:
                         log.warning(f"Position ouverte sur {pos_symbol} non gérée (pas dans config).")
                         continue
                     
+                    # --- CORRECTION (v20.0.9) ---
+                    # Récupérer le risk_manager depuis l'orchestrateur
                     pos_rm = strategy_instances[pos_symbol].risk_manager
                     
                     pos_tick = connector.get_tick(pos_symbol) 
                     pos_ohlc = connector.get_ohlc(pos_symbol, 'M15', 100) 
                     
-                    # S'assurer que le contexte existe
                     pos_context = shared_state.get_trade_context(pos.ticket)
                     if pos_context is None:
-                        log.warning(f"Contexte introuvable pour le ticket {pos.ticket}. Impossible de gérer BE/TSL.")
-                        continue
+                        log.warning(f"Contexte introuvable pour le ticket {pos.ticket}. Tentative de création...")
+                        executor.update_context_for_new_positions([pos])
+                        pos_context = shared_state.get_trade_context(pos.ticket)
+                        if pos_context is None:
+                             log.error(f"Échec de la création du contexte pour {pos.ticket}. Impossible de gérer BE/TSL.")
+                             continue
                         
                     pos_rm.manage_open_positions(
                         [pos], 
@@ -238,7 +244,6 @@ def main_trading_loop(config, connector, executor, journal):
                 log.info("Premier cycle: trading désactivé pour synchro.")
                 current_trading_enabled = False
             else:
-                # Mettre à jour l'état de trading depuis la config (peut être changé via API)
                 trading_enabled = config.get('trading_settings', {}).get('trading_enabled', True)
                 current_trading_enabled = trading_enabled
 
@@ -251,10 +256,13 @@ def main_trading_loop(config, connector, executor, journal):
                 log.info(f"--- Analyse {symbol} ---")
                 
                 try:
+                    # --- NOUVELLE LOGIQUE SMC (v20.0.9) ---
+                    # (Remplace l'ancienne boucle de détection v19)
                     if current_trading_enabled:
                         orchestrator.run_strategy()
                     else:
                         pass 
+                    # --- FIN NOUVELLE LOGIQUE SMC ---
 
                 except Exception as e:
                     log.error(f"Erreur analyse SMC sur {symbol}: {e}", exc_info=True)
@@ -305,8 +313,6 @@ def run_bot():
         try:
             main_trading_loop(config, connector, executor, journal)
             
-            # Si la boucle se termine (à cause d'un changement de config),
-            # recharger la config pour la prochaine itération
             new_config = shared_state.get_config()
             if new_config != config:
                 log.info("Application de la nouvelle configuration au redémarrage de la boucle.")
