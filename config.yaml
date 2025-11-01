@@ -1,147 +1,58 @@
-# Fichier: config.yaml
-# Version: 3.1.0 (SMC Integration)
-# Description: Ajout des sections smc_strategy et mtf_data_config.
 
-ai_analysis:
-  max_trades_in_prompt: 50
+mt5:
+    login: 10008432
+    password: "jsne80aX!"
+    server: "Axi-US50-Demo"
+    
+    
+    # --- CORRECTION ---
+    # Nous utilisons maintenant une liste, comme votre version originale
+    symbols: 
+      - "XAUUSD"
+      - "XAGUSD"
+      - "EURUSD"
+      - "GBPUSD"
+      - "NZDUSD"
+      - "AUDUSD"
+      - "USDCAD"
+      - "USOIL" # Symbole invalide chez FTMO Demo
+      - "BTCUSD"
+      - "ETHUSD"
+    # --- FIN CORRECTION ---
+
+    # Le trade_volume sera calculé dynamiquement par le risk_manager.
+    # Cette valeur sert de fallback si le risk_manager est désactivé.
+    trade_volume: 0.01
+
+strategy:
+    # On active notre nouvelle stratégie SMC
+    name: "SMC_OTE"
+    
+    # Configuration pour l'analyse multi-timeframe
+    # Le bot récupérera les données pour toutes les timeframes listées ici.
+    timeframes_config:
+        "H4": 200  # Tendance de fond (HTF) - 200 bougies
+        "M15": 300 # Structure de retracement (LTF) - 300 bougies
+        # "M1": 100 # (Vous pouvez l'ajouter plus tard pour des confirmations M1)
+    
+    # Indique à la stratégie quelles timeframes utiliser pour quelle analyse
+    htf_timeframe: "H4"  # Timeframe pour la tendance (Bias)
+    ltf_timeframe: "M15" # Timeframe pour les entrées (POI, OTE)
+    
+    # Paramètres pour la détection de structure (find_swing_highs_lows)
+    htf_swing_order: 10 # 10 bougies de chaque côté pour un swing H4
+    ltf_swing_order: 5  # 5 bougies de chaque côté pour un swing M15
+
+risk:
+    # 1.0 signifie que le bot risquera 1% du capital de votre compte par trade.
+    risk_percent: 1.0
+
+logging:
+    level: "INFO" # DEBUG, INFO, WARNING, ERROR
+
 api:
-  enabled: true
-  host: 127.0.0.1
-  port: 5000
-backtest_settings:
-  commission_per_lot: 7
-  simulated_spread_pips: 1.5
-learning:
-  enabled: false
-  min_trades_for_analysis: 10
-mt5_credentials:
-  login: 10008432
-  password: jsne80aX!
-  server: Axi-US50-Demo
- # login: 1511921064 # Remplacez par vos identifiants
-  #password: r9r?N89G@H # Remplacez par vos identifiants
-  #server: FTMO-Demo # Remplacez par votre serveur
-pattern_detection:
-  CHANGE_OF_CHARACTER: true
-  INBALANCE: true
-  LIQUIDITY_GRAB: true
-  ORDER_BLOCK: true
-  SMC_AMD_SESSION: true
-  # (J.1) Logique d'entrée (0.0 = Proximal, 0.5 = Mean Threshold/50%, 1.0 = Distal)
-  entry_logic:
-    ob_entry_level: 0.5 # Défaut 0.5 (Mean Threshold)
-    fvg_entry_level: 0.5 # Défaut 0.5 (50% FVG)
-professional_journal:
-  enabled: true
-  file_path_template: Journal_Trading_{month_name}_{year}.csv
-risk_management:
-  min_required_rr: 2.0 # (NOUVEAU) Ratio R:R minimum requis pour prendre un trade
-  atr_settings:
-    BTCUSD:
-      sl_multiple: 1.2
-      tp_multiple: 2.5
-    ETHUSD:
-      sl_multiple: 1.2
-      tp_multiple: 2.5
-    XAUUSD:
-      sl_multiple: 1.8
-      tp_multiple: 3.5
-    default:
-      period: 14
-      sl_multiple: 1.5 # Utilisé pour buffer SL structurel
-      tp_multiple: 3   # Utilisé si tp_strategy = ATR_MULTIPLE
-  breakeven:
     enabled: true
-    breakeven_trigger_rr: 1.0 # (J.7) Déclenche BE à 1R (si > 0)
-    breakeven_plus_atr_multiple: 0.2 # (J.7) SL déplacé à Entrée + 0.2*ATR
-    trigger_pips: 100 # (Fallback si breakeven_trigger_rr = 0)
-    pips_plus: 10     # (Fallback si breakeven_plus_atr_multiple = 0)
-  daily_loss_limit_percent: 20
-  max_total_risk_percent: 5.0 # (J.4) Risque max cumulé (toutes positions)
-  partial_tp:
-    be_pips_plus_after_tp1: 5
-    enabled: true
-    levels:
-    - percentage: 50
-      rr: 1
-    - percentage: 30 # Pourcentage *additionnel* (total 80%)
-      rr: 2
-    move_sl_to_be_after_tp1: true
-  risk_per_trade: 0.01 # 1% par trade
-  sl_buffer_atr_multiple: 1.0 # (J.5) Buffer SL = 1.0 * ATR(14)
-  sl_buffer_pips: 0 # (Fallback si sl_buffer_atr_multiple = 0)
-  sl_strategy: SMC_STRUCTURE # Définit le SL sous/au-dessus de la zone FVG/OB
-  tp_strategy: SMC_LIQUIDITY_TARGET # Utilise la cible de liquidité du pattern_detector
-  trailing_stop_atr:
-    activation_multiple: 2
-    enabled: true
-    trailing_multiple: 1.8
-sound_alerts:
-  enabled: true
-  sound_file: ./alert.wav
-trading_settings:
-  crypto_symbols:
-  - BTCUSD
-  - ETHUSD
-  live_trading_enabled: True
-  magic_number: 13579
-  symbols:
-  - XAUUSD
-  - XAGUSD
-  - EURUSD
-  - GBPUSD
-  - NZDUSD
-  - AUDUSD
-  - USDCAD
-  #- USOIL # Symbole invalide chez FTMO Demo
-  - BTCUSD
-  - ETHUSD
-  timeframe: M15
-  trading_sessions: # UTC times
-  - 1-00:00-23:59 # Lundi
-  - 2-00:00-23:59 # Mardi
-  - 3-00:00-23:59 # Mercredi
-  - 4-00:00-23:59 # Jeudi
-  - 5-00:00-21:00 # Vendredi (clôture MT5)
-  idempotency_lock_seconds: 900 # (J.9) Verrouillage 15 min
-  pending_order_expiry_candles: 5 # (R7) Annuler ordre limite si non déclenché après 5 bougies M15
-  
-  # --- NOUVEAU (SMC Integration) ---
-  # Configuration pour le chargement des données MTF
-  mtf_data_config:
-    "H4": 300 # 300 bougies H4 pour la tendance
-    "M15": 500 # 500 bougies M15 pour les POI
-  # --- FIN NOUVEAU ---
+    port: 5000
 
-# (R4) Section pour surcharger les paramètres MT5 incorrects
-symbol_overrides:
-  ETHUSD:
-    contract_size: 100 # FTMO Demo utilise 100, MT5 API dit 10
-  BTCUSD:
-    contract_size: 1   # FTMO Demo utilise 1, MT5 API dit 1
-  XAUUSD:
-    contract_size: 100
-  XAGUSD:
-    contract_size: 5000
-
-trend_filter:
-  ema_period: 200
-  enabled: true
-  higher_timeframe: H4
-  allow_reversals: true # (J.8) Autoriser CHOCH/Liquidity Grab contre tendance HTF
-
-# --- NOUVEAU (SMC Integration) ---
-# Paramètres spécifiques pour la nouvelle stratégie SMC
-smc_strategy:
-  # 'enabled: true' dira à 'pattern_detector.py' d'utiliser
-  # le nouvel 'smc_orchestrator' au lieu de l'ancienne logique.
-  enabled: true
-  
-  # Timeframes à utiliser pour l'analyse
-  htf_timeframe: "H4"  # Timeframe pour la tendance (Bias)
-  ltf_timeframe: "M15" # Timeframe pour les entrées (POI, OTE)
-  
-  # Ordre (nombre de bougies) pour la détection des swings
-  htf_swing_order: 10
-  ltf_swing_order: 5
-# --- FIN NOUVEAU ---
+# Intervalle en secondes entre chaque vérification du bot
+check_interval: 60

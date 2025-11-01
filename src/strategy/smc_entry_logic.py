@@ -1,239 +1,236 @@
-# Fichier: src/strategy/smc_entry_logic.py
-# Description: Logique de décision pour les entrées SMC (v20.0.9).
+
+"""
+Module de Stratégie SMC (Smart Money Concepts).
+
+Ce module est le "cerveau" du bot. Il combine l'analyse de structure
+multi-timeframe (MTF) avec la détection de POI (Points of Interest)
+pour générer des signaux de trading basés sur la logique SMC/ICT.
+
+La stratégie de base est :
+1. Définir la tendance de fond (Bias) sur la Timeframe Haute (HTF).
+2. Attendre un retracement sur la Timeframe Basse (LTF).
+3. Identifier des POI (OB, FVG) dans une zone "Discount" (pour achat) ou "Premium" (pour vente).
+4. (Filtre) Privilégier les POI situés dans l'OTE (Optimal Trade Entry).
+5. Générer un signal lorsque le prix touche ce POI validé.
+"""
 
 import logging
 import pandas as pd
 import numpy as np
-from ..constants import ORDER_TYPE_BUY_LIMIT, ORDER_TYPE_SELL_LIMIT
 
-class SMCEntryLogic:
+# Importation de nos modules personnalisés
+from src.analysis import market_structure as structure
+from src.patterns import pattern_detector as patterns
+
+logger = logging.getLogger(__name__)
+
+def _get_fibonacci_zones(start_price: float, end_price: float) -> dict:
     """
-    Contient la logique de décision finale pour exécuter un trade SMC.
-    Utilise le Biais HTF, la Structure HTF et les Patterns LTF pour trouver
-    une confluence.
+    Calcule les niveaux clés de Fibonacci (Discount, Premium, OTE) pour un swing.
+    
+    Args:
+        start_price (float): Le prix de départ du swing (ex: un swing low).
+        end_price (float): Le prix de fin du swing (ex: un swing high).
+
+    Returns:
+        dict: Un dictionnaire contenant les niveaux de prix 'equilibrium', 
+              'discount_top', 'premium_bottom', 'ote_top', 'ote_bottom'.
+    """
+    if start_price == 0 or end_price == 0:
+        return {}
+        
+    is_bullish_swing = end_price > start_price
+    diff = end_price - start_price
+
+    zones = {
+        'equilibrium': start_price + diff * 0.5,
+        'ote_top': start_price + diff * 0.62 if is_bullish_swing else start_price + diff * 0.38,
+        'ote_bottom': start_price + diff * 0.786 if is_bullish_swing else start_price + diff * 0.214,
+    }
+
+    if is_bullish_swing:
+        # Pour un swing haussier, la zone "discount" est en bas
+        zones['discount_top'] = zones['equilibrium']
+        # Pour un swing haussier, la zone "premium" est en haut
+        zones['premium_bottom'] = zones['equilibrium']
+        # L'OTE est dans la zone Discount
+        # 
+    else:
+        # Pour un swing baissier, la zone "discount" est en haut
+        zones['discount_top'] = zones['equilibrium']
+        # Pour un swing baissier, la zone "premium" est en bas
+        zones['premium_bottom'] = zones['equilibrium']
+        # L'OTE est dans la zone Premium (swap top/bottom pour la logique)
+        zones['ote_top'], zones['ote_bottom'] = zones['ote_bottom'], zones['ote_top']
+        # 
+
+    return zones
+
+
+def check_smc_signal(mtf_data: dict, config: dict):
+    """
+    Vérifie les données multi-timeframe pour un signal d'entrée SMC.
+
+    Args:
+        mtf_data (dict): Dictionnaire de DataFrames. 
+                         Ex: {'H4': pd.DataFrame, 'M15': pd.DataFrame}
+        config (dict): Dictionnaire de configuration de la stratégie.
+
+    Returns:
+        tuple: (signal, raison, sl_price, tp_price) ou (None, None, None, None)
     """
     
-    def __init__(self, config, executor, risk_manager, shared_state, symbol):
-        self.log = logging.getLogger(f"{self.__class__.__name__}({symbol})")
-        self.config = config
-        self.executor = executor
-        self.risk_manager = risk_manager
-        self.shared_state = shared_state
-        self.symbol = symbol
-
-        # Charger les paramètres de risque et de pattern
-        self.risk_config = config.get('risk_management', {})
-        self.pattern_config = config.get('pattern_detection', {}).get('entry_logic', {})
+    try:
+        # --- Étape 1: Récupérer les paramètres et données ---
+        strategy_params = config['strategy']
+        htf_tf = strategy_params['htf_timeframe'] # Ex: 'H4'
+        ltf_tf = strategy_params['ltf_timeframe'] # Ex: 'M15'
         
-        self.min_rr = self.risk_config.get('min_required_rr', 2.0)
-        self.ob_entry_level = self.pattern_config.get('ob_entry_level', 0.5)
-        self.fvg_entry_level = self.pattern_config.get('fvg_entry_level', 0.5)
+        htf_data = mtf_data.get(htf_tf)
+        ltf_data = mtf_data.get(ltf_tf)
 
-    def find_smc_entry(self, htf_data, ltf_data, htf_bias, htf_structure, ltf_patterns, trading_enabled: bool): # ### MODIFICATION ICI ###
-        """
-        Point d'entrée principal de la logique de décision.
-        Cherche une confluence de signaux pour placer un ordre limite.
+        if htf_data is None or ltf_data is None:
+            logger.warning(f"Données manquantes pour {htf_tf} or {ltf_tf}. Signal ignoré.")
+            return None, None, None, None
+
+        current_low = ltf_data['low'].iloc[-1]
+        current_high = ltf_data['high'].iloc[-1]
         
-        Args:
-            htf_data (pd.DataFrame): Données OHLC High Timeframe.
-            ltf_data (pd.DataFrame): Données OHLC Low Timeframe.
-            htf_bias (str): 'Bullish', 'Bearish', ou 'Range'.
-            htf_structure (dict): Dictionnaire de la structure HTF (highs, lows).
-            ltf_patterns (dict): Dictionnaire des patterns LTF (OB, FVG, Liq).
-            trading_enabled (bool): (NOUVEAU) Drapeau indiquant si le trading est autorisé.
-
-        Returns:
-            dict: Un dictionnaire représentant l'entrée, ou None.
-        """
+        # --- Étape 2: Définir la tendance de fond (Bias HTF) ---
+        htf_swings_high, htf_swings_low = structure.find_swing_highs_lows(
+            htf_data, order=strategy_params['htf_swing_order']
+        )
+        _htf_events, htf_trend = structure.identify_structure(htf_swings_high, htf_swings_low)
         
-        # Mettre à jour l'état : "Recherche de confluence"
-        self.shared_state.update_symbol_pattern_status(self.symbol, "Signal", "Recherche confluence...")
-
-        # --- SCÉNARIO 1: Achat (Bullish Bias) ---
-        if htf_bias == "Bullish":
-            # 1. Identifier les POI (Points of Interest) valides
-            # POI = Order Blocks Bullish ou FVG Bullish sous le prix actuel
-            current_price = ltf_data.iloc[-1]['close']
+        if htf_trend not in ["BULLISH", "BEARISH"]:
+            logger.info(f"Tendance HTF ({htf_tf}) non claire ({htf_trend}). Pas de signal.")
+            return None, None, None, None
             
-            # Filtrer les OB Bullish pertinents
-            valid_obs = [
-                ob for ob in ltf_patterns.get('order_blocks', [])
-                if ob['type'] == 'Bullish' and ob['price_high'] < current_price
-            ]
+        logger.info(f"Tendance HTF ({htf_tf}) confirmée : {htf_trend}")
+
+        # --- Étape 3: Analyser la structure LTF pour le retracement ---
+        ltf_swings_high, ltf_swings_low = structure.find_swing_highs_lows(
+            ltf_data, order=strategy_params['ltf_swing_order']
+        )
+        if len(ltf_swings_high) < 2 or len(ltf_swings_low) < 2:
+            logger.info("Pas assez de points de structure LTF. En attente...")
+            return None, None, None, None
+
+        # --- Étape 4: Logique d'ACHAT (HTF Bullish) ---
+        if htf_trend == "BULLISH":
+            # On cherche un retracement vers une zone "Discount" + OTE
             
-            # Filtrer les FVG Bullish pertinents
-            valid_fvgs = [
-                fvg for fvg in ltf_patterns.get('imbalances', [])
-                if fvg['type'] == 'Bullish' and fvg['price_high'] < current_price
-            ]
-
-            # 2. Identifier la Cible (Target)
-            # Target = Liquidité Bearish (ex: EQL, Weak Highs) au-dessus du prix
-            valid_targets = [
-                liq for liq in ltf_patterns.get('liquidity_zones', [])
-                if liq['type'] == 'Bearish' and liq['price_low'] > current_price
-            ]
-
-            # 3. Logique de confluence (très simplifiée pour l'instant)
-            # Nous prenons le POI le plus proche et la Cible la plus proche
+            # 1. Trouver le dernier swing haussier LTF à retracer
+            last_high_point = ltf_swings_high[-1]
+            # Trouver le swing low qui a précédé ce swing high
+            relevant_low_points = [s for s in ltf_swings_low if s[0] < last_high_point[0]]
+            if not relevant_low_points:
+                logger.info("Structure LTF (Bullish) non claire pour le retracement.")
+                return None, None, None, None
             
-            best_poi = self._find_best_poi(valid_obs + valid_fvgs, current_price, direction='buy')
-            best_target = self._find_best_target(valid_targets, current_price, direction='buy')
+            last_low_point = relevant_low_points[-1]
+            
+            # 2. Calculer les zones Fib de ce swing haussier
+            fib_zones = _get_fibonacci_zones(last_low_point[1], last_high_point[1])
+            if not fib_zones:
+                return None, None, None, None
 
-            if best_poi and best_target:
-                # 4. Calculer l'entrée, le SL et le TP
-                entry_price = best_poi['entry_price']
-                stop_loss = best_poi['stop_loss']
-                take_profit = best_target['target_price']
+            # 3. Vérifier si le prix est dans la zone Discount/OTE
+            if current_low > fib_zones['discount_top']:
+                logger.debug("Le prix est toujours en 'Premium'. En attente de retracement.")
+                return None, None, None, None
 
-                # 5. Vérifier le Risk/Reward
-                trade_params = self.risk_manager.check_trade_risk_smc(
-                    entry_price, stop_loss, take_profit, ORDER_TYPE_BUY_LIMIT
-                )
+            # 4. Trouver des POI (Bullish OB/FVG) dans la zone OTE
+            # 
+            pois_in_ote = []
+            
+            # Trouver les Order Blocks Bullish non mitigés
+            all_bullish_obs = [ob for ob in patterns.find_order_blocks(ltf_data) if ob['type'] == 'BULLISH']
+            for ob in all_bullish_obs:
+                # Si le POI est dans la zone OTE
+                if (ob['top'] <= fib_zones['ote_top'] and 
+                    ob['bottom'] >= fib_zones['ote_bottom']):
+                    # Et si le POI n'a pas déjà été testé par une mèche récente
+                    if current_low > ob['top']: 
+                        pois_in_ote.append({'poi_type': 'OB', **ob})
 
-                if trade_params and trade_params['rr'] >= self.min_rr:
-                    self.log.info(f"Signal d'ACHAT (BUY_LIMIT) trouvé. RR: {trade_params['rr']:.2f}")
+            # Trouver les Imbalances Bullish non mitigées
+            all_bullish_fvgs = [fvg for fvg in patterns.find_imbalances(ltf_data) 
+                                if fvg['type'] == 'BULLISH' and fvg['mitigated_at'] is None]
+            for fvg in all_bullish_fvgs:
+                if (fvg['top'] <= fib_zones['ote_top'] and 
+                    fvg['bottom'] >= fib_zones['ote_bottom']):
+                    if current_low > fvg['top']:
+                        pois_in_ote.append({'poi_type': 'FVG', **fvg})
+
+            # 5. Chercher le signal d'entrée
+            for poi in sorted(pois_in_ote, key=lambda x: x['top'], reverse=True): # Prioriser le POI le plus haut
+                # Si la mèche actuelle (current_low) vient de toucher le haut du POI
+                if current_low <= poi['top']:
+                    reason = f"ACHAT: HTF({htf_tf}) {htf_trend} + LTF({ltf_tf}) OTE + {poi['poi_type']}"
+                    sl_price = poi['bottom'] * (1 - 0.0005) # SL 0.05% sous le bas du POI
+                    tp_price = last_high_point[1] * (1 + 0.0005) # TP 0.05% au-dessus du dernier high (cible de liquidité)
                     
-                    # ### MODIFICATION ICI ### : Vérifier si le trading est activé
-                    if trading_enabled:
-                        self.log.info(f"Exécution du trade (BUY_LIMIT) pour {self.symbol}...")
-                        trade_result = self.executor.place_trade(
-                            trade_type=ORDER_TYPE_BUY_LIMIT,
-                            symbol=self.symbol,
-                            lot_size=trade_params['lot_size'],
-                            price=entry_price,
-                            sl=stop_loss,
-                            tp=take_profit,
-                            magic_number=self.config.get('trading_settings', {}).get('magic_number', 13579),
-                            comment=f"SMC-BUY-{htf_bias}"
-                        )
-                        decision = f"SIGNAL BUY_LIMIT @ {entry_price:.5f}"
-                    else:
-                        self.log.info(f"SYNCHRO: Signal d'ACHAT (BUY_LIMIT) trouvé mais non exécuté (trading désactivé).")
-                        trade_result = None # Pas de trade
-                        decision = "Signal (Synchro)"
+                    logger.warning(f"SIGNAL TROUVÉ: {reason}")
+                    return "BUY", reason, sl_price, tp_price
+
+        # --- Étape 5: Logique de VENTE (HTF Bearish) ---
+        elif htf_trend == "BEARISH":
+            # On cherche un retracement vers une zone "Premium" + OTE
+            
+            # 1. Trouver le dernier swing baissier LTF à retracer
+            last_low_point = ltf_swings_low[-1]
+            relevant_high_points = [s for s in ltf_swings_high if s[0] < last_low_point[0]]
+            if not relevant_high_points:
+                logger.info("Structure LTF (Bearish) non claire pour le retracement.")
+                return None, None, None, None
+            
+            last_high_point = relevant_high_points[-1]
+            
+            # 2. Calculer les zones Fib de ce swing baissier
+            fib_zones = _get_fibonacci_zones(last_high_point[1], last_low_point[1])
+            if not fib_zones:
+                return None, None, None, None
+
+            # 3. Vérifier si le prix est dans la zone Premium/OTE
+            if current_high < fib_zones['premium_bottom']:
+                logger.debug("Le prix est toujours en 'Discount'. En attente de retracement.")
+                return None, None, None, None
+
+            # 4. Trouver des POI (Bearish OB/FVG) dans la zone OTE
+            # 
+            pois_in_ote = []
+
+            all_bearish_obs = [ob for ob in patterns.find_order_blocks(ltf_data) if ob['type'] == 'BEARISH']
+            for ob in all_bearish_obs:
+                if (ob['top'] <= fib_zones['ote_top'] and 
+                    ob['bottom'] >= fib_zones['ote_bottom']):
+                    if current_high < ob['bottom']:
+                        pois_in_ote.append({'poi_type': 'OB', **ob})
+
+            all_bearish_fvgs = [fvg for fvg in patterns.find_imbalances(ltf_data) 
+                                if fvg['type'] == 'BEARISH' and fvg['mitigated_at'] is None]
+            for fvg in all_bearish_fvgs:
+                if (fvg['top'] <= fib_zones['ote_top'] and 
+                    fvg['bottom'] >= fib_zones['ote_bottom']):
+                    if current_high < fvg['bottom']:
+                        pois_in_ote.append({'poi_type': 'FVG', **fvg})
+
+            # 5. Chercher le signal d'entrée
+            for poi in sorted(pois_in_ote, key=lambda x: x['bottom']): # Prioriser le POI le plus bas
+                # Si la mèche actuelle (current_high) vient de toucher le bas du POI
+                if current_high >= poi['bottom']:
+                    reason = f"VENTE: HTF({htf_tf}) {htf_trend} + LTF({ltf_tf}) OTE + {poi['poi_type']}"
+                    sl_price = poi['top'] * (1 + 0.0005) # SL 0.05% au-dessus du haut du POI
+                    tp_price = last_low_point[1] * (1 - 0.0005) # TP 0.05% sous le dernier low (cible de liquidité)
                     
-                    return {"decision": decision, "params": trade_params, "result": trade_result}
-                else:
-                    self.shared_state.update_symbol_pattern_status(self.symbol, "Signal", "Rejeté (RR Faible)")
+                    logger.warning(f"SIGNAL TROUVÉ: {reason}")
+                    return "SELL", reason, sl_price, tp_price
 
-        # --- SCÉNARIO 2: Vente (Bearish Bias) ---
-        elif htf_bias == "Bearish":
-            current_price = ltf_data.iloc[-1]['close']
-            
-            # 1. POI = Order Blocks Bearish ou FVG Bearish au-dessus du prix
-            valid_obs = [
-                ob for ob in ltf_patterns.get('order_blocks', [])
-                if ob['type'] == 'Bearish' and ob['price_low'] > current_price
-            ]
-            valid_fvgs = [
-                fvg for fvg in ltf_patterns.get('imbalances', [])
-                if fvg['type'] == 'Bearish' and fvg['price_low'] > current_price
-            ]
-            
-            # 2. Target = Liquidité Bullish (ex: EQL, Weak Lows) en dessous du prix
-            valid_targets = [
-                liq for liq in ltf_patterns.get('liquidity_zones', [])
-                if liq['type'] == 'Bullish' and liq['price_high'] < current_price
-            ]
-            
-            # 3. Confluence
-            best_poi = self._find_best_poi(valid_obs + valid_fvgs, current_price, direction='sell')
-            best_target = self._find_best_target(valid_targets, current_price, direction='sell')
-
-            if best_poi and best_target:
-                # 4. Calculer l'entrée, le SL et le TP
-                entry_price = best_poi['entry_price']
-                stop_loss = best_poi['stop_loss']
-                take_profit = best_target['target_price']
-
-                # 5. Vérifier le Risk/Reward
-                trade_params = self.risk_manager.check_trade_risk_smc(
-                    entry_price, stop_loss, take_profit, ORDER_TYPE_SELL_LIMIT
-                )
-
-                if trade_params and trade_params['rr'] >= self.min_rr:
-                    self.log.info(f"Signal de VENTE (SELL_LIMIT) trouvé. RR: {trade_params['rr']:.2f}")
-
-                    # ### MODIFICATION ICI ### : Vérifier si le trading est activé
-                    if trading_enabled:
-                        self.log.info(f"Exécution du trade (SELL_LIMIT) pour {self.symbol}...")
-                        trade_result = self.executor.place_trade(
-                            trade_type=ORDER_TYPE_SELL_LIMIT,
-                            symbol=self.symbol,
-                            lot_size=trade_params['lot_size'],
-                            price=entry_price,
-                            sl=stop_loss,
-                            tp=take_profit,
-                            magic_number=self.config.get('trading_settings', {}).get('magic_number', 13579),
-                            comment=f"SMC-SELL-{htf_bias}"
-                        )
-                        decision = f"SIGNAL SELL_LIMIT @ {entry_price:.5f}"
-                    else:
-                        self.log.info(f"SYNCHRO: Signal de VENTE (SELL_LIMIT) trouvé mais non exécuté (trading désactivé).")
-                        trade_result = None # Pas de trade
-                        decision = "Signal (Synchro)"
-                        
-                    return {"decision": decision, "params": trade_params, "result": trade_result}
-                else:
-                    self.shared_state.update_symbol_pattern_status(self.symbol, "Signal", "Rejeté (RR Faible)")
-
-        # Si aucun scénario n'est rencontré
-        if htf_bias != "Range":
-             self.shared_state.update_symbol_pattern_status(self.symbol, "Signal", f"En attente POI/Cible ({htf_bias})")
-        
-        return None
-
-    # --- Fonctions utilitaires (simplifiées) ---
-
-    def _find_best_poi(self, pois, current_price, direction='buy'):
-        """ Trouve le POI le plus proche. """
-        if not pois:
-            return None
-            
-        best_poi = None
-        if direction == 'buy':
-            # Cherche le POI (OB ou FVG) le plus haut (prix le plus élevé)
-            # qui est SOUS le prix actuel
-            best_poi = max(pois, key=lambda x: x['price_high'])
-            # Définir l'entrée et le SL pour un Achat
-            if 'imbalance' in best_poi['name']:
-                entry = best_poi['price_high'] - (best_poi['price_high'] - best_poi['price_low']) * self.fvg_entry_level
-            else: # Order Block
-                entry = best_poi['price_high'] - (best_poi['price_high'] - best_poi['price_low']) * self.ob_entry_level
-            best_poi['entry_price'] = entry
-            best_poi['stop_loss'] = best_poi['sl_price'] # SL défini par pattern_detector
-            
-        elif direction == 'sell':
-            # Cherche le POI le plus bas (prix le plus bas)
-            # qui est AU-DESSUS du prix actuel
-            best_poi = min(pois, key=lambda x: x['price_low'])
-            # Définir l'entrée et le SL pour une Vente
-            if 'imbalance' in best_poi['name']:
-                entry = best_poi['price_low'] + (best_poi['price_high'] - best_poi['price_low']) * self.fvg_entry_level
-            else: # Order Block
-                entry = best_poi['price_low'] + (best_poi['price_high'] - best_poi['price_low']) * self.ob_entry_level
-            best_poi['entry_price'] = entry
-            best_poi['stop_loss'] = best_poi['sl_price'] # SL défini par pattern_detector
-            
-        return best_poi
-
-    def _find_best_target(self, targets, current_price, direction='buy'):
-        """ Trouve la cible de liquidité la plus proche. """
-        if not targets:
-            return None
-            
-        best_target = None
-        if direction == 'buy':
-            # Cherche la cible (liquidité) la plus basse
-            # qui est AU-DESSUS du prix actuel
-            best_target = min(targets, key=lambda x: x['price_low'])
-            best_target['target_price'] = best_target['price_low'] # Viser le bas de la zone
-            
-        elif direction == 'sell':
-            # Cherche la cible (liquidité) la plus haute
-            # qui est SOUS le prix actuel
-            best_target = max(targets, key=lambda x: x['price_high'])
-            best_target['target_price'] = best_target['price_high'] # Viser le haut de la zone
-            
-        return best_target
+    except Exception as e:
+        logger.error(f"Erreur majeure dans la logique de stratégie SMC: {e}", exc_info=True)
+        return None, None, None, None
+    
+    # Si aucune condition n'est remplie
+    logger.debug("Aucun signal SMC valide trouvé pour le moment.")
+    return None, None, None, None
