@@ -361,4 +361,5 @@ def start_api_server(shared_state):
     host = config.get('api', {}).get('host', '127.0.0.1')
     port = config.get('api', {}).get('port', 5000)
     
-    app.run(host=host, port=port, debug=False, use_reloader=False)
+# On désactive le debug et le reloader car le serveur est lancé dans un thread par main.py
+    app.run_server(debug=False, host=host, port=port, use_reloader=False)
