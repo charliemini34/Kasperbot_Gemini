@@ -1,10 +1,11 @@
 # Fichier: src/shared_state.py
-# Version: 20.0.0 (Architecture Fix)
-# Description: Rétablit l'architecture de classe (OOP) requise par main.py v19/v20.
+# Version: 20.0.1 (Fix NameError)
+# Description: Ajout de 'import time' pour corriger le NameError dans lock_symbol.
 
 import threading
 import logging
 import copy
+import time  # <-- CORRECTION AJOUTÉE ICI
 from typing import Dict, List, Any, Optional
 
 # (R7) Contexte pour les trades ouverts
@@ -31,7 +32,7 @@ class SharedState:
         self._positions: List[Dict[str, Any]] = []
         self._pending_orders: List[Dict[str, Any]] = []
         self._symbol_data: Dict[str, Any] = {}
-        self_backtest_status: Dict[str, Any] = {"running": False, "progress": 0, "results": None}
+        self._backtest_status: Dict[str, Any] = {"running": False, "progress": 0, "results": None} # Corrigé _backtest_status
         self._last_deal_check_timestamp: int = 0
         self._symbol_locks: Dict[str, float] = {} # Pour l'idempotency (J.9)
 
@@ -42,6 +43,7 @@ class SharedState:
 
     def shutdown(self):
         """Signale au bot de s'arrêter."""
+        global _BOT_RUNNING # Doit être _bot_running (variable d'instance)
         with self._lock:
             self._bot_running = False
         self.update_status("STOPPED", "Bot stopped by user.")
@@ -127,12 +129,12 @@ class SharedState:
     def get_backtest_status(self) -> Dict[str, Any]:
         """Récupère l'état du backtest en cours."""
         with self._lock:
-            return copy.deepcopy(self_backtest_status)
+            return copy.deepcopy(self._backtest_status) # Corrigé _backtest_status
 
     def set_backtest_status(self, running: bool, progress: int = 0, results: Optional[dict] = None):
         """Met à jour l'état du backtest."""
         with self._lock:
-            self_backtest_status = {"running": running, "progress": progress, "results": results}
+            self._backtest_status = {"running": running, "progress": progress, "results": results} # Corrigé _backtest_status
 
     # --- Gestion des Timestamps et Verrous ---
     
