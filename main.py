@@ -1,352 +1,119 @@
-# main.py
-
-import sys
 import logging
+import threading
 import time
-from datetime import datetime
-import pytz
-import traceback
-import pandas as pd
-import numpy as np
 import yaml
-from threading import Thread
 
-# Imports des modules du bot
 from src.data_ingest.mt5_connector import MT5Connector
 from src.execution.mt5_executor import MT5Executor
+from src.strategy.smc_orchestrator import SMCOrchestrator
 from src.risk.risk_manager import RiskManager
 from src.journal.professional_journal import ProfessionalJournal
+from src.analysis.performance_analyzer import PerformanceAnalyzer
 from src.shared_state import SharedState
+from src.api.server import start_api_server
+from src.constants import LOG_LEVEL
 
-# --- NOUVEAUX IMPORTS SMC ---
-from src.strategy.smc_orchestrator import SMCOrchestrator
-from src.analysis.market_structure import MarketStructure
-from src.patterns.pattern_detector import PatternDetector
-# --- FIN NOUVEAUX IMPORTS ---
-
-from src.api.server import start_api_server # Importation API (nom corrigé v20.0.3)
-
-# Version
-BOT_VERSION = "v20.0.9 (SMC Executor Fix 2)"
-
-# Configuration du logging
+# Configuration du logging de base (pour le fichier et la console)
 logging.basicConfig(
-    level=logging.INFO,
+    level=LOG_LEVEL,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler("bot_activity.log", mode='a', encoding='utf-8'),
-        logging.StreamHandler(sys.stdout)
+        logging.FileHandler("trading_bot.log"),
+        logging.StreamHandler()
     ]
 )
-log = logging.getLogger('root')
+logger = logging.getLogger(__name__)
 
-# Variables globales pour l'état partagé et l'API
 shared_state = SharedState()
-connector_global = None # Pour l'API
 
 def load_config(config_path='config.yaml'):
-    """Charge la configuration depuis le fichier YAML."""
+    """Charge la configuration depuis un fichier YAML."""
     try:
-        with open(config_path, 'r', encoding='utf-8') as file:
+        with open(config_path, 'r') as file:
             config = yaml.safe_load(file)
-            log.info(f"Configuration '{config_path}' chargée avec succès.")
-            
-            # --- PATCH CONFIG (Ajout sections manquantes si besoin) ---
-            if 'smc_strategy' not in config:
-                config['smc_strategy'] = {
-                    'enabled': True, 
-                    'htf_timeframe': 'H1', 
-                    'ltf_timeframe': 'M5', 
-                    'htf_swing_order': 10, 
-                    'ltf_swing_order': 5
-                }
-                log.warning("Section 'smc_strategy' absente du config.yaml, ajout des valeurs par défaut.")
-            if 'api' not in config:
-                config['api'] = {'enabled': True, 'host': '127.0.0.1', 'port': 5000}
-                log.warning("Section 'api' absente du config.yaml, ajout des valeurs par défaut.")
-            # --- FIN PATCH CONFIG ---
-            
+            logger.info("Configuration chargée avec succès.")
             return config
     except FileNotFoundError:
-        log.error(f"Erreur: Le fichier '{config_path}' est introuvable.")
+        logger.error(f"Erreur: Le fichier de configuration '{config_path}' n'a pas été trouvé.", exc_info=True)
         return None
     except yaml.YAMLError as e:
-        log.error(f"Erreur lors du parsing de '{config_path}': {e}")
+        logger.error(f"Erreur lors de la lecture du fichier YAML: {e}", exc_info=True)
         return None
     except Exception as e:
-        log.error(f"Erreur inattendue lors du chargement de la config: {e}")
+        logger.error(f"Une erreur inattendue est survenue lors du chargement de la configuration: {e}", exc_info=True)
         return None
 
-def initialize_mt5(config):
-    """Initialise le Connecteur et l'Executor MT5."""
+def start_bot_thread(config):
+    """Initialise et démarre le bot de trading dans un thread séparé."""
     try:
-        connector = MT5Connector(credentials=config.get('mt5_credentials', {}))
         
-        if not connector.connect(): 
-            log.critical("Échec de l'initialisation du connecteur MT5. Arrêt.")
-            return None, None
+        # Nous passons l'objet 'config' entier.
+        # L'initialisation se produit DANS le constructeur (__init__).
+        connector = MT5Connector(config)
         
-        executor = MT5Executor(
-            mt5_connection=connector.get_connection(), # 1. Instance MT5
-            config=config,                               # 2. Config
-            shared_state=shared_state                    # 3. SharedState
+        # MODIFICATION : Suppression du bloc "if not connector.initialize():"
+        # La méthode 'initialize' n'existe pas (AttributeError).
+        # L'initialisation est gérée par __init__. Si elle échoue,
+        # elle lèvera une exception que le 'except' ci-dessous attrapera.
+        
+        # if not connector.initialize():
+        #     logger.critical("Échec de l'initialisation de MT5Connector. Le bot ne peut pas démarrer.")
+        #     shared_state.add_log("Échec de l'initialisation de MT5Connector. Le bot ne peut pas démarrer.")
+        #     return
+
+        logger.info("MT5Connector initialisé avec succès.")
+        shared_state.add_log("Bot: Connexion MT5 initialisée.")
+
+        executor = MT5Executor(connector)
+        risk_manager = RiskManager(config.get('risk_management', {}), shared_state)
+        journal = ProfessionalJournal(shared_state)
+        
+        # Initialisation de l'orchestrateur avec toutes les dépendances
+        orchestrator = SMCOrchestrator(
+            connector=connector,
+            executor=executor,
+            risk_manager=risk_manager,
+            journal=journal,
+            shared_state=shared_state,
+            config=config  # Passe la configuration complète
         )
         
-        # --- CORRECTION (v20.0.9) ---
-        # Appel de la fonction 'check_closed_positions_pnl' (qui existe)
-        # au lieu de 'check_for_closed_trades' (qui n'existe pas)
-        executor.check_closed_positions_pnl()
-        # --- FIN CORRECTION ---
+        logger.info("SMCOrchestrator créé. Démarrage du bot...")
+        shared_state.add_log("Bot: Orchestrateur démarré.")
         
-        return connector, executor
+        # Démarrage de l'orchestrateur dans son propre thread
+        orchestrator.run()
+
+    except KeyError as e:
+        logger.error(f"Clé manquante dans la configuration: {e}. Vérifiez config.yaml.", exc_info=True)
+        shared_state.add_log(f"Erreur de configuration: Clé manquante {e}")
     except Exception as e:
-        log.error(f"Erreur critique lors de l'initialisation MT5: {e}", exc_info=True)
-        return None, None
+        logger.error(f"Erreur lors du démarrage du bot: {e}", exc_info=True)
+        shared_state.add_log(f"Erreur critique au démarrage du bot: {e}")
 
-def setup_logging(config):
-    """Configure le niveau de logging."""
-    log_level = config.get('logging', {}).get('level', 'INFO').upper()
-    try:
-        logging.getLogger().setLevel(log_level)
-        log.info(f"Niveau de logging réglé sur: {log_level}")
-    except ValueError:
-        log.warning(f"Niveau de logging '{log_level}' invalide. Utilisation de INFO.")
-        logging.getLogger().setLevel(logging.INFO)
-
-def main_trading_loop(config, connector, executor, journal):
-    """
-    Boucle principale du bot de trading.
-    MODIFIÉE pour utiliser SMCOrchestrator.
-    """
-    
-    global connector_global 
-    connector_global = connector
-
-    # Récupérer les paramètres de trading
-    trading_config = config.get('trading_settings', {})
-    symbols_to_trade = trading_config.get('symbols', [])
-    cycle_sleep_seconds = trading_config.get('cycle_sleep_seconds', 300)
-    trading_enabled = trading_config.get('trading_enabled', True)
-    
-    if not symbols_to_trade:
-        log.critical("Aucun symbole à trader n'est défini dans 'config.yaml'. Arrêt de la boucle.")
-        return
-
-    log.info(f"Démarrage de la boucle de trading {BOT_VERSION}...")
-    log.info(f"Symboles surveillés: {symbols_to_trade}")
-    log.info(f"Trading activé: {trading_enabled}")
-
-    # Initialisation des instances de stratégie (une par symbole)
-    strategy_instances = {}
-    
-    # --- NOUVELLE LOGIQUE SMC (v20.0.9) ---
-    # (Remplace l'ancienne instanciation de 'detectors')
-    
-    for symbol in symbols_to_trade:
-        try:
-            risk_manager = RiskManager(config, executor, symbol)
-            
-            orchestrator = SMCOrchestrator(
-                connector=connector,
-                executor=executor,
-                risk_manager=risk_manager,
-                journal=journal,
-                config=config,
-                shared_state=shared_state,
-                symbol=symbol 
-            )
-            # Stocker l'orchestrateur (qui contient le risk_manager)
-            strategy_instances[symbol] = orchestrator
-            log.info(f"Orchestrateur SMC initialisé pour {symbol}.")
-            
-        except Exception as e:
-            log.error(f"Échec de l'initialisation de l'orchestrateur pour {symbol}: {e}", exc_info=True)
-
-    if not strategy_instances:
-        log.critical("Aucune instance de stratégie n'a pu être initialisée. Arrêt.")
-        return
-    # --- FIN NOUVELLE LOGIQUE SMC ---
-
-    is_first_cycle = True
-    
-    try:
-        main_rm = RiskManager(config, executor, symbols_to_trade[0])
-    except Exception as e:
-        log.critical(f"Échec de l'initialisation du RiskManager principal: {e}", exc_info=True)
-        return
-
-    while True:
-        start_time = time.time()
-        
-        try:
-            # 0. Vérifier si la config a changé (via API)
-            if shared_state.config_changed_flag:
-                log.warning("Changement de configuration détecté par l'API. Rechargement...")
-                new_config = load_config('config.yaml')
-                if new_config:
-                    config = new_config
-                    setup_logging(config)
-                    shared_state.clear_config_changed_flag()
-                    log.info("Redémarrage de la boucle de trading pour appliquer la nouvelle config.")
-                    break 
-                else:
-                    log.error("Échec du rechargement de la config. L'ancienne config est conservée.")
-
-
-            # 1. Vérifications globales de Risque (avant toute analyse)
-            limit_reached, pnl = main_rm.is_daily_loss_limit_reached()
-            if limit_reached:
-                log.critical(f"LIMITE DE PERTE QUOTIDIENNE ATTEINTE ({pnl:.2f}). Trading suspendu.")
-                time.sleep(cycle_sleep_seconds)
-                continue
-            
-            # (Gestion des positions ouvertes)
-            open_positions = executor.get_open_positions()
-            shared_state.update_positions(open_positions) 
-            
-            if open_positions:
-                log.info(f"Gestion des {len(open_positions)} positions ouvertes...")
-                equity = main_rm.get_account_balance()
-                current_risk_pct = main_rm.get_current_total_risk(open_positions, equity)
-                # shared_state.set_current_risk_pct(current_risk_pct) # Fonction non existante dans shared_state
-                
-                for pos in open_positions:
-                    pos_symbol = pos.symbol
-                    if pos_symbol not in strategy_instances:
-                        log.warning(f"Position ouverte sur {pos_symbol} non gérée (pas dans config).")
-                        continue
-                    
-                    # --- CORRECTION (v20.0.9) ---
-                    # Récupérer le risk_manager depuis l'orchestrateur
-                    pos_rm = strategy_instances[pos_symbol].risk_manager
-                    
-                    pos_tick = connector.get_tick(pos_symbol) 
-                    pos_ohlc = connector.get_ohlc(pos_symbol, 'M15', 100) 
-                    
-                    pos_context = shared_state.get_trade_context(pos.ticket)
-                    if pos_context is None:
-                        log.warning(f"Contexte introuvable pour le ticket {pos.ticket}. Tentative de création...")
-                        executor.update_context_for_new_positions([pos])
-                        pos_context = shared_state.get_trade_context(pos.ticket)
-                        if pos_context is None:
-                             log.error(f"Échec de la création du contexte pour {pos.ticket}. Impossible de gérer BE/TSL.")
-                             continue
-                        
-                    pos_rm.manage_open_positions(
-                        [pos], 
-                        pos_tick, 
-                        pos_ohlc, 
-                        pos_context 
-                    )
-
-            # 2. Logique de premier cycle (Synchro)
-            if is_first_cycle:
-                log.info("Premier cycle: trading désactivé pour synchro.")
-                current_trading_enabled = False
-            else:
-                trading_enabled = config.get('trading_settings', {}).get('trading_enabled', True)
-                current_trading_enabled = trading_enabled
-
-            # 3. Boucle d'analyse par symbole
-            if not current_trading_enabled:
-                log.info("Analyse de cycle (Trading Désactivé).")
-            else:
-                log.info("Analyse de cycle (Trading Activé).") # ### MODIFICATION ICI ###
-
-            for symbol, orchestrator in strategy_instances.items():
-                
-                log.info(f"--- Analyse {symbol} ---")
-                
-                try:
-                    # --- NOUVELLE LOGIQUE SMC (MODIFIÉE) ---
-                    # On exécute TOUJOURS l'orchestrateur pour mettre à jour l'état.
-                    # On lui passe 'current_trading_enabled' pour qu'il sache s'il peut trader.
-                    orchestrator.run_strategy(trading_enabled=current_trading_enabled)
-                    # --- FIN NOUVELLE LOGIQUE SMC ---
-
-                except Exception as e:
-                    log.error(f"Erreur analyse SMC sur {symbol}: {e}", exc_info=True)
-                    traceback.print_exc() 
-
-            if is_first_cycle:
-                log.info("Fin cycle synchro. Prochain cycle avec trading.") # ### MODIFICATION ICI ###
-                is_first_cycle = False 
-
-        except Exception as e:
-            log.critical(f"Erreur fatale dans la boucle principale: {e}", exc_info=True)
-            traceback.print_exc()
-
-        elapsed_time = time.time() - start_time
-        sleep_time = max(1, cycle_sleep_seconds - elapsed_time)
-        log.info(f"Cycle terminé. Attente de {sleep_time:.1f}s.")
-        time.sleep(sleep_time)
-
-def run_bot():
-    """Fonction principale pour démarrer le bot."""
-    log.info("Démarrage du Kasperbot...")
-    
-    config = load_config('config.yaml')
+def main():
+    """Point d'entrée principal de l'application."""
+    config = load_config()
     if config is None:
-        sys.exit(1)
-        
-    setup_logging(config)
-    
-    shared_state.update_config(config)
-    
-    connector, executor = initialize_mt5(config)
-    if connector is None or executor is None:
-        sys.exit(1)
-        
-    journal = ProfessionalJournal(config.get('journal', {}))
-    
-    api_config = config.get('api', {})
-    if api_config.get('enabled', False):
-        
-        host = api_config.get('host', '127.0.0.1')
-        port = api_config.get('port', 5000)
-        
-        api_thread = Thread(
-            target=start_api_server, 
-            args=(shared_state,),     
-            daemon=True,
-            name="FlaskApiServer" # ### MODIFICATION ICI ### : Nommer le thread
-        )
-        api_thread.start()
-        
-        log.info(f"API démarrée sur Thread: {api_thread.name}. Interface accessible sur http://{host}:{port}")
+        logger.critical("Échec du chargement de la configuration. L'application va s'arrêter.")
+        return
 
-    while True: 
-        try:
-            main_trading_loop(config, connector, executor, journal)
-            
-            new_config = shared_state.get_config()
-            if new_config != config:
-                log.info("Application de la nouvelle configuration au redémarrage de la boucle.")
-                config = new_config
-                
-                log.info("Redémarrage des services principaux...")
-                connector.disconnect()
-                connector, executor = initialize_mt5(config)
-                if connector is None or executor is None:
-                    log.critical("Échec du redémarrage des services MT5. Arrêt.")
-                    break
-                journal = ProfessionalJournal(config.get('journal', {}))
-                log.info("Services redémarrés. Reprise de la boucle de trading.")
-                
-            else:
-                log.error("La boucle de trading s'est terminée de manière inattendue. Arrêt.")
-                break
+    # Passe la configuration chargée à shared_state
+    shared_state.set_config(config)
 
-        except KeyboardInterrupt:
-            log.info("Arrêt manuel demandé (Ctrl+C).")
-            break 
-        except Exception as e:
-            log.critical(f"Exception non gérée dans run_bot: {e}", exc_info=True)
-            break 
-        
-    connector.disconnect()
-    log.info("Bot arrêté. Connexion MT5 fermée.")
-    print("Bot déconnecté.")
+    # Démarrer le bot dans un thread séparé
+    # L'argument 'config' est passé au thread
+    bot_thread = threading.Thread(target=start_bot_thread, args=(config,), daemon=True)
+    bot_thread.start()
+    
+    logger.info("Thread du bot démarré.")
+    logger.info("Démarrage du serveur WebUI (Flask)...")
+    
+    # Lancer le serveur Flask via sa fonction dédiée
+    try:
+        start_api_server(shared_state)
+    except Exception as e:
+        logger.error(f"Erreur lors du démarrage du serveur Flask/SocketIO: {e}", exc_info=True)
 
 if __name__ == "__main__":
-    run_bot()
+    main()

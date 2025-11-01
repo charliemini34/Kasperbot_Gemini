@@ -1,7 +1,13 @@
 # Fichier: src/constants.py
 # Version: 1.2.0 (Sugg 4.2)
 # MODIFIÉ: Ajout des constantes d'exécution MT5
+# MODIFICATION : Ajout de la constante manquante pour l'interface
 
+import logging
+
+# Niveaux de logging
+LOG_LEVEL = logging.INFO
+MAX_LOG_ENTRIES = 200
 # --- Noms des Patterns ---
 PATTERN_ORDER_BLOCK = "ORDER_BLOCK"
 PATTERN_INBALANCE = "INBALANCE" # FVG (Fair Value Gap)

@@ -1,284 +1,168 @@
-# Fichier: src/shared_state.py
-# Version: 20.0.1 (Fix NameError)
-# Description: Ajout de 'import time' pour corriger le NameError dans lock_symbol.
-# MODIFIÉ: Ajout des méthodes de statut pour l'orchestrateur SMC.
-
-import threading
-import logging
-import copy
-import time  # <-- CORRECTION AJOUTÉE ICI
-from typing import Dict, List, Any, Optional
-
-# (R7) Contexte pour les trades ouverts
-class TradeContext:
-    """Stocke l'état original d'un trade pour la gestion (BE, TP Partiel)."""
-    def __init__(self, ticket: int, original_sl: float, original_volume: float):
-        self.ticket: int = ticket
-        self.original_sl: float = original_sl
-        self.original_volume: float = original_volume
-        self.partial_tp_taken_percent: float = 0.0 # % cumulatif pris
+from threading import Lock
+from datetime import datetime
+from src.constants import MAX_LOG_ENTRIES # MODIFICATION : Ré-importation
 
 class SharedState:
     """
-    Classe centralisée pour gérer l'état partagé du bot à travers les threads.
-    (Cette classe est requise par main.py v19.1.1)
+    Classe thread-safe pour partager l'état entre le bot, le serveur API
+    et les autres composants.
     """
+    
     def __init__(self):
-        self._lock = threading.Lock()
-        self._bot_running = True
-        self._config_changed_flag = False
-        self._config: Dict[str, Any] = {}
-        self._status: Dict[str, Any] = {"status": "INITIALIZING", "message": "Bot starting..."}
-        self._logs: List[str] = []
-        self._positions: List[Dict[str, Any]] = []
-        self._pending_orders: List[Dict[str, Any]] = []
-        self._symbol_data: Dict[str, Any] = {}
-        self._backtest_status: Dict[str, Any] = {"running": False, "progress": 0, "results": None} # Corrigé _backtest_status
-        self._last_deal_check_timestamp: int = 0
-        self._symbol_locks: Dict[str, float] = {} # Pour l'idempotency (J.9)
+        self.lock = Lock()
+        self.monitored_symbols = []
+        self.logs = []
+        self.account_info = {}
+        self.trades = []
+        self.positions = []
 
-    def is_shutdown(self) -> bool:
-        """Vérifie si le bot a reçu un signal d'arrêt."""
-        with self._lock:
-            return not self._bot_running
+        # MODIFICATIONS : Ajout des états attendus par server.py v2.1.0
+        self.config = {}
+        self.status = "Initialisation"
+        self.status_message = "Le bot est en cours de démarrage."
+        self.is_emergency = False
+        self.analysis_suggestions = []
+        self.symbol_data = {} # Pour les données d'analyse SMC par symbole
+        self.backtest_status = {'running': False, 'progress': 0, 'results': {}}
+        self.config_changed_flag = False
 
-    def shutdown(self):
-        """Signale au bot de s'arrêter."""
-        global _BOT_RUNNING # Doit être _bot_running (variable d'instance)
-        with self._lock:
-            self._bot_running = False
-        self.update_status("STOPPED", "Bot stopped by user.")
+    def add_log(self, message):
+        """Ajoute un message de log."""
+        with self.lock:
+            log_entry = f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - {message}"
+            self.logs.append(log_entry)
+            
+            # MODIFICATION : Ajout de la limite de logs
+            if len(self.logs) > MAX_LOG_ENTRIES:
+                self.logs.pop(0)
 
-    # --- Gestion de la Configuration ---
-    
-    def update_config(self, config_data: dict):
-        """Met à jour la configuration globale."""
-        with self._lock:
-            self._config = config_data
+    def get_logs(self):
+        """Retourne une copie de tous les logs actuels."""
+        with self.lock:
+            return list(self.logs)
 
-    def get_config(self) -> dict:
-        """Récupère une copie de la configuration globale."""
-        with self._lock:
-            return copy.deepcopy(self._config)
+    # --- Fonctions pour les symboles, compte, trades, positions (inchangées) ---
 
+    def set_monitored_symbols(self, symbols):
+        with self.lock:
+            if set(self.monitored_symbols) != set(symbols):
+                self.monitored_symbols = list(symbols)
+
+    def get_monitored_symbols(self):
+        with self.lock:
+            return list(self.monitored_symbols)
+
+    def set_account_info(self, account_info):
+        with self.lock:
+            self.account_info = account_info
+
+    def get_account_info(self):
+        with self.lock:
+            return dict(self.account_info)
+
+    def set_trades(self, trades):
+        with self.lock:
+            self.trades = list(trades)
+
+    def get_trades(self):
+        with self.lock:
+            return list(self.trades)
+
+    def set_positions(self, positions):
+        with self.lock:
+            self.positions = list(positions)
+
+    def get_positions(self):
+        with self.lock:
+            return list(self.positions)
+
+    # --- MODIFICATIONS : Fonctions ajoutées pour server.py v2.1.0 ---
+
+    def set_config(self, config):
+        """Stocke la configuration chargée."""
+        with self.lock:
+            self.config = config
+
+    def get_config(self):
+        """Retourne une copie de la configuration (corrige AttributeError)."""
+        with self.lock:
+            return dict(self.config)
+
+    def update_config(self, new_config):
+        """Met à jour la configuration (appelé par l'API)."""
+        with self.lock:
+            self.config = new_config
+            # Ici, vous pourriez aussi sauvegarder dans config.yaml si vous
+            # ne le faites pas déjà dans server.py
+            
     def signal_config_changed(self):
-        """Signale à la boucle principale qu'elle doit recharger config.yaml."""
-        with self._lock:
-            self._config_changed_flag = True
-    
-    @property
-    def config_changed_flag(self) -> bool:
-        """Vérifie si le drapeau de changement de config est levé."""
-        with self._lock:
-            return self._config_changed_flag
-    
-    def clear_config_changed_flag(self):
-        """Baisse le drapeau de changement de config après rechargement."""
-        with self._lock:
-            self._config_changed_flag = False
+        """Signale au bot qu'il doit redémarrer (lu par server.py)."""
+        with self.lock:
+            self.config_changed_flag = True
 
-    # --- Gestion de l'état de l'API ---
-    
-    def update_status(self, status: str, message: str, is_emergency: bool = False):
-        """Met à jour le statut du bot pour l'API."""
-        with self._lock:
-            self._status = {"status": status, "message": message, "is_emergency": is_emergency}
+    def check_config_changed(self):
+        """Vérifié par le bot pour savoir s'il doit redémarrer."""
+        with self.lock:
+            if self.config_changed_flag:
+                self.config_changed_flag = False
+                return True
+            return False
 
-    def add_log(self, log_message: str):
-        """Ajoute un log pour l'API."""
-        with self._lock:
-            self._logs.append(log_message)
-            if len(self._logs) > 100: # Limiter à 100 logs
-                self._logs.pop(0)
+    def get_backtest_status(self):
+        """Retourne l'état du backtest (attendu par server.py)."""
+        with self.lock:
+            return dict(self.backtest_status)
 
-    def update_positions(self, positions_list: List[Any]):
-        """Met à jour la liste des positions ouvertes pour l'API (convertit les objets MT5)."""
-        with self._lock:
-            self._positions = [self._mt5_pos_to_dict(p) for p in positions_list]
+    def set_backtest_status(self, running=None, progress=None, results=None, error=None):
+        """Met à jour l'état du backtest (appelé par backtester.py)."""
+        with self.lock:
+            if running is not None:
+                self.backtest_status['running'] = running
+            if progress is not None:
+                self.backtest_status['progress'] = progress
+            if results is not None:
+                self.backtest_status['results'] = results
+                self.backtest_status['error'] = None # Réinitialise l'erreur en cas de succès
+            if error is not None:
+                self.backtest_status['error'] = error
+                self.backtest_status['running'] = False # Arrête le backtest en cas d'erreur
+                
+    def set_bot_status(self, status, message, is_emergency=False):
+        """Met à jour le statut général du bot pour l'UI."""
+        with self.lock:
+            self.status = status
+            self.status_message = message
+            self.is_emergency = is_emergency
 
-    def update_pending_orders(self, orders_list: List[Any]):
-        """Met à jour la liste des ordres en attente pour l'API (convertit les objets MT5)."""
-        with self._lock:
-            self._pending_orders = [self._mt5_order_to_dict(o) for o in orders_list]
+    def set_symbol_data(self, symbol, data):
+        """Met à jour les données d'analyse pour un symbole spécifique (SMC)."""
+        with self.lock:
+            if symbol not in self.symbol_data:
+                self.symbol_data[symbol] = {}
+            # Fusionne les nouvelles données (ex: { 'patterns': {...} })
+            self.symbol_data[symbol].update(data)
 
-    def initialize_symbol_data(self, symbols: List[str]):
-        """Initialise le dictionnaire de données pour les symboles."""
-        with self._lock:
-            self._symbol_data = {symbol: {"patterns": {}} for symbol in symbols}
-            
-    # ### MODIFICATION ICI : Ajout des méthodes manquantes ###
-    
-    def initialize_symbol_status(self, symbol: str):
-        """Assure que le dictionnaire de statut existe pour ce symbole."""
-        with self._lock:
-            if symbol not in self._symbol_data:
-                self._symbol_data[symbol] = {"patterns": {}}
-            
-    def update_symbol_pattern_status(self, symbol: str, pattern_name: str, status: str):
-        """Met à jour le statut d'un pattern spécifique pour l'UI."""
-        with self._lock:
-            if symbol not in self._symbol_data:
-                # Initialise le symbole s'il n'existe pas
-                self._symbol_data[symbol] = {"patterns": {}}
-            
-            # Mettre à jour le statut du pattern (ex: "Biais HTF": "Bullish")
-            self._symbol_data[symbol]["patterns"][pattern_name] = {"status": status}
-            
-    def update_analysis_data(self, symbol: str, htf_bias: str, ltf_patterns: dict, htf_structure: dict):
-        """Stocke les données d'analyse complètes (pour le graph API, etc.)."""
-        with self._lock:
-            if symbol not in self._symbol_data:
-                # Initialise le symbole s'il n'existe pas
-                self._symbol_data[symbol] = {"patterns": {}}
-            
-            # Stocker les données brutes pour un éventuel affichage sur le chart
-            self._symbol_data[symbol]['raw_bias'] = htf_bias
-            self._symbol_data[symbol]['raw_patterns'] = ltf_patterns
-            self._symbol_data[symbol]['raw_structure'] = htf_structure
-            
-    # ### FIN DES MODIFICATIONS ###
+    def set_analysis_suggestions(self, suggestions):
+        """Met à jour les suggestions d'analyse (mode apprentissage)."""
+        with self.lock:
+            self.analysis_suggestions = list(suggestions)
 
-    def update_symbol_patterns(self, symbol: str, patterns_info: Dict[str, Any]):
-        """Met à jour les informations de pattern pour un symbole."""
-        with self._lock:
-            if symbol not in self._symbol_data:
-                self._symbol_data[symbol] = {"patterns": {}}
-            self._symbol_data[symbol]["patterns"] = patterns_info
-
-    def get_all_data(self) -> Dict[str, Any]:
-        """Point d'entrée unique pour l'API pour récupérer toutes les données."""
-        with self._lock:
-            # (R7) Inclure les ordres en attente dans la réponse
+    def get_all_data(self):
+        """
+        Rassemble TOUTES les données pour l'endpoint /api/data.
+        C'est la fonction CLÉ que l'interface appelle.
+        """
+        with self.lock:
             return {
-                "status": self._status,
-                "logs": self._logs,
-                "positions": self._positions,
-                "pending_orders": self._pending_orders, # (R7)
-                "symbol_data": self._symbol_data,
-                "analysis_suggestions": [] # Placeholder pour l'apprentissage
+                "status": {
+                    "status": self.status,
+                    "message": self.status_message,
+                    "is_emergency": self.is_emergency,
+                    "analysis_suggestions": list(self.analysis_suggestions),
+                    "symbol_data": dict(self.symbol_data)
+                },
+                "positions": list(self.positions),
+                "logs": list(self.logs)
+                # Note : 'trades' (historique) n'est pas demandé par /api/data
+                # mais pourrait l'être par un autre endpoint.
             }
-
-    # --- Gestion du Backtest (pour l'API) ---
-    def get_backtest_status(self) -> Dict[str, Any]:
-        """Récupère l'état du backtest en cours."""
-        with self._lock:
-            return copy.deepcopy(self._backtest_status) # Corrigé _backtest_status
-
-    def set_backtest_status(self, running: bool, progress: int = 0, results: Optional[dict] = None):
-        """Met à jour l'état du backtest."""
-        with self._lock:
-            self._backtest_status = {"running": running, "progress": progress, "results": results} # Corrigé _backtest_status
-
-    # --- Gestion des Timestamps et Verrous ---
-    
-    def get_last_deal_check_timestamp(self) -> int:
-        """Récupère le timestamp du dernier deal vérifié (J.6)."""
-        with self._lock:
-            return self._last_deal_check_timestamp
-
-    def set_last_deal_check_timestamp(self, timestamp: int):
-        """Met à jour le timestamp du dernier deal vérifié (J.6)."""
-        with self._lock:
-            self._last_deal_check_timestamp = timestamp
-
-    def lock_symbol(self, symbol: str, ttl_seconds: int):
-        """Verrouille un symbole pour éviter les trades en double (J.9)."""
-        with self._lock:
-            expiry_time = time.time() + ttl_seconds
-            self._symbol_locks[symbol] = expiry_time
-            logging.info(f"Symbole {symbol} verrouillé pour {ttl_seconds}s.")
-
-    def unlock_symbol(self, symbol: str):
-        """Déverrouille manuellement un symbole (ex: ordre annulé)."""
-        with self._lock:
-            if symbol in self._symbol_locks:
-                del self._symbol_locks[symbol]
-                logging.info(f"Symbole {symbol} déverrouillé manuellement.")
-
-    def is_symbol_locked(self, symbol: str) -> bool:
-        """Vérifie si un symbole est actuellement verrouillé (J.9)."""
-        with self._lock:
-            if symbol not in self._symbol_locks:
-                return False
-            
-            if time.time() > self._symbol_locks[symbol]:
-                # Le verrou a expiré, on le supprime
-                del self._symbol_locks[symbol]
-                return False
-            
-            # Le verrou est toujours actif
-            return True
-            
-    # --- (R7) Gestion du Contexte de Trade ---
-    # (Ces méthodes n'existent pas dans ton fichier mais sont requises par l'executor)
-    
-    def set_trade_context(self, ticket: int, context: TradeContext):
-        """Stocke le contexte d'un trade ouvert."""
-        with self._lock:
-            # Assurer que _trade_context existe (il n'est pas dans ton __init__)
-            if not hasattr(self, '_trade_context'):
-                self._trade_context = {}
-            self._trade_context[ticket] = context
-
-    def get_trade_context(self, ticket: int) -> Optional[TradeContext]:
-        """Récupère le contexte d'un trade."""
-        with self._lock:
-            if not hasattr(self, '_trade_context'):
-                self._trade_context = {}
-            return self._trade_context.get(ticket)
-
-    def remove_trade_context(self, ticket: int):
-        """Supprime le contexte d'un trade fermé."""
-        with self._lock:
-            if not hasattr(self, '_trade_context'):
-                self._trade_context = {}
-            if ticket in self._trade_context:
-                del self._trade_context[ticket]
-
-    # --- Fonctions utilitaires de conversion (pour l'API) ---
-    
-    def _mt5_pos_to_dict(self, pos) -> Dict[str, Any]:
-        """Convertit un objet MT5 Position en dictionnaire simple."""
-        if pos is None: return {}
-        return {
-            "ticket": pos.ticket,
-            "symbol": pos.symbol,
-            "type": pos.type, # 0 pour BUY, 1 pour SELL
-            "volume": pos.volume,
-            "price_open": pos.price_open,
-            "sl": pos.sl,
-            "tp": pos.tp,
-            "profit": pos.profit,
-            "magic": pos.magic
-        }
-        
-    def _mt5_order_to_dict(self, order) -> Dict[str, Any]:
-        """Convertit un objet MT5 Order (pending) en dictionnaire simple."""
-        if order is None: return {}
-        return {
-            "ticket": order.ticket,
-            "symbol": order.symbol,
-            "type": order.type, # 2=LIMIT_BUY, 3=LIMIT_SELL
-            "volume": order.volume_initial,
-            "price_open": order.price_open,
-            "sl": order.sl,
-            "tp": order.tp,
-            "magic": order.magic,
-            "time_setup": order.time_setup
-        }
-
-
-class LogHandler(logging.Handler):
-    """
-    Un gestionnaire de logging qui envoie les logs à l'état partagé (SharedState)
-    pour affichage dans l'interface utilisateur.
-    (Cette classe est requise par main.py v19.1.1)
-    """
-    def __init__(self, shared_state_instance: SharedState):
-        super().__init__()
-        self.shared_state = shared_state_instance
-
-    def emit(self, record):
-        """Envoie l'enregistrement de log formaté à l'état partagé."""
-        log_entry = self.format(record)
-        self.shared_state.add_log(log_entry)
