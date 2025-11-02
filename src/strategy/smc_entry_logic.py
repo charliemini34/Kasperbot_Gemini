@@ -2,19 +2,10 @@
 """
 Module de Stratégie SMC (Smart Money Concepts).
 
-Ce module est le "cerveau" du bot. Il combine l'analyse de structure
-multi-timeframe (MTF) avec la détection de POI (Points of Interest)
-pour générer des signaux de trading basés sur la logique SMC/ICT.
-
-Stratégies implémentées (v1.3.0) :
-- Modèle 1: Confirmation (HTF POI -> LTF CHOCH)
-- Modèle 2: Inducement (HTF Biais + LTF Sweep de Liquidité -> LTF CHOCH)
-- Modèle 3: Opening Range Breakout (ex: NY Open M30/M5)
-
-Version: 1.3.0
+Version: 1.3.1 (Correction KeyError: 'pip_size' devient un argument)
 """
 
-__version__ = "1.3.0"
+__version__ = "1.3.1"
 
 import logging
 import pandas as pd
@@ -204,7 +195,7 @@ def _check_model_1_confirmation(
 # --- Fin Modèle 1 ---
 
 
-# --- MODÈLE 2 (Conservé) v1.2.0 ---
+# --- MODÈLE 2 (MODIFIÉ) v1.3.1 ---
 def _check_model_2_inducement(
     htf_trend: str, 
     ltf_data: pd.DataFrame, 
@@ -213,13 +204,19 @@ def _check_model_2_inducement(
     ltf_swings_low: list,
     current_low: float,
     current_high: float,
-    config: dict
+    config: dict,
+    pip_size: float # <-- MODIFICATION v1.3.1: Ajout de l'argument
 ) -> Tuple[Optional[str], Optional[str], Optional[float], Optional[float]]:
     """
     Vérifie le "Modèle 2: Inducement (Sweep) + Confirmation CHOCH".
     """
     strategy_params = config['strategy']
-    pip_size = config['trading']['pip_size']
+    
+    # --- CORRECTION v1.3.1 (KeyError: 'trading') ---
+    # pip_size est maintenant passé en argument
+    # LIGNE SUPPRIMÉE: pip_size = config['risk']['pip_size']
+    # --- FIN CORRECTION ---
+    
     
     # --- Étape 1 (M2): Détecter la liquidité LTF (EQL / Session Low) ---
     ltf_liquidity_zones = []
@@ -243,7 +240,7 @@ def _check_model_2_inducement(
         ltf_data, 
         lookback=strategy_params.get('liquidity_lookback', 50),
         tolerance_pips=strategy_params.get('liquidity_tolerance_pips', 5),
-        pip_size=pip_size
+        pip_size=pip_size # Utilise l'argument
     )
     for eql in eql_zones['equal_lows']:
         ltf_liquidity_zones.append({"type": "EQL", "level": eql['level']})
@@ -307,19 +304,11 @@ def _check_model_2_inducement(
 # --- Fin Modèle 2 ---
 
 
-# --- ORCHESTRATEUR (Conservé) v1.2.0 ---
-def check_all_smc_signals(mtf_data: dict, config: dict):
+# --- ORCHESTRATEUR (MODIFIÉ) v1.3.1 ---
+def check_all_smc_signals(mtf_data: dict, config: dict, pip_size: float): # <-- MODIFICATION v1.3.1: Ajout de pip_size
     """
     Orchestre la vérification de tous les modèles de signaux SMC (M1, M2).
     Elle appelle chaque modèle en séquence jusqu'à ce qu'un signal soit trouvé.
-
-    Args:
-        mtf_data (dict): Dictionnaire de DataFrames. 
-                         Ex: {'H4': pd.DataFrame, 'M15': pd.DataFrame}
-        config (dict): Dictionnaire de configuration de la stratégie.
-
-    Returns:
-        tuple: (signal, raison, sl_price, tp_price) ou (None, None, None, None)
     """
     
     try:
@@ -341,7 +330,7 @@ def check_all_smc_signals(mtf_data: dict, config: dict):
         
         # --- Étape 2: Analyse HTF (Commune à tous les modèles) ---
         htf_swings_high, htf_swings_low = structure.find_swing_highs_lows(
-            htf_data, order=strategy_params['htf_swing_order']
+            htf_data, order=strategy_params.get('htf_swing_order', 10) # Ajout de .get() pour la robustesse
         )
         _htf_events, htf_trend = structure.identify_structure(htf_swings_high, htf_swings_low)
         
@@ -353,7 +342,7 @@ def check_all_smc_signals(mtf_data: dict, config: dict):
 
         # --- Étape 3: Analyse LTF (Commune à tous les modèles) ---
         ltf_swings_high, ltf_swings_low = structure.find_swing_highs_lows(
-            ltf_data, order=strategy_params['ltf_swing_order']
+            ltf_data, order=strategy_params.get('ltf_swing_order', 5) # Ajout de .get() pour la robustesse
         )
         ltf_events, ltf_trend = structure.identify_structure(ltf_swings_high, ltf_swings_low)
 
@@ -374,43 +363,44 @@ def check_all_smc_signals(mtf_data: dict, config: dict):
         # 4b. Vérifier Modèle 2 (Inducement/Sweep)
         signal_m2 = _check_model_2_inducement(
             htf_trend, ltf_data, ltf_events, ltf_swings_high, ltf_swings_low,
-            current_low, current_high, config
+            current_low, current_high, config,
+            pip_size # <-- MODIFICATION v1.3.1: Passage de l'argument
         )
         if signal_m2[0]:
             return signal_m2 # Signal trouvé !
 
     except Exception as e:
-        logger.error(f"Erreur majeure dans l'orchestrateur de signaux (v1.2.0): {e}", exc_info=True)
+        logger.error(f"Erreur majeure dans l'orchestrateur de signaux (v1.3.1): {e}", exc_info=True)
         return None, None, None, None
     
     # Si aucun modèle n'a trouvé de signal
     logger.debug("Aucun modèle SMC (M1/M2) n'a trouvé de signal valide pour le moment.")
     return None, None, None, None
-# --- Fin de la Logique v1.2.0 ---
+# --- Fin de la Logique v1.3.1 ---
 
 
-# --- NOUVEAU MODÈLE 3 v1.3.0 ---
+# --- MODÈLE 3 (MODIFIÉ) v1.3.1 ---
 def check_model_3_opening_range(
     opening_range_data: pd.DataFrame,
     entry_tf_data: pd.DataFrame,
     config: dict,
     opening_range_tf_str: str,
-    entry_tf_str: str
+    entry_tf_str: str,
+    pip_size: float # <-- MODIFICATION v1.3.1: Ajout de l'argument
 ) -> Tuple[Optional[str], Optional[str], Optional[float], Optional[float]]:
     """
     Vérifie le "Modèle 3: Opening Range Breakout" (ex: M30/M5 ou M5/M1)
     Basé sur les vidéos 7M9Dv9dZQNM et WxaeF8l5_2M.
-    
-    Logique:
-    1. Prend le High/Low de la dernière bougie du 'opening_range_data'.
-    2. Surveille 'entry_tf_data' pour une clôture de corps au-delà de ce range.
-    3. Confirme le breakout avec une Imbalance (FVG) créée sur 'entry_tf_data'.
-    4. Vise un RR fixe (ex: 2R).
     """
     
     try:
         strategy_params = config['strategy']
-        pip_size = config['trading']['pip_size']
+        
+        # --- CORRECTION v1.3.1 (KeyError: 'trading') ---
+        # pip_size est maintenant passé en argument
+        # LIGNE SUPPRIMÉE: pip_size = config['risk']['pip_size']
+        # --- FIN CORRECTION ---
+        
         model_3_rr = strategy_params.get('model_3_rr', 2.0)
         
         if opening_range_data.empty or entry_tf_data.empty:
@@ -418,7 +408,6 @@ def check_model_3_opening_range(
             return None, None, None, None
             
         # 1. Définir le Range (basé sur la *dernière* bougie M30/M5 fournie)
-        # On prend l'avant-dernière bougie pour être sûr qu'elle est clôturée
         if len(opening_range_data) < 2:
              logger.debug("[M3] Pas assez de bougies de range pour analyse.")
              return None, None, None, None
@@ -443,7 +432,6 @@ def check_model_3_opening_range(
             return None, None, None, None
 
         # 3. Confirmer avec Imbalance (FVG)
-        # Analyser les 5 dernières bougies d'entrée pour un FVG
         recent_entry_data = entry_tf_data.iloc[-5:]
         all_fvgs = patterns.find_fvgs(recent_entry_data)
         
