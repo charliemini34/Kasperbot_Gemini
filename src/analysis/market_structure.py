@@ -1,10 +1,13 @@
-
 """
 Module pour l'analyse de la structure de marché (SMC).
 
 Ce module contient les fonctions nécessaires pour identifier les points pivots (swing highs/lows)
 et pour détecter la structure du marché (BOS, CHOCH) basée sur ces points.
+
+Version: 1.0.1
 """
+
+__version__ = "1.0.1"
 
 import pandas as pd
 import numpy as np
@@ -26,10 +29,25 @@ def find_swing_highs_lows(data: pd.DataFrame, order: int = 5):
                Chaque élément dans les listes est un tuple (index, prix).
     """
     
+    # --- Ajout Robustesse v1.0.1 ---
+    # Vérifie si les données sont suffisantes pour l'analyse, évite un crash de scipy
+    if len(data) < (2 * order + 1):
+        # Pas assez de données pour trouver des extrema avec l'ordre donné
+        return [], []
+    # --- Fin Ajout ---
+
     # Utilise scipy pour trouver les indices des extrema locaux
     high_indices = argrelextrema(data['high'].values, np.greater_equal, order=order)[0]
     low_indices = argrelextrema(data['low'].values, np.less_equal, order=order)[0]
 
+    # --- Commentaire de Validation (v1.0.1) ---
+    # Le filtre ci-dessous est crucial pour une stratégie non-repainting.
+    # 'i >= order' : Assure qu'on a 'order' bougies *avant* le point.
+    # 'i < len(data) - order' : Assure qu'on a 'order' bougies *après* le point.
+    # Cela signifie qu'un swing n'est confirmé qu'après 'order' bougies,
+    # introduisant un "lag" nécessaire pour garantir que le point est définitif.
+    # --- Fin Commentaire ---
+    
     # Filtre pour ne garder que les points valides (ignorer les bords si nécessaire)
     high_indices = [i for i in high_indices if i >= order and i < len(data) - order]
     low_indices = [i for i in low_indices if i >= order and i < len(data) - order]
@@ -120,7 +138,9 @@ def identify_structure(swing_highs: list, swing_lows: list):
             
             # Initialisation Tendance
             elif current_trend == "SIDEWAYS" and last_significant_low:
-                if current_swing[1] > last_significant_high[1]:
+                if last_significant_high is None: # Cas où on n'a que des lows
+                   last_significant_high = current_swing
+                elif current_swing[1] > last_significant_high[1]:
                     current_trend = "BULLISH" # Première tendance établie
                     last_significant_high = current_swing
 
@@ -162,7 +182,9 @@ def identify_structure(swing_highs: list, swing_lows: list):
             
             # Initialisation Tendance
             elif current_trend == "SIDEWAYS" and last_significant_high:
-                if current_swing[1] < last_significant_low[1]:
+                if last_significant_low is None: # Cas où on n'a que des highs
+                    last_significant_low = current_swing
+                elif current_swing[1] < last_significant_low[1]:
                     current_trend = "BEARISH" # Première tendance établie
                     last_significant_low = current_swing
 

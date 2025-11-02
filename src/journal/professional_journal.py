@@ -1,85 +1,122 @@
 # Fichier: src/journal/professional_journal.py
-# Version: 1.0.0 manuel
-# Dépendances: pandas, os, logging, datetime
+"""
+Module pour la gestion du journal de trading professionnel.
 
-import pandas as pd
-import os
+Ce module gère la création et l'écriture des enregistrements de trades
+dans un fichier CSV structuré pour une analyse ultérieure.
+
+Version: 1.1.0
+"""
+
+__version__ = "1.1.0"
+
 import logging
+import csv
+import os
 from datetime import datetime
+from typing import Dict, Any
+
+logger = logging.getLogger(__name__)
 
 class ProfessionalJournal:
     """
-    Gère la journalisation des trades dans un format CSV professionnel,
-    avec un fichier distinct pour chaque mois.
+    Gère l'enregistrement des trades dans un fichier CSV.
     """
-    def __init__(self, config: dict):
-        self.log = logging.getLogger(self.__class__.__name__)
-        self.config = config.get('professional_journal', {})
-        self.enabled = self.config.get('enabled', False)
-        self.file_path_template = self.config.get('file_path_template', "Journal_Trading_{month_name}_{year}.csv")
+    
+    def __init__(self, filepath: str):
+        self.filepath = filepath
+        
+        # --- MODIFICATION v1.1.0: Ajout de 'setup_model' ---
+        self.csv_headers = [
+            'timestamp', 'symbol', 'type', 'volume', 'entry_price', 'sl', 'tp',
+            'reason', 'setup_model', 'position_id', 'status', 
+            'close_price', 'close_time', 'profit'
+        ]
+        # --- FIN MODIFICATION ---
+        
+        self._initialize_file()
 
-    def get_current_filepath(self) -> str:
-        """Génère le chemin du fichier pour le mois et l'année en cours."""
-        now = datetime.now()
-        month_name = now.strftime('%B').upper()
-        year = now.year
-        return self.file_path_template.format(month_name=month_name, year=year)
+    def _initialize_file(self):
+        """
+        Vérifie si le fichier journal existe et a les bons en-têtes.
+        Sinon, il le crée.
+        """
+        try:
+            file_exists = os.path.isfile(self.filepath)
+            needs_header = not file_exists
+            
+            if file_exists:
+                # Si le fichier existe, vérifier les en-têtes
+                with open(self.filepath, 'r', newline='', encoding='utf-8') as f:
+                    reader = csv.reader(f)
+                    try:
+                        existing_headers = next(reader)
+                        if existing_headers != self.csv_headers:
+                            logger.warning(f"Les en-têtes du journal {self.filepath} sont obsolètes. Une sauvegarde de l'ancien fichier sera créée si possible.")
+                            # Idéalement, gérer une migration, mais pour l'instant on signale
+                            # On pourrait renommer l'ancien et en créer un nouveau
+                    except StopIteration:
+                        needs_header = True # Fichier vide
+            
+            if needs_header:
+                with open(self.filepath, 'w', newline='', encoding='utf-8') as f:
+                    writer = csv.writer(f)
+                    writer.writerow(self.csv_headers)
+                    
+        except IOError as e:
+            logger.error(f"Erreur lors de l'initialisation du fichier journal: {e}", exc_info=True)
 
-    def record_trade(self, trade_record: dict, account_info):
-        """Enregistre un trade clôturé dans le fichier CSV du mois en cours."""
-        if not self.enabled:
+    def record_trade(self, trade_info: Dict[str, Any]):
+        """
+        Enregistre un nouveau trade (ouverture) dans le fichier CSV.
+
+        Args:
+            trade_info (Dict): Un dictionnaire contenant les informations du trade.
+                               Doit correspondre aux en-têtes.
+        """
+        if not trade_info or 'position_id' not in trade_info:
+            logger.warning("Tentative d'enregistrement d'un trade invalide.")
             return
 
         try:
-            filepath = self.get_current_filepath()
-            file_exists = os.path.exists(filepath)
-
-            capital_depart = 2000 # Valeur par défaut si le fichier n'existe pas
-            if file_exists:
-                try:
-                    df_existing = pd.read_csv(filepath, header=2) # L'en-tête est à la 3ème ligne
-                    if not df_existing.empty and '#REF!' not in str(df_existing['CAPITAL ACTUEL'].iloc[-1]):
-                         # Utilise le dernier capital actuel s'il est valide
-                        last_capital = pd.to_numeric(df_existing['CAPITAL ACTUEL'].dropna().iloc[-1], errors='coerce')
-                        if pd.notna(last_capital):
-                             capital_depart = last_capital
-
-                except (FileNotFoundError, IndexError, pd.errors.EmptyDataError):
-                     # Le fichier est peut-être vide ou mal formaté, on utilise le capital de départ
-                    pass
-
-
-            trade_pnl = trade_record['pnl']
-            capital_actuel = capital_depart + trade_pnl
-            profit_percent = (trade_pnl / capital_depart) if capital_depart > 0 else 0
-
-            new_row = {
-                'Trade': '', # Le numéro de trade sera calculé plus tard
-                'Paire': trade_record['symbol'],
-                'Stratégie Utilisée': trade_record['pattern_trigger'],
-                'Gain / Perte': 'Gain' if trade_pnl >= 0 else 'Perte',
-                '$ Profit / Perte': trade_pnl,
-                '% Profit/Perte': profit_percent,
-                'CAPITAL ACTUEL': capital_actuel,
-                'Commentaires': f"Ticket: {trade_record['ticket']}",
-                'TradingView/Image': ''
-            }
-
-            if not file_exists:
-                 # Créer le fichier avec l'en-tête complet
-                with open(filepath, 'w', newline='', encoding='utf-8') as f:
-                    month_name = datetime.now().strftime('%B').upper()
-                    f.write(f"{month_name},,,CAPITAL DE DÉPART,{account_info.balance - trade_pnl},RESULTAT,{trade_pnl},\n")
-                    f.write(',,,,,,,,\n') # Ligne vide
-                df_to_save = pd.DataFrame([new_row])
-                df_to_save.to_csv(filepath, mode='a', header=True, index=False)
-
-            else:
-                 # Ajouter simplement la nouvelle ligne
-                df_to_save = pd.DataFrame([new_row])
-                df_to_save.to_csv(filepath, mode='a', header=False, index=False)
-            
-            self.log.info(f"Trade #{trade_record['ticket']} journalisé professionnellement dans {filepath}")
-
+            with open(self.filepath, 'a', newline='', encoding='utf-8') as f:
+                writer = csv.writer(f)
+                
+                # --- MODIFICATION v1.1.0: Ajout de 'setup_model' ---
+                writer.writerow([
+                    trade_info.get('timestamp', datetime.now().isoformat()),
+                    trade_info.get('symbol', 'N/A'),
+                    trade_info.get('type', 'N/A'),
+                    trade_info.get('volume', 0.0),
+                    trade_info.get('entry_price', 0.0),
+                    trade_info.get('sl', 0.0),
+                    trade_info.get('tp', 0.0),
+                    trade_info.get('reason', 'N/A'),
+                    trade_info.get('setup_model', 'UNKNOWN'), # Nouvelle entrée
+                    trade_info.get('position_id', 0),
+                    trade_info.get('status', 'OPEN'),
+                    trade_info.get('close_price', None),
+                    trade_info.get('close_time', None),
+                    trade_info.get('profit', None)
+                ])
+                # --- FIN MODIFICATION ---
+                
+        except IOError as e:
+            logger.error(f"Erreur lors de l'écriture dans le fichier journal: {e}", exc_info=True)
         except Exception as e:
-            self.log.error(f"Erreur lors de la journalisation professionnelle du trade #{trade_record['ticket']}: {e}", exc_info=True)
+             logger.error(f"Erreur inattendue lors de l'enregistrement du trade: {e}", exc_info=True)
+
+    def update_trade_close(self, position_id: Any, close_price: float, close_time: datetime, profit: float):
+        """
+        Met à jour un trade existant avec les informations de clôture.
+        (Nécessite de lire, modifier et réécrire le CSV - peut être lent)
+        
+        Note: Pour des performances élevées, il serait préférable d'utiliser
+        une base de données (ex: SQLite) ou de gérer les clôtures différemment.
+        """
+        # Implémentation simpliste pour l'instant
+        logger.info(f"Mise à jour de la clôture du trade {position_id} (Non implémenté dans v1.0.0)")
+        # TODO: Implémenter la mise à jour du CSV, ce qui est complexe.
+        # Pour l'instant, le journal enregistre surtout l'ouverture.
+        # L'analyse de performance devra se baser sur l'historique MT5 via l'ID.
+        pass

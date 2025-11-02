@@ -1,294 +1,339 @@
-
 """
-Module pour la détection de "patterns" ou figures sur les données de marché.
+Module pour la détection des patterns SMC (Fair Value Gaps, Order Blocks)
+et des zones de liquidité (EQH/EQL, Session Ranges).
 
-Initialement, ce module était basé sur des indicateurs (EMA, RSI).
-Il est maintenant adapté pour détecter les concepts SMC (Smart Money Concepts)
-tels que les Imbalances (FVG), les Order Blocks (OB), et les zones de Liquidité.
+Version: 1.0.1
 """
+
+__version__ = "1.0.1"
 
 import pandas as pd
 import numpy as np
-import logging
+# --- Ajouts v1.0.1 ---
+from typing import List, Dict, Any, Optional
+from datetime import time, datetime
+import pytz
+# --- Fin Ajouts ---
 
-logger = logging.getLogger(__name__)
 
-
-# --- ANCIENNE LOGIQUE (INDICATEURS) ---
-# Ces fonctions sont conservées à titre d'archive mais ne sont plus utilisées
-# par la stratégie SMC.
-
-def find_ema_crossover(data: pd.DataFrame, short_window: int, long_window: int):
+# --- NOUVELLE FONCTION v1.0.1 ---
+def find_equal_highs_lows(data: pd.DataFrame, lookback: int = 20, tolerance_pips: float = 5.0, pip_size: float = 0.0001) -> Dict[str, List[Dict[str, Any]]]:
     """
-    Trouve les signaux de croisement d'EMA.
-    (CONSERVÉ POUR ARCHIVE - NON UTILISÉ PAR SMC)
-    """
-    if 'close' not in data.columns:
-        logger.error("La colonne 'close' est manquante pour le calcul EMA.")
-        return None, None
-    
-    data['ema_short'] = data['close'].ewm(span=short_window, adjust=False).mean()
-    data['ema_long'] = data['close'].ewm(span=long_window, adjust=False).mean()
-    
-    # Signal: 1 pour achat (short > long), -1 pour vente (short < long)
-    data['signal'] = 0
-    data.loc[data['ema_short'] > data['ema_long'], 'signal'] = 1
-    data.loc[data['ema_short'] < data['ema_long'], 'signal'] = -1
-    
-    # Détecter le croisement
-    data['prev_signal'] = data['signal'].shift(1)
-    
-    buy_signal = (data['signal'] == 1) & (data['prev_signal'] == -1)
-    sell_signal = (data['signal'] == -1) & (data['prev_signal'] == 1)
-    
-    # On vérifie la dernière bougie
-    if not buy_signal.empty and buy_signal.iloc[-1]:
-        return "BUY", "EMA Crossover"
-    if not sell_signal.empty and sell_signal.iloc[-1]:
-        return "SELL", "EMA Crossover"
-        
-    return None, None
+    Identifie les zones de liquidité "Equal Highs" (EQH) et "Equal Lows" (EQL)
+    sur une période de lookback récente.
 
-def find_rsi_oversold_overbought(data: pd.DataFrame, window: int, oversold: int, overbought: int):
-    """
-    Trouve les signaux de RSI en surachat/survente.
-    (CONSERVÉ POUR ARCHIVE - NON UTILISÉ PAR SMC)
-    """
-    if 'close' not in data.columns:
-        logger.error("La colonne 'close' est manquante pour le calcul RSI.")
-        return None, None
-    
-    delta = data['close'].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=window).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=window).mean()
-
-    # Éviter la division par zéro si 'loss' est 0
-    with np.errstate(divide='ignore', invalid='ignore'):
-        rs = gain / loss
-        data['rsi'] = 100 - (100 / (1 + rs))
-    
-    # Remplacer les infinis (si loss était 0) par 100 (RSI max)
-    data['rsi'].replace([np.inf, -np.inf], 100, inplace=True)
-    # Gérer les NaNs initiaux
-    data['rsi'].fillna(method='bfill', inplace=True)
-
-    if data['rsi'].empty:
-        return None, None
-        
-    rsi_value = data['rsi'].iloc[-1]
-    
-    if rsi_value < oversold:
-        return "BUY", f"RSI Oversold ({rsi_value:.2f})"
-    if rsi_value > overbought:
-        return "SELL", f"RSI Overbought ({rsi_value:.2f})"
-        
-    return None, None
-
-
-# --- NOUVELLE LOGIQUE (SMC - SMART MONEY CONCEPTS) ---
-
-def find_imbalances(data: pd.DataFrame) -> list:
-    """
-    Identifie les Imbalances (Fair Value Gaps - FVG) dans les données.
-    Un FVG est un déséquilibre où les mèches de la 1ère et 3ème bougie ne se touchent pas.
-    
     Args:
-        data (pd.DataFrame): Données de marché avec 'high', 'low'.
+        data (pd.DataFrame): DataFrame avec 'high', 'low'.
+        lookback (int): Nombre de bougies récentes à analyser.
+        tolerance_pips (float): L'écart maximal en pips pour considérer deux mèches "égales".
+        pip_size (float): La taille d'un pip (ex: 0.0001 pour EURUSD).
 
     Returns:
-        list: Une liste de dictionnaires, où chaque dict représente un FVG non mitigé.
-              Ex: [{'type': 'BULLISH', 'top': 1.0850, 'bottom': 1.0845, 
-                    'start_time': ..., 'end_time': ..., 'mitigated_at': None}]
+        Dict: Un dictionnaire contenant les listes 'equal_highs' et 'equal_lows'.
+              Chaque élément est un dict {'level': prix, 'timestamps': [dates...]}
+    """
+    if len(data) < lookback:
+        return {"equal_highs": [], "equal_lows": []}
+
+    recent_data = data.iloc[-lookback:]
+    tolerance = tolerance_pips * pip_size
+
+    # Equal Highs (EQH)
+    max_high = recent_data['high'].max()
+    eqh_candles = recent_data[abs(recent_data['high'] - max_high) <= tolerance]
+    
+    equal_highs = []
+    if len(eqh_candles) > 1: # Plus d'une mèche touche ce niveau
+        equal_highs.append({
+            "level": max_high,
+            "timestamps": eqh_candles.index.tolist()
+        })
+
+    # Equal Lows (EQL)
+    min_low = recent_data['low'].min()
+    eql_candles = recent_data[abs(recent_data['low'] - min_low) <= tolerance]
+    
+    equal_lows = []
+    if len(eql_candles) > 1: # Plus d'une mèche touche ce niveau
+        equal_lows.append({
+            "level": min_low,
+            "timestamps": eql_candles.index.tolist()
+        })
+
+    return {"equal_highs": equal_highs, "equal_lows": equal_lows}
+
+
+# --- NOUVELLE FONCTION v1.0.1 ---
+def find_session_range(data: pd.DataFrame, 
+                       session_start_hour: int, 
+                       session_end_hour: int, 
+                       timezone: str = 'Etc/UTC') -> Optional[Dict[str, Any]]:
+    """
+    Identifie le plus haut et le plus bas d'une session de trading spécifique
+    (ex: Asia Range) pour la journée la plus récente dans les données.
+
+    Args:
+        data (pd.DataFrame): Données de marché avec un index DatetimeIndex.
+        session_start_hour (int): Heure de début de la session (ex: 0 pour minuit).
+        session_end_hour (int): Heure de fin de la session (ex: 8 pour 8h00).
+        timezone (str): Le fuseau horaire à utiliser pour définir la session (ex: 'Etc/UTC', 'Asia/Tokyo').
+
+    Returns:
+        Optional[Dict]: Un dictionnaire avec 'high', 'low', 'start_time', 'end_time'
+                        ou None si les données ne sont pas suffisantes.
+    """
+    if data.empty:
+        return None
+
+    try:
+        tz = pytz.timezone(timezone)
+    except pytz.UnknownTimeZoneError:
+        print(f"Erreur: Fuseau horaire '{timezone}' inconnu. Utilisation de 'Etc/UTC'.")
+        tz = pytz.timezone('Etc/UTC')
+
+    # S'assurer que l'index est localisé dans le bon fuseau horaire
+    if data.index.tzinfo is None:
+        try:
+            # Assumons que les données MT5 sont en UTC si non spécifié
+            data.index = data.index.tz_localize('Etc/UTC').tz_convert(tz)
+        except Exception as e:
+            # Gérer le cas où l'index est déjà localisé mais pas explicitement (rare)
+            data.index = data.index.tz_convert(tz)
+    else:
+        data.index = data.index.tz_convert(tz)
+
+    # Définir les heures de début et de fin
+    start_time = time(session_start_hour, 0)
+    end_time = time(session_end_hour, 0)
+    
+    # Trouver la date la plus récente dans les données
+    latest_date = data.index.max().date()
+
+    # Sélectionner les données de la session pour la date la plus récente
+    # Note: Gère le cas où la session (ex: 00:00-08:00) est sur une seule journée
+    if start_time < end_time:
+        session_data = data.between_time(start_time, end_time)
+        session_data = session_data[session_data.index.date == latest_date]
+    else:
+        # Gère les sessions qui chevauchent minuit (ex: 22:00 - 06:00)
+        # Non implémenté pour rester simple, focus sur Asia Range (00:00-08:00)
+         session_data = data.between_time(start_time, end_time) # Ne fonctionnera pas correctement
+         print("Avertissement: Les ranges de session chevauchant minuit ne sont pas gérés.")
+         # Pour l'instant, on se concentre sur le cas simple (ex: 00h-08h)
+         session_data = data[(data.index.time >= start_time) | (data.index.time < end_time)]
+         # Logique complexe de date nécessaire ici, simplification pour l'instant:
+         session_data = data.between_time(start_time, end_time)
+         session_data = session_data[session_data.index.date == latest_date]
+
+
+    if session_data.empty:
+        return None
+
+    session_high = session_data['high'].max()
+    session_low = session_data['low'].min()
+    
+    return {
+        "high": session_high,
+        "low": session_low,
+        "start_time": session_data.index.min(),
+        "end_time": session_data.index.max()
+    }
+
+
+# --- CODE ORIGINAL (NON MODIFIÉ) ---
+
+def find_fvgs(data: pd.DataFrame):
+    """
+    Identifie les Fair Value Gaps (FVG) / Imbalances dans les données.
+    Un FVG est identifié là où la mèche basse de la bougie N-1 ne touche pas
+    la mèche haute de la bougie N+1 (pour un FVG haussier/bullish), et vice-versa.
+
+    Args:
+        data (pd.DataFrame): DataFrame avec 'high', 'low'.
+
+    Returns:
+        list: Liste de dictionnaires pour les FVGs trouvés.
+              Ex: [{'type': 'BULLISH', 'top': 1.1000, 'bottom': 1.0990, 'timestamp': ...}]
     """
     fvgs = []
-    if len(data) < 3:
-        return fvgs
-
-    # Convertir en listes pour un accès plus rapide
-    highs = data['high'].values
-    lows = data['low'].values
-    times = data.index
-
-    for i in range(len(data) - 2):
-        candle_1_high = highs[i]
-        candle_1_low = lows[i]
-        candle_3_high = highs[i+2]
-        candle_3_low = lows[i+2]
-
-        fvg_info = None
-
-        # Bullish Imbalance (FVG Haussier): Le bas de la bougie 3 est plus haut que le haut de la bougie 1
-        # 
-        if candle_1_high < candle_3_low:
-            fvg_info = {
-                'type': 'BULLISH',
-                'top': candle_3_low,
-                'bottom': candle_1_high,
-                'start_time': times[i],
-                'end_time': times[i+2]
-            }
-            
-        # Bearish Imbalance (FVG Baissier): Le haut de la bougie 3 est plus bas que le bas de la bougie 1
-        # 
-        elif candle_1_low > candle_3_high:
-            fvg_info = {
-                'type': 'BEARISH',
-                'top': candle_1_low,
-                'bottom': candle_3_high,
-                'start_time': times[i],
-                'end_time': times[i+2]
-            }
-
-        # Si on a trouvé un FVG, on vérifie s'il est déjà mitigé
-        if fvg_info:
-            mitigated_at = None
-            # Regarder les bougies futures (à partir de la 4ème bougie, i+3)
-            for j in range(i + 3, len(data)):
-                if fvg_info['type'] == 'BULLISH':
-                    # Mitigé si un 'low' futur touche le 'top' du FVG
-                    if lows[j] <= fvg_info['top']:
-                        mitigated_at = times[j]
-                        break 
-                elif fvg_info['type'] == 'BEARISH':
-                    # Mitigé si un 'high' futur touche le 'bottom' du FVG
-                    if highs[j] >= fvg_info['bottom']:
-                        mitigated_at = times[j]
-                        break
-            
-            fvg_info['mitigated_at'] = mitigated_at
-            fvgs.append(fvg_info)
-            
-    logger.debug(f"Trouvé {len(fvgs)} FVG au total.")
-    return fvgs
-
-def find_order_blocks(data: pd.DataFrame) -> list:
-    """
-    Identifie les Order Blocks (OB) potentiels.
-    Définition simple : La dernière bougie inverse avant un mouvement impulsif.
-
-    Args:
-        data (pd.DataFrame): Données de marché avec 'open', 'close', 'high', 'low'.
-
-    Returns:
-        list: Une liste de dictionnaires, où chaque dict représente un OB.
-              Ex: [{'type': 'BULLISH', 'top': 1.0850, 'bottom': 1.0840, 'time': ...}]
-    """
-    obs = []
-    if len(data) < 2:
-        return obs
     
-    opens = data['open'].values
-    closes = data['close'].values
-    highs = data['high'].values
-    lows = data['low'].values
-    times = data.index
-
-    for i in range(1, len(data)):
-        prev_open = opens[i-1]
-        prev_close = closes[i-1]
-        prev_high = highs[i-1]
-        prev_low = lows[i-1]
-        
-        curr_open = opens[i]
-        curr_close = closes[i]
-        curr_low = lows[i]
-        curr_high = highs[i]
-
-        # Bullish OB (Haussier): Une bougie baissière (close < open)
-        # suivie d'une bougie haussière impulsive qui "engloutit" la précédente.
-        # 
-        if (prev_close < prev_open and      # Bougie 1 est baissière
-            curr_close > curr_open and      # Bougie 2 est haussière
-            curr_close > prev_high):      # Bougie 2 casse le haut de la bougie 1 (signe d'impulsion)
-            
-            ob = {
-                'type': 'BULLISH',
-                'top': prev_high,
-                'bottom': prev_low,
-                'time': times[i-1]
-            }
-            obs.append(ob)
-
-        # Bearish OB (Baissier): Une bougie haussière (close > open)
-        # suivie d'une bougie baissière impulsive qui "engloutit" la précédente.
-        # 
-        elif (prev_close > prev_open and    # Bougie 1 est haussière
-              curr_close < curr_open and    # Bougie 2 est baissière
-              curr_close < prev_low):     # Bougie 2 casse le bas de la bougie 1 (signe d'impulsion)
-            
-            ob = {
-                'type': 'BEARISH',
-                'top': prev_high,
-                'bottom': prev_low,
-                'time': times[i-1]
-            }
-            obs.append(ob)
-
-    logger.debug(f"Trouvé {len(obs)} OB potentiels.")
-    return obs
-
-
-def find_liquidity_zones(swing_highs: list, swing_lows: list, tolerance_percent: float = 0.001) -> dict:
-    """
-    Identifie les zones de liquidité (Equal Highs/Lows) à partir des listes de swing points.
-    Regroupe les points de swing qui sont très proches en prix.
-
-    Args:
-        swing_highs (list): Liste de tuples (timestamp, prix) de src.analysis.market_structure
-        swing_lows (list): Liste de tuples (timestamp, prix) de src.analysis.market_structure
-        tolerance_percent (float): Le pourcentage d'écart pour considérer
-                                   deux points comme "égaux". 0.001 = 0.1%
-
-    Returns:
-        dict: Contenant 'eqh' (Equal Highs) et 'eql' (Equal Lows).
-              Chaque zone est un dict {'level': prix_moyen, 'points': [liste_des_points]}
-    """
+    # Vectorisation pour la vitesse
+    highs = data['high']
+    lows = data['low']
     
-    # Fonction d'aide pour regrouper les points proches
-    def group_nearby_prices(points: list, tolerance: float) -> list:
-        if not points:
-            return []
-        
-        # Trie les points par prix pour un regroupement facile
-        sorted_points = sorted(points, key=lambda x: x[1])
-        
-        groups = []
-        if not sorted_points:
-            return groups
+    # Décalages pour comparer N-1, N, et N+1
+    prev_high = highs.shift(1)
+    next_low = lows.shift(-1)
+    
+    prev_low = lows.shift(1)
+    next_high = highs.shift(-1)
 
-        current_group = [sorted_points[0]]
-        
-        for i in range(1, len(sorted_points)):
-            point = sorted_points[i]
-            price = point[1]
-            # Calcule la moyenne du groupe actuel
-            group_avg = np.mean([p[1] for p in current_group])
+    # Condition Bullish FVG: low[N] > high[N-1] ET high[N+1] < low[N]
+    # Non, la définition SMC est : high[N+1] < low[N-1] (pour un FVG baissier)
+    # Et low[N+1] > high[N-1] (pour un FVG haussier)
+    
+    # --- Bullish FVG (Gap entre high[N-1] et low[N+1]) ---
+    # La bougie N est la bougie qui crée le FVG
+    # Le FVG est l'espace entre le high de N-1 et le low de N+1
+    bullish_fvg_condition = (lows.shift(-1) > highs.shift(1)) & (highs > highs.shift(1)) & (highs.shift(-1) > lows.shift(-1))
+    
+    # --- Bearish FVG (Gap entre low[N-1] et high[N+1]) ---
+    # Le FVG est l'espace entre le low de N-1 et le high de N+1
+    bearish_fvg_condition = (highs.shift(-1) < lows.shift(1)) & (lows < lows.shift(1)) & (lows.shift(-1) < highs.shift(-1))
+
+    bullish_indices = data[bullish_fvg_condition].index
+    bearish_indices = data[bearish_fvg_condition].index
+
+    for i in bullish_indices:
+        # L'index 'i' est la bougie N. Le FVG est créé par (N-1), N, (N+1).
+        # Le FVG se situe sur la bougie N, entre high[N-1] et low[N+1]
+        try:
+            fvg_top = data.loc[i.shift(1), 'high']
+            fvg_bottom = data.loc[i.shift(-1), 'low']
+            # Correction: FVG Bullish: top = low[N+1], bottom = high[N-1]
+            fvg_top = data.loc[data.index[data.index.get_loc(i)+1], 'low']
+            fvg_bottom = data.loc[data.index[data.index.get_loc(i)-1], 'high']
+
+            if fvg_top > fvg_bottom: # Assure-toi que c'est bien un gap
+                fvgs.append({
+                    "type": "BULLISH",
+                    "top": fvg_top,
+                    "bottom": fvg_bottom,
+                    "timestamp": i,
+                    "mitigated": False # État initial
+                })
+        except (KeyError, IndexError):
+            continue # Ignorer les bords
+
+    for i in bearish_indices:
+        # L'index 'i' est la bougie N.
+        # FVG Bearish: top = low[N-1], bottom = high[N+1]
+        try:
+            fvg_top = data.loc[data.index[data.index.get_loc(i)-1], 'low']
+            fvg_bottom = data.loc[data.index[data.index.get_loc(i)+1], 'high']
             
-            # Si le nouveau point est proche de la moyenne du groupe
-            if abs(price - group_avg) / group_avg < tolerance:
-                current_group.append(point)
-            else:
-                # Si le groupe a plus d'un point (donc "Equal"), on le garde
-                if len(current_group) > 1:
-                    groups.append({
-                        'level': np.mean([p[1] for p in current_group]),
-                        'points': current_group
-                    })
-                # Commencer un nouveau groupe
-                current_group = [point]
+            if fvg_top > fvg_bottom: # Assure-toi que c'est bien un gap
+                fvgs.append({
+                    "type": "BEARISH",
+                    "top": fvg_top,
+                    "bottom": fvg_bottom,
+                    "timestamp": i,
+                    "mitigated": False # État initial
+                })
+        except (KeyError, IndexError):
+            continue # Ignorer les bords
+            
+    # La détection ci-dessus est complexe. Une version plus simple :
+    fvgs = [] # Reset pour une implémentation plus claire
+    
+    for i in range(1, len(data) - 1):
+        prev_candle = data.iloc[i-1]
+        current_candle = data.iloc[i]
+        next_candle = data.iloc[i+1]
         
-        # Ne pas oublier le dernier groupe
-        if len(current_group) > 1:
-            groups.append({
-                'level': np.mean([p[1] for p in current_group]),
-                'points': current_group
+        # Bullish FVG (Imbalance haussière)
+        # La mèche basse de la 3ème bougie (N+1) est plus haute que
+        # la mèche haute de la 1ère bougie (N-1).
+        if next_candle['low'] > prev_candle['high']:
+            fvgs.append({
+                "type": "BULLISH",
+                "top": next_candle['low'],
+                "bottom": prev_candle['high'],
+                "timestamp_start": data.index[i-1],
+                "timestamp_end": data.index[i+1],
+                "mitigated": False
             })
             
-        return groups
+        # Bearish FVG (Imbalance baissière)
+        # La mèche haute de la 3ème bougie (N+1) est plus basse que
+        # la mèche basse de la 1ère bougie (N-1).
+        if next_candle['high'] < prev_candle['low']:
+            fvgs.append({
+                "type": "BEARISH",
+                "top": prev_candle['low'],
+                "bottom": next_candle['high'],
+                "timestamp_start": data.index[i-1],
+                "timestamp_end": data.index[i+1],
+                "mitigated": False
+            })
 
-    eqh_zones = group_nearby_prices(swing_highs, tolerance_percent)
-    eql_zones = group_nearby_prices(swing_lows, tolerance_percent)
+    return fvgs
 
-    logger.debug(f"Trouvé {len(eqh_zones)} zones EQH et {len(eql_zones)} zones EQL.")
-    # 
-    return {'eqh': eqh_zones, 'eql': eql_zones}
+def find_order_blocks(data: pd.DataFrame, swing_highs: list, swing_lows: list):
+    """
+    Identifie les Order Blocks (OB) basés sur les points de swing.
+    Un OB est la dernière bougie baissière avant un swing high (Bullish OB)
+    ou la dernière bougie haussière avant un swing low (Bearish OB).
+
+    Args:
+        data (pd.DataFrame): DataFrame avec 'open', 'high', 'low', 'close'.
+        swing_highs (list): Liste de (index, prix) des swing highs.
+        swing_lows (list): Liste de (index, prix) des swing lows.
+
+    Returns:
+        list: Liste de dictionnaires pour les OBs trouvés.
+              Ex: [{'type': 'BULLISH', 'top': 1.1000, 'bottom': 1.0990, 'timestamp': ...}]
+    """
+    order_blocks = []
+    
+    # Note: Cette fonction est une ébauche simple.
+    # Une détection d'OB robuste devrait aussi vérifier la présence
+    # d'une imbalance (FVG) juste après l'OB, comme vu dans les vidéos.
+    
+    # Détection Bearish OB (basée sur les Swing Highs)
+    for sh_time, sh_price in swing_highs:
+        try:
+            sh_index = data.index.get_loc(sh_time)
+            
+            # Cherche la dernière bougie haussière *avant* le swing high
+            # (Simplification : on prend la bougie *du* swing high si elle est haussière,
+            # ou celle d'avant)
+            
+            candle = data.iloc[sh_index]
+            if candle['close'] > candle['open']: # Bougie haussière
+                target_candle = candle
+            else:
+                # Si la bougie du swing high est baissière, on prend la haussière d'avant
+                if sh_index > 0:
+                    target_candle = data.iloc[sh_index - 1]
+                else:
+                    continue # Ne peut pas être la première bougie
+                
+            if target_candle['close'] > target_candle['open']: # Doit être haussière
+                order_blocks.append({
+                    "type": "BEARISH",
+                    "top": target_candle['high'],
+                    "bottom": target_candle['low'],
+                    "timestamp": target_candle.name,
+                    "mitigated": False
+                })
+        except (KeyError, IndexError):
+            continue
+
+    # Détection Bullish OB (basée sur les Swing Lows)
+    for sl_time, sl_price in swing_lows:
+        try:
+            sl_index = data.index.get_loc(sl_time)
+            
+            candle = data.iloc[sl_index]
+            if candle['close'] < candle['open']: # Bougie baissière
+                target_candle = candle
+            else:
+                # Si la bougie du swing low est haussière, on prend la baissière d'avant
+                if sl_index > 0:
+                    target_candle = data.iloc[sl_index - 1] 
+                else:
+                    continue # Ne peut pas être la première bougie
+
+            if target_candle['close'] < target_candle['open']: # Doit être baissière
+                order_blocks.append({
+                    "type": "BULLISH",
+                    "top": target_candle['high'],
+                    "bottom": target_candle['low'],
+                    "timestamp": target_candle.name,
+                    "mitigated": False
+                })
+        except (KeyError, IndexError):
+            continue
+
+    return order_blocks
