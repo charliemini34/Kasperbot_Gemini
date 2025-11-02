@@ -3,10 +3,10 @@
 Kasperbot - Bot de Trading MT5
 Fichier principal pour l'exécution du bot.
 
-Version: 1.2.5 (Correction KeyError 'pip_size' + TypeError 'calculate_lot_size')
+Version: 1.3.0 (Correction globale - Étape 1: Nettoyage architecture)
 """
 
-__version__ = "1.2.5"
+__version__ = "1.3.0"
 
 import sys
 import os
@@ -14,12 +14,9 @@ import time
 import logging
 import yaml
 import threading
-# --- Ajouts v1.2.0 ---
 import re
 import pytz
 from datetime import datetime, time as datetime_time
-# --- Fin Ajouts ---
-
 
 # --- Imports des modules du Bot ---
 import MetaTrader5 as mt5
@@ -28,8 +25,7 @@ from src.execution import mt5_executor
 from src.risk import risk_manager
 from src.journal import professional_journal as journal
 from src.api import server as api_server
-from src import shared_state
-
+from src import shared_state # Utilise l'état partagé de l'API
 
 # --- IMPORTS MODIFIÉS POUR LA STRATÉGIE SMC ---
 from src.strategy import smc_entry_logic as smc_strategy
@@ -72,370 +68,329 @@ def load_config():
         logger.critical(f"Erreur lors du chargement de config.yaml: {e}")
         return None
 
-def initialize_bot(config):
-    """Initialise la connexion MT5 et les modules dépendants."""
-    logger.info("Initialisation du bot...")
-    mt5_config = config.get('mt5')
-    
-    if not mt5_config:
-        logger.critical("Section 'mt5' manquante dans config.yaml.")
-        return False
+# --- NOUVELLE FONCTION (log_to_api) ---
+def log_to_api(message: str):
+    """Envoie un message de log à l'état partagé (pour l'API)."""
+    logger.info(message) # Logge aussi localement
+    shared_state.add_log(f"[{datetime.now().strftime('%H:%M:%S')}] {message}")
 
-    if not mt5_connector.connect(
-        mt5_config.get('login'), 
-        mt5_config.get('password'), 
-        mt5_config.get('server')
-    ):
-        logger.critical("Échec de l'initialisation du bot. Vérifiez vos identifiants MT5.")
-        return False
-    
-    risk_manager.initialize_risk_manager(mt5_connector)
-    mt5_executor.initialize_executor(mt5_connector)
-    
-    global htf_tf_str, ltf_tf_str, htf_tf, ltf_tf
-    htf_tf_str = config['strategy']['htf_timeframe']
-    ltf_tf_str = config['strategy']['ltf_timeframe']
-    htf_tf = mt5_connector.get_mt5_timeframe(htf_tf_str)
-    ltf_tf = mt5_connector.get_mt5_timeframe(ltf_tf_str)
-    
-    global model_3_enabled, model_3_range_tf_str, model_3_entry_tf_str, model_3_range_tf, model_3_entry_tf
-    global model_3_trigger_time, trading_timezone, last_model_3_check_date
-    
-    strategy_cfg = config['strategy']
-    model_3_enabled = strategy_cfg.get('model_3_enabled', False)
-    model_3_range_tf_str = strategy_cfg.get('model_3_range_tf', 'M30')
-    model_3_entry_tf_str = strategy_cfg.get('model_3_entry_tf', 'M5')
-    
-    model_3_range_tf = mt5_connector.get_mt5_timeframe(model_3_range_tf_str)
-    model_3_entry_tf = mt5_connector.get_mt5_timeframe(model_3_entry_tf_str)
-    
-    model_3_trigger_time = datetime_time.fromisoformat(strategy_cfg.get('model_3_trigger_time', '15:30:00'))
-    trading_timezone_str = strategy_cfg.get('session_timezone', 'Etc/UTC')
-    
-    try:
-        trading_timezone = pytz.timezone(trading_timezone_str)
-    except pytz.UnknownTimeZoneError:
-        logger.warning(f"Fuseau horaire '{trading_timezone_str}' inconnu. Utilisation de 'Etc/UTC'.")
-        trading_timezone = pytz.timezone('Etc/UTC')
-    
-    last_model_3_check_date = {symbol: None for symbol in config['mt5'].get('symbols', [])}
-
-    logger.info("Bot initialisé avec succès.")
-    return True
-
-
-# --- NOUVELLE FONCTION v1.2.5 ---
-def _get_pip_size(symbol, config):
+# --- KASPERBOT (Orchestrateur principal) ---
+class Kasperbot:
     """
-    Récupère la taille de pip correcte pour un symbole donné depuis la config.
+    Classe principale du bot.
+    Gère la boucle d'analyse et la logique de trading.
     """
-    try:
-        # Vérifier d'abord les tailles spécifiques
-        if symbol in config['risk']['pip_sizes']:
-            return config['risk']['pip_sizes'][symbol]
-        # Sinon, utiliser la taille par défaut
-        return config['risk']['default_pip_size']
-    except KeyError as e:
-        logger.error(f"Configuration 'risk.pip_sizes' ou 'risk.default_pip_size' manquante! {e}")
-        # Retourner une valeur par défaut de secours
-        return 0.0001
-
-
-# --- _process_signal (MODIFIÉ v1.2.5) ---
-def _process_signal(symbol, signal, reason, sl_price, tp_price, config):
-    """
-    Fonction centralisée pour calculer le risque et exécuter un trade.
-    """
-    if not signal:
-        return False
-
-    logger.warning(f"SIGNAL DE TRADING DÉTECTÉ ({symbol}) : {signal} | {reason}")
-    shared_state.add_log(f"SIGNAL [{symbol}]: {reason}")
-
-    def _extract_model(reason_str):
-        match = re.search(r'\[(M\d)\]', reason_str)
-        if match:
-            return match.group(1)
-        return "UNKNOWN"
-    model_id = _extract_model(reason)
-
-    if not sl_price or not tp_price:
-         logger.warning(f"[{symbol}] Signal trouvé mais SL/TP invalide. SL={sl_price}, TP={tp_price}. Trade annulé.")
-         shared_state.add_log(f"[{symbol}] Signal ignoré: SL/TP invalide.")
-         return False
-
-    # A. Calcul du risque
+    __version__ = "1.3.0" # Version de l'orchestrateur
     
-    # --- CORRECTION v1.2.5 (TypeError) ---
-    data_tf_str = ltf_tf_str
-    if model_id == "M3":
-        data_tf_str = model_3_entry_tf_str
+    def __init__(self, config):
+        self.config = config
+        self.running = False
+        self.symbols = config['mt5']['symbols']
+        log_to_api(f"Bot v{self.__version__} initialisé.")
+
+        # Initialisation du connecteur
+        if not mt5_connector.connect(
+            config['mt5'].get('login'), 
+            config['mt5'].get('password'), 
+            config['mt5'].get('server')
+        ):
+            log_to_api("[CRITICAL] Échec de l'initialisation MT5. Le bot ne peut pas démarrer.")
+            raise ConnectionError("Échec de l'initialisation MT5.")
         
-    data_tf_mt5 = mt5_connector.get_mt5_timeframe(data_tf_str)
-    entry_data = mt5_connector.get_data(symbol, data_tf_mt5, 2)
-    
-    if entry_data is None or entry_data.empty:
-        logger.error(f"[{symbol}] Impossible de récupérer le prix d'entrée, trade annulé.")
-        shared_state.add_log(f"[{symbol}] Erreur: Prix d'entrée (pour SL) indisponible.")
-        return False
-    entry_price = entry_data['close'].iloc[-1]
-    
-    # Calcul des SL pips (requis par risk_manager.py)
-    try:
-        pip_size = _get_pip_size(symbol, config) # Utilisation de la nouvelle fonction helper
-             
-        sl_pips = abs(entry_price - sl_price) / pip_size
-        if sl_pips <= 0:
-            logger.warning(f"[{symbol}] SL pips est 0. Trade annulé pour éviter div by zero.")
+        # Initialisation des modules dépendants
+        risk_manager.initialize_risk_manager(mt5_connector)
+        mt5_executor.initialize_executor(mt5_connector)
+        
+        self.journal = journal.ProfessionalJournal(config['journal']['filepath'])
+        
+        # Configuration des timeframes
+        self.setup_timeframes()
+        # Configuration Modèle 3
+        self.setup_model_3_config()
+
+    def setup_timeframes(self):
+        """Configure les timeframes pour M1/M2."""
+        self.htf_tf_str = self.config['strategy']['htf_timeframe']
+        self.ltf_tf_str = self.config['strategy']['ltf_timeframe']
+        
+        # --- Appel au Bug 2 ---
+        # (Cette ligne plantera jusqu'à ce que l'Étape 2 soit appliquée)
+        self.htf_tf = mt5_connector.get_mt5_timeframe(self.htf_tf_str)
+        self.ltf_tf = mt5_connector.get_mt5_timeframe(self.ltf_tf_str)
+
+    def setup_model_3_config(self):
+        """Configure les paramètres spécifiques au Modèle 3."""
+        strategy_cfg = self.config['strategy']
+        self.model_3_enabled = strategy_cfg.get('model_3_enabled', False)
+        self.model_3_range_tf_str = strategy_cfg.get('model_3_range_tf', 'M30')
+        self.model_3_entry_tf_str = strategy_cfg.get('model_3_entry_tf', 'M5')
+        
+        # --- Appel au Bug 2 ---
+        self.model_3_range_tf = mt5_connector.get_mt5_timeframe(self.model_3_range_tf_str)
+        self.model_3_entry_tf = mt5_connector.get_mt5_timeframe(self.model_3_entry_tf_str)
+        
+        self.model_3_trigger_time = datetime_time.fromisoformat(strategy_cfg.get('model_3_trigger_time', '15:30:00'))
+        self.trading_timezone_str = strategy_cfg.get('session_timezone', 'Etc/UTC')
+        
+        try:
+            self.trading_timezone = pytz.timezone(self.trading_timezone_str)
+        except pytz.UnknownTimeZoneError:
+            logger.warning(f"Fuseau horaire '{self.trading_timezone_str}' inconnu. Utilisation de 'Etc/UTC'.")
+            self.trading_timezone = pytz.timezone('Etc/UTC')
+        
+        self.last_model_3_check_date = {symbol: None for symbol in self.symbols}
+        
+    def start(self):
+        """Démarre la boucle principale du bot."""
+        self.running = True
+        logger.info(f"Le bot va surveiller les symboles suivants : {self.symbols}")
+        shared_state.set_status("RUNNING", f"Surveillance de {len(self.symbols)} symboles.")
+        
+        check_interval = self.config.get('check_interval', 60)
+        
+        while self.running and shared_state.is_bot_running():
+            start_time = time.time()
+            
+            logger.info(f"--- Nouveau cycle (Intervalle: {check_interval}s) ---")
+            
+            for symbol in self.symbols:
+                if not shared_state.is_bot_running():
+                    break
+                
+                # S'assurer que le symbole est disponible
+                if not mt5_connector.ensure_symbol(symbol):
+                    log_to_api(f"Symbole {symbol} non trouvé ou activé. Passage au suivant.")
+                    continue
+                    
+                self.check_symbol_logic(symbol, self.config)
+            
+            if not shared_state.is_bot_running():
+                break
+
+            elapsed = time.time() - start_time
+            sleep_time = max(0, check_interval - elapsed)
+            logger.info(f"Cycle terminé. Prochaine vérification dans {sleep_time:.0f} secondes.")
+            
+            # Utiliser un sleep interruptible
+            for _ in range(int(sleep_time)):
+                if not shared_state.is_bot_running():
+                    break
+                time.sleep(1)
+
+        logger.info("Boucle principale du bot terminée.")
+        shared_state.set_status("STOPPED", "Boucle du bot terminée.")
+        mt5_connector.disconnect()
+
+    def check_symbol_logic(self, symbol, config):
+        """
+        Exécute la logique de trading complète pour UN SEUL symbole.
+        """
+        try:
+            # 1. Gérer les trades existants
+            open_positions = mt5_connector.check_open_positions(symbol)
+            if open_positions > 0:
+                logger.info(f"Position déjà ouverte pour {symbol}, attente...")
+                # TODO: Mettre à jour l'état partagé avec les positions
+                return
+
+            # 2. Vérifier Modèle 3 (Temporel)
+            signal_m3 = (None, None, None, None)
+            if self.model_3_enabled:
+                signal_m3 = self._run_model_3_analysis(symbol, config)
+            
+            if signal_m3[0]:
+                if self._process_signal(symbol, *signal_m3, config):
+                    return # Un trade a été pris
+
+            # 3. Vérifier Modèles 1 & 2 (Continu)
+            signal_m1_m2 = (None, None, None, None)
+            
+            # --- Appel au Bug 5 & 6 ---
+            signal_m1_m2 = self._run_models_1_and_2_analysis(symbol, config)
+            
+            if signal_m1_m2[0]:
+                # --- Appel au Bug 7 ---
+                if self._process_signal(symbol, *signal_m1_m2, config):
+                    return
+
+        except Exception as e:
+            logger.critical(f"Erreur critique lors de l'analyse de {symbol}: {e}", exc_info=True)
+            shared_state.add_log(f"ERREUR [{symbol}]: {e}")
+
+    def _run_models_1_and_2_analysis(self, symbol, config):
+        """Exécute l'analyse continue M1/M2 pour un symbole."""
+        logger.info(f"[{symbol}] Analyse SMC (Modèles 1 & 2)...")
+        try:
+            # --- Appel au Bug 4 ---
+            htf_lookback = config['strategy']['timeframes_config'][self.htf_tf_str]
+            ltf_lookback = config['strategy']['timeframes_config'][self.ltf_tf_str]
+            
+            htf_data = mt5_connector.get_data(symbol, self.htf_tf, htf_lookback)
+            ltf_data = mt5_connector.get_data(symbol, self.ltf_tf, ltf_lookback)
+
+            if htf_data is None or ltf_data is None or htf_data.empty or ltf_data.empty:
+                logger.warning(f"[{symbol} M1/M2] Données MTF vides, cycle sauté.")
+                return None, None, None, None
+
+            mtf_data_dict = {
+                self.htf_tf_str: htf_data,
+                self.ltf_tf_str: ltf_data
+            }
+            
+            # --- Appel au Bug 5 & 6 ---
+            signal, reason, sl_price, tp_price = smc_strategy.check_smc_signal(
+                mtf_data_dict, 
+                config
+                # L'erreur de pip_size (Bug 6) est DANS check_all_smc_signals
+                # L'erreur de nom (Bug 5) est ICI
+            )
+            
+            if not signal:
+                 logger.info(f"[{symbol}] Aucun signal SMC (M1/M2) trouvé.")
+                 
+            return signal, reason, sl_price, tp_price
+
+        except Exception as e:
+            logger.critical(f"Erreur critique lors de l'analyse M1/M2 de {symbol}: {e}", exc_info=True)
+            shared_state.add_log(f"ERREUR M1/M2 [{symbol}]: {e}")
+            return None, None, None, None
+
+    def _run_model_3_analysis(self, symbol, config):
+        """Vérifie et exécute la stratégie M3 pour un symbole."""
+        current_time_utc = datetime.now(pytz.utc)
+        current_time_local = current_time_utc.astimezone(self.trading_timezone)
+        
+        last_check = self.last_model_3_check_date.get(symbol)
+        
+        if (current_time_local.time() >= self.model_3_trigger_time and
+            (last_check is None or current_time_local.date() > last_check)):
+            
+            log_to_api(f"[{symbol}] Analyse Modèle 3 {self.model_3_range_tf_str}/{self.model_3_entry_tf_str}...")
+            
+            self.last_model_3_check_date[symbol] = current_time_local.date()
+            
+            try:
+                range_lookback = config['strategy'].get('model_3_range_lookback', 10)
+                entry_lookback = config['strategy'].get('model_3_entry_lookback', 50)
+                
+                range_data = mt5_connector.get_data(symbol, self.model_3_range_tf, range_lookback)
+                entry_data = mt5_connector.get_data(symbol, self.model_3_entry_tf, entry_lookback)
+                
+                if range_data is None or entry_data is None or range_data.empty or entry_data.empty:
+                    logger.warning(f"[{symbol} M3] Données vides, cycle M3 sauté.")
+                    return None, None, None, None
+
+                # --- Appel au Bug 6 ---
+                return smc_strategy.check_model_3_opening_range(
+                    range_data,
+                    entry_data,
+                    config,
+                    self.model_3_range_tf_str,
+                    self.model_3_entry_tf_str
+                )
+                
+            except Exception as e:
+                logger.error(f"Erreur durant l'analyse Modèle 3 de {symbol}: {e}", exc_info=True)
+                shared_state.add_log(f"[{symbol}] Erreur: Échec analyse M3.")
+
+        return None, None, None, None # Pas le moment
+
+    def _process_signal(self, symbol, signal, reason, sl_price, tp_price, config):
+        """Traite un signal de trading trouvé (calcul de risque, exécution)."""
+        
+        log_to_api(f"SIGNAL TROUVÉ [{symbol}]: {reason}")
+        
+        def _extract_model(reason_str):
+            match = re.search(r'\[(M\d)\]', reason_str)
+            if match:
+                return match.group(1)
+            return "UNKNOWN"
+        model_id = _extract_model(reason)
+        
+        if not sl_price or not tp_price:
+             log_to_api(f"[{symbol}] Signal ignoré: SL/TP invalide.")
+             return False
+
+        # --- Appel au Bug 7 ---
+        # A. Calcul du risque
+        
+        # Récupérer le prix d'entrée
+        data_tf_str = self.ltf_tf_str
+        if model_id == "M3":
+            data_tf_str = self.model_3_entry_tf_str
+        data_tf_mt5 = mt5_connector.get_mt5_timeframe(data_tf_str)
+        entry_data = mt5_connector.get_data(symbol, data_tf_mt5, 2)
+        if entry_data is None or entry_data.empty:
+            log_to_api(f"[{symbol}] Erreur: Prix d'entrée (pour SL) indisponible.")
             return False
+        entry_price = entry_data['close'].iloc[-1]
             
-    except Exception as e:
-        logger.error(f"[{symbol}] Erreur calcul SL pips: {e}. Trade annulé.")
-        return False
+        # Obtenir pip_size (en prévision du Bug 7)
+        pip_size = config['risk']['pip_sizes'].get(symbol, config['risk']['default_pip_size'])
+        sl_pips = abs(entry_price - sl_price) / pip_size
 
-    lot_size = risk_manager.calculate_lot_size(
-        config['risk']['risk_percent'],
-        sl_pips, # <-- FIX: Passage des Pips
-        symbol=symbol
-        # <-- FIX: 'entry_price' supprimé
-    )
-    # --- FIN CORRECTION v1.2.5 ---
-    
-    if lot_size is None or lot_size <= 0:
-        logger.error(f"Calcul de lot invalide ({lot_size}) pour {symbol}. Annulation.")
-        shared_state.add_log(f"[{symbol}] Signal ignoré: Volume 0.")
-        return False
-    
-    logger.info(f"Taille de lot calculée ({symbol}) : {lot_size} (pour {config['risk']['risk_percent']}% de risque)")
-
-    # B. Exécution de l'ordre
-    trade_id = mt5_executor.place_order(
-        symbol=symbol,
-        order_type=signal,
-        volume=lot_size,
-        sl_price=sl_price,
-        tp_price=tp_price,
-        comment=f"[{model_id}] {reason}"
-    )
-    
-    # C. Journalisation
-    if trade_id:
-        logger.warning(f"Ordre {trade_id} ({symbol}) placé avec succès.")
-        entry_price_filled = mt5_executor.get_last_entry_price(trade_id)
-        if entry_price_filled is None:
-            entry_price_filled = entry_price
-            
-        shared_state.add_log(f"TRADE EXÉCUTÉ [{symbol}]: {signal} {lot_size} lots. ID: {trade_id}")
+        lot_size = risk_manager.calculate_lot_size(
+            config['risk']['risk_percent'],
+            sl_pips, # <-- Appel correct (anticipation Bug 7)
+            symbol=symbol
+            # entry_price=entry_price, # <-- Appel incorrect (Bug 7)
+        )
         
-        journal.log_trade(
-            timestamp=time.strftime('%Y-%m-%d %H:%M:%S'),
+        if lot_size is None or lot_size <= 0:
+            log_to_api(f"[{symbol}] Signal ignoré: Volume 0.")
+            return False
+        
+        logger.info(f"Taille de lot calculée ({symbol}) : {lot_size} (pour {config['risk']['risk_percent']}% de risque)")
+
+        # B. Exécution de l'ordre
+        trade_id = mt5_executor.place_order(
             symbol=symbol,
             order_type=signal,
             volume=lot_size,
-            entry_price=entry_price_filled,
             sl_price=sl_price,
             tp_price=tp_price,
-            reason=reason,
-            setup_model=model_id,
-            status="OPEN",
-            position_id=trade_id
+            comment=f"[{model_id}] {reason}"
         )
-        return True
-    else:
-        logger.error(f"Échec lors de la tentative de placement de l'ordre pour {symbol}.")
-        shared_state.add_log(f"[{symbol}] Échec exécution MT5.")
-        return False
-
-
-# --- MODIFIÉ v1.2.5 ---
-def _run_models_1_and_2_analysis(symbol, config):
-    """Exécute l'analyse continue M1/M2 pour un symbole."""
-    logger.info(f"[{symbol}] Analyse SMC (Modèles 1 & 2)...")
-    try:
-        # 1. Récupérer les données
         
-        # --- CORRECTION v1.2.1 (KeyError) ---
-        htf_lookback = config['strategy']['timeframes_config'][htf_tf_str]
-        ltf_lookback = config['strategy']['timeframes_config'][ltf_tf_str]
-        
-        htf_data = mt5_connector.get_data(
-            symbol, 
-            htf_tf, 
-            htf_lookback 
-        )
-        ltf_data = mt5_connector.get_data(
-            symbol, 
-            ltf_tf, 
-            ltf_lookback
-        )
-        # --- FIN CORRECTION v1.2.1 ---
-
-        if htf_data is None or ltf_data is None or htf_data.empty or ltf_data.empty:
-            logger.warning(f"[{symbol} M1/M2] Données MTF vides, cycle sauté.")
-            return None, None, None, None
-
-        mtf_data_dict = {
-            htf_tf_str: htf_data,
-            ltf_tf_str: ltf_data
-        }
-        
-        # 2. Analyser les patterns SMC
-        
-        # --- MODIFICATION v1.2.5: Passer le pip_size ---
-        pip_size = _get_pip_size(symbol, config)
-        
-        signal, reason, sl_price, tp_price = smc_strategy.check_all_smc_signals(
-            mtf_data_dict, 
-            config,
-            pip_size # <-- FIX
-        )
-        # --- FIN MODIFICATION ---
-        
-        if not signal:
-             logger.info(f"[{symbol}] Aucun signal SMC (M1/M2) trouvé.")
-             
-        return signal, reason, sl_price, tp_price
-
-    except Exception as e:
-        logger.critical(f"Erreur critique lors de l'analyse M1/M2 de {symbol}: {e}", exc_info=True)
-        shared_state.add_log(f"ERREUR M1/M2 [{symbol}]: {e}")
-        return None, None, None, None
-
-# --- MODIFIÉ v1.2.5 ---
-def _run_model_3_analysis(symbol, config):
-    """Vérifie et exécute la stratégie M3 pour un symbole."""
-    global last_model_3_check_date
-    
-    current_time_utc = datetime.now(pytz.utc)
-    current_time_local = current_time_utc.astimezone(trading_timezone)
-    
-    last_check = last_model_3_check_date.get(symbol)
-    
-    if (current_time_local.time() >= model_3_trigger_time and
-        (last_check is None or current_time_local.date() > last_check)):
-        
-        logger.info(f"[{symbol}] Déclenchement du Modèle 3 (Opening Range) à {current_time_local.strftime('%H:%M:%S')}")
-        shared_state.add_log(f"[{symbol}] Analyse Modèle 3 {model_3_range_tf_str}/{model_3_entry_tf_str}...")
-        
-        last_model_3_check_date[symbol] = current_time_local.date()
-        
-        try:
-            # Lire les 'counts' depuis la config
-            range_lookback = config['strategy'].get('model_3_range_lookback', 10)
-            entry_lookback = config['strategy'].get('model_3_entry_lookback', 50)
+        # C. Journalisation
+        if trade_id:
+            entry_price_filled = mt5_executor.get_last_entry_price(trade_id)
+            if entry_price_filled is None: entry_price_filled = entry_price
+                
+            log_to_api(f"TRADE EXÉCUTÉ [{symbol}]: {signal} {lot_size} lots. ID: {trade_id}")
             
-            range_data = mt5_connector.get_data(symbol, model_3_range_tf, range_lookback)
-            entry_data = mt5_connector.get_data(symbol, model_3_entry_tf, entry_lookback)
-            
-            if range_data is None or entry_data is None or range_data.empty or entry_data.empty:
-                logger.warning(f"[{symbol} M3] Données vides, cycle M3 sauté.")
-                return None, None, None, None
-
-            # --- MODIFICATION v1.2.5: Passer le pip_size ---
-            pip_size = _get_pip_size(symbol, config)
-
-            return smc_strategy.check_model_3_opening_range(
-                range_data,
-                entry_data,
-                config,
-                model_3_range_tf_str,
-                model_3_entry_tf_str,
-                pip_size # <-- FIX
+            journal.log_trade(
+                timestamp=time.strftime('%Y-%m-%d %H:%M:%S'),
+                symbol=symbol,
+                order_type=signal,
+                volume=lot_size,
+                entry_price=entry_price_filled,
+                sl_price=sl_price,
+                tp_price=tp_price,
+                reason=reason,
+                setup_model=model_id,
+                status="OPEN",
+                position_id=trade_id
             )
-            # --- FIN MODIFICATION ---
-            
-        except Exception as e:
-            logger.error(f"Erreur durant l'analyse Modèle 3 de {symbol}: {e}", exc_info=True)
-            shared_state.add_log(f"[{symbol}] Erreur: Échec analyse M3.")
+            return True
+        else:
+            log_to_api(f"[{symbol}] Échec exécution MT5.")
+            return False
 
-    return None, None, None, None # Pas le moment
+# --- FIN DE LA CLASSE KASPERBOT ---
 
-def check_symbol_logic(symbol, config):
-    """
-    Exécute la logique de trading complète pour UN SEUL symbole.
-    Cette fonction est appelée en boucle par run_bot.
-    """
+def run_bot_thread(config):
+    """Fonction cible pour le thread du bot."""
     try:
-        # 1. Vérifier les positions ouvertes
-        open_positions = mt5_connector.check_open_positions(symbol)
-        if open_positions > 0:
-            logger.info(f"Position déjà ouverte pour {symbol}, attente...")
-            return
-
-        # 2. Vérifier Modèle 3 (Temporel)
-        signal_m3 = (None, None, None, None)
-        if model_3_enabled:
-            signal_m3 = _run_model_3_analysis(symbol, config)
-        
-        if signal_m3[0]:
-            if _process_signal(symbol, *signal_m3, config):
-                return 
-
-        # 3. Vérifier Modèles 1 & 2 (Continu)
-        signal_m1_m2 = (None, None, None, None)
-        signal_m1_m2 = _run_models_1_and_2_analysis(symbol, config)
-        
-        if signal_m1_m2[0]:
-            if _process_signal(symbol, *signal_m1_m2, config):
-                return 
-
+        logger.info("Initialisation du bot...")
+        bot = Kasperbot(config)
+        logger.info("Bot initialisé avec succès.")
+        bot.start()
     except Exception as e:
-        logger.critical(f"Erreur critique lors de l'analyse de {symbol}: {e}", exc_info=True)
-        shared_state.add_log(f"ERREUR [{symbol}]: {e}")
-# --- FIN REFACTORING ---
+        logger.critical(f"Erreur critique lors de l'initialisation ou du démarrage du bot: {e}", exc_info=True)
+        shared_state.set_status("CRASHED", str(e))
 
-
-def run_bot():
-    """
-    Boucle principale d'exécution du bot.
-    """
-    logger.info("Démarrage de la boucle principale du bot...")
-    config = load_config()
-    if not config:
-        shared_state.stop_bot()
-        return
-
-    symbols_list = config['mt5'].get('symbols')
-    if not symbols_list or not isinstance(symbols_list, list):
-        logger.error("Configuration 'mt5.symbols' manquante ou invalide. Doit être une liste. Arrêt.")
-        shared_state.stop_bot()
-        return
-    
-    logger.info(f"Le bot va surveiller les symboles suivants : {symbols_list}")
-    shared_state.set_status("RUNNING", f"Surveillance de {len(symbols_list)} symboles.")
-    
-    check_interval = config.get('check_interval', 60)
-    
-    while shared_state.is_bot_running():
-        try:
-            logger.info(f"--- Nouveau cycle (Intervalle: {check_interval}s) ---")
-            
-            for symbol in symbols_list:
-                if not shared_state.is_bot_running():
-                    break 
-                
-                check_symbol_logic(symbol, config)
-                
-                time.sleep(1) 
-
-            if shared_state.is_bot_running():
-                logger.info(f"Cycle terminé. Prochaine vérification dans {check_interval} secondes.")
-                time.sleep(check_interval)
-
-        except KeyboardInterrupt:
-            logger.info("Arrêt manuel du bot (KeyboardInterrupt).")
-            shared_state.stop_bot()
-            
-        except Exception as e:
-            logger.critical(f"Erreur critique dans la boucle principale: {e}", exc_info=True)
-            shared_state.set_status("ERROR", f"Erreur critique: {e}")
-            time.sleep(check_interval * 2)
-
-    logger.info("Boucle principale du bot terminée.")
-    shared_state.set_status("STOPPED", "Boucle du bot terminée.")
-    mt5_connector.disconnect()
-
-def start_api_server(config):
+def start_api_server_thread(config):
     """Démarre le serveur Flask dans un thread séparé."""
     if not config.get('api', {}).get('enabled', False):
         logger.info("API server est désactivé dans la configuration.")
@@ -454,15 +409,27 @@ def start_api_server(config):
 
 
 if __name__ == "__main__":
+    logger.info("Chargement de la configuration...")
     config = load_config()
     
     if config:
-        start_api_server(config)
+        # Démarrer l'API
+        start_api_server_thread(config)
         
-        if initialize_bot(config):
-            run_bot()
-        else:
-            logger.critical("Échec de l'initialisation du bot. Arrêt.")
+        # Démarrer le Bot
+        # (Nous n'initialisons plus ici, le thread du bot le fait)
+        bot_thread = threading.Thread(target=run_bot_thread, args=(config,), daemon=True)
+        bot_thread.start()
+        
+        # Boucle principale pour garder le programme en vie (remplace Tkinter)
+        try:
+            while bot_thread.is_alive():
+                bot_thread.join(timeout=1.0)
+        except KeyboardInterrupt:
+            logger.info("Arrêt manuel demandé (KeyboardInterrupt)...")
+            shared_state.stop_bot()
+            bot_thread.join() # Attendre que le bot s'arrête proprement
+            
     else:
         logger.critical("Échec du chargement de la configuration. Arrêt.")
 
