@@ -1,7 +1,8 @@
 # Fichier: src/api/server.py
-# Version: 2.1.0 (SMC UI Integration)
-# Description: Met à jour le template HTML et le JS pour afficher et 
-#              configurer les nouveaux paramètres smc_strategy.
+# Version: 1.3.1-fix (SMC UI Harmonisation)
+# Description: Corrige l'incompatibilité de lecture/écriture avec config.yaml (Bug 8)
+#              Corrige l'indicateur de statut (Bug 10)
+#              Désactive les fonctions de backtest manquantes (Bug 9)
 
 from flask import Flask, jsonify, render_template_string, request
 import yaml
@@ -44,8 +45,7 @@ HTML_TEMPLATE = """
         <div class="mb-6"><div class="border-b border-gray-700"><nav class="-mb-px flex space-x-8">
             <button onclick="showTab('dashboard')" class="tab-button active" id="tab-dashboard">Dashboard</button>
             <button onclick="showTab('config')" class="tab-button" id="tab-config">Configuration</button>
-            <button onclick="showTab('backtest')" class="tab-button" id="tab-backtest">Backtesting</button>
-        </nav></div></div>
+            </nav></div></div>
         <main>
             <div id="content-dashboard" class="tab-content grid grid-cols-1 lg:grid-cols-3 gap-6">
                 <div class="lg:col-span-1 space-y-6">
@@ -71,13 +71,6 @@ HTML_TEMPLATE = """
                     <h3 class="text-lg font-medium text-white">Stratégie Smart Money Concepts (SMC)</h3>
                     <div id="smc-config-container" class="mt-4 grid grid-cols-1 gap-y-6 sm:grid-cols-3 sm:gap-x-8">
                         <div>
-                            <label for="smc_strategy_enabled">Statut</label>
-                            <select id="smc_strategy_enabled">
-                                <option value="true">Activé</option>
-                                <option value="false">Désactivé</option>
-                            </select>
-                        </div>
-                        <div>
                             <label for="smc_strategy_htf_timeframe">Timeframe Tendance (HTF)</label>
                             <input type="text" id="smc_strategy_htf_timeframe" placeholder="ex: H4">
                         </div>
@@ -95,32 +88,11 @@ HTML_TEMPLATE = """
                         </div>
                     </div>
                 </div>
-                <div class="config-section"><h3 class="text-lg font-medium text-white">Moteur d'Apprentissage (Legacy)</h3>
-                    <div class="mt-4 grid grid-cols-1 gap-y-6 sm:grid-cols-2 sm:gap-x-8">
-                        <div><label for="learning_enabled">Mode Automatisé</Vlabel><select id="learning_enabled"><option value="true">Activé</option><option value="false">Désactivé (Suggestions)</option></select></div>
-                    </div>
-                </div>
                 
                 <div class="pt-5"><div class="flex justify-end"><button type="submit" class="btn btn-primary">Sauvegarder et Appliquer</button></div></div>
             </form></div></div>
-            <div id="content-backtest" class="tab-content hidden">
-                 <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                    <div class="lg:col-span-1"><div class="card p-6"><h2 class="text-xl font-semibold text-white mb-4">Paramètres du Backtest</h2>
-                    <form id="backtest-form" class="space-y-4">
-                        <div><label for="backtest_symbol">Symbole</label><input type="text" id="backtest_symbol" value="XAUUSD" class="mt-1"></div>
-                        <div><label for="backtest_timeframe">Timeframe</label><input type="text" id="backtest_timeframe" value="M15" class="mt-1"></div>
-                        <div><label for="start_date">Date de début</label><input type="date" id="start_date" class="mt-1"></div>
-                        <div><label for="end_date">Date de fin</label><input type="date" id="end_date" class="mt-1"></div>
-                        <div><label for="initial_capital">Capital Initial</label><input type="number" id="initial_capital" value="10000" class="mt-1"></div>
-                        <button type="submit" id="run-backtest-btn" class="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 rounded-md mt-4">Lancer le Backtest</button>
-                    </form></div></div>
-                    <div class="lg:col-span-2">
-                         <div id="backtest-results-card" class="card p-6 hidden"><h2 class="text-xl font-semibold">Résultats</h2><div id="backtest-summary" class="grid grid-cols-2 gap-4 text-center mb-4"></div><canvas id="equity-chart"></canvas></div>
-                         <div id="backtest-progress-card" class="card p-6 hidden"><h2 class="text-xl font-semibold">Backtest en cours...</h2><div class="w-full bg-gray-700 rounded-full h-4 mt-4"><div id="backtest-progress-bar" class="bg-blue-500 h-4 rounded-full" style="width: 0%"></div></div></div>
-                    </div>
-                </div>
-            </div>
-        </main>
+            
+            </main>
     </div>
     <script>
         let equityChart = null;
@@ -132,14 +104,24 @@ HTML_TEMPLATE = """
         }
         function formatProfit(profit) { return `<span class="${parseFloat(profit) >= 0 ? 'text-green-400' : 'text-red-400'}">${parseFloat(profit).toFixed(2)}</span>`; }
         
-        // Fonction fetchAllData (inchangée)
+        // Fonction fetchAllData (MODIFIÉE pour Bug 10)
         async function fetchAllData() {
             try {
                 const res = await fetch('/api/data');
                 const data = await res.json();
                 
                 const statusDot = document.getElementById('status-dot');
-                statusDot.className = `h-4 w-4 rounded-full ${data.status.is_emergency ? 'bg-red-500 animate-pulse' : 'bg-green-500'}`;
+                // --- CORRECTION BUG 10 ---
+                // Change la couleur en fonction du statut réel
+                let statusColor = 'bg-gray-500'; // Défaut (INITIALIZING, STOPPED)
+                if (data.status.status === 'RUNNING') {
+                    statusColor = 'bg-green-500';
+                } else if (data.status.status === 'CRASHED') {
+                    statusColor = 'bg-red-500 animate-pulse';
+                }
+                statusDot.className = `h-4 w-4 rounded-full ${statusColor}`;
+                // --- FIN CORRECTION BUG 10 ---
+                
                 document.getElementById('status-text').textContent = data.status.status;
                 document.getElementById('bot-status-container').innerHTML = `<div class="flex justify-between"><span>Status:</span> <strong>${data.status.status}</strong></div><div class="flex justify-between"><span>Message:</span> <em class="text-gray-400 text-right truncate">${data.status.message}</em></div>`;
                 
@@ -181,54 +163,58 @@ HTML_TEMPLATE = """
             } catch (error) { console.error("Erreur de mise à jour:", error); }
         }
         
-        // --- loadConfig (MODIFIÉE) ---
+        // --- loadConfig (MODIFIÉE pour Bug 8) ---
         async function loadConfig() {
             try {
                 const res = await fetch('/api/config');
                 const config = await res.json();
                 
+                // --- CORRECTION BUG 8: Utilise la structure config.yaml correcte ---
                 // Section MT5
-                document.getElementById('mt5_login').value = config.mt5_credentials.login;
-                document.getElementById('mt5_password').value = config.mt5_credentials.password;
-                document.getElementById('mt5_server').value = config.mt5_credentials.server;
+                document.getElementById('mt5_login').value = config.mt5.login;
+                document.getElementById('mt5_password').value = config.mt5.password;
+                document.getElementById('mt5_server').value = config.mt5.server;
                 
-                // Section Learning (Legacy)
-                document.getElementById('learning_enabled').value = config.learning.enabled.toString();
+                // Section Learning (Legacy) - N'existe pas dans config.yaml
+                // document.getElementById('learning_enabled').value = config.learning.enabled.toString();
                 
                 // Section SMC (Nouvelle)
-                if (config.smc_strategy) {
-                    document.getElementById('smc_strategy_enabled').value = config.smc_strategy.enabled.toString();
-                    document.getElementById('smc_strategy_htf_timeframe').value = config.smc_strategy.htf_timeframe;
-                    document.getElementById('smc_strategy_ltf_timeframe').value = config.smc_strategy.ltf_timeframe;
-                    document.getElementById('smc_strategy_htf_swing_order').value = config.smc_strategy.htf_swing_order;
-                    document.getElementById('smc_strategy_ltf_swing_order').value = config.smc_strategy.ltf_swing_order;
+                if (config.strategy) {
+                    // document.getElementById('smc_strategy_enabled').value = config.smc_strategy.enabled.toString(); // N'existe pas
+                    document.getElementById('smc_strategy_htf_timeframe').value = config.strategy.htf_timeframe;
+                    document.getElementById('smc_strategy_ltf_timeframe').value = config.strategy.ltf_timeframe;
+                    document.getElementById('smc_strategy_htf_swing_order').value = config.strategy.htf_swing_order;
+                    document.getElementById('smc_strategy_ltf_swing_order').value = config.strategy.ltf_swing_order;
                 }
+                // --- FIN CORRECTION BUG 8 ---
                 
             } catch (error) { console.error("Erreur de chargement de la config:", error); }
         }
 
-        // --- saveConfig (MODIFIÉE) ---
+        // --- saveConfig (MODIFIÉE pour Bug 8) ---
         async function saveConfig(event) {
             event.preventDefault();
             try {
                 const res = await fetch('/api/config');
                 let config = await res.json();
                 
+                // --- CORRECTION BUG 8: Utilise la structure config.yaml correcte ---
                 // Section MT5
-                config.mt5_credentials.login = parseInt(document.getElementById('mt5_login').value);
-                config.mt5_credentials.password = document.getElementById('mt5_password').value;
-                config.mt5_credentials.server = document.getElementById('mt5_server').value;
+                config.mt5.login = parseInt(document.getElementById('mt5_login').value);
+                config.mt5.password = document.getElementById('mt5_password').value;
+                config.mt5.server = document.getElementById('mt5_server').value;
                 
-                // Section Learning (Legacy)
-                config.learning.enabled = document.getElementById('learning_enabled').value === 'true';
+                // Section Learning (Legacy) - N'existe pas
+                // config.learning.enabled = document.getElementById('learning_enabled').value === 'true';
                 
                 // Section SMC (Nouvelle)
-                if (!config.smc_strategy) { config.smc_strategy = {}; } // Initialiser si n'existe pas
-                config.smc_strategy.enabled = document.getElementById('smc_strategy_enabled').value === 'true';
-                config.smc_strategy.htf_timeframe = document.getElementById('smc_strategy_htf_timeframe').value;
-                config.smc_strategy.ltf_timeframe = document.getElementById('smc_strategy_ltf_timeframe').value;
-                config.smc_strategy.htf_swing_order = parseInt(document.getElementById('smc_strategy_htf_swing_order').value);
-                config.smc_strategy.ltf_swing_order = parseInt(document.getElementById('smc_strategy_ltf_swing_order').value);
+                if (!config.strategy) { config.strategy = {}; } // Initialiser si n'existe pas
+                // config.smc_strategy.enabled = document.getElementById('smc_strategy_enabled').value === 'true'; // N'existe pas
+                config.strategy.htf_timeframe = document.getElementById('smc_strategy_htf_timeframe').value;
+                config.strategy.ltf_timeframe = document.getElementById('smc_strategy_ltf_timeframe').value;
+                config.strategy.htf_swing_order = parseInt(document.getElementById('smc_strategy_htf_swing_order').value);
+                config.strategy.ltf_swing_order = parseInt(document.getElementById('smc_strategy_ltf_swing_order').value);
+                // --- FIN CORRECTION BUG 8 ---
 
                 await fetch('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(config) });
                 alert('Configuration sauvegardée ! Le bot va redémarrer.'); // Note: Le main.py gère le redémarrage
@@ -290,17 +276,18 @@ HTML_TEMPLATE = """
             });
         }
         
-        // --- window.onload (inchangé) ---
+        // --- window.onload (MODIFIÉ pour Bug 9) ---
         window.onload = () => {
             setInterval(fetchAllData, 3000);
             fetchAllData();
             loadConfig();
             document.getElementById('config-form').addEventListener('submit', saveConfig);
-            document.getElementById('backtest-form').addEventListener('submit', runBacktest);
+            // document.getElementById('backtest-form').addEventListener('submit', runBacktest); // CORRECTION BUG 9: Désactivé
             const today = new Date().toISOString().split('T')[0];
             const lastYear = new Date(new Date().setFullYear(new Date().getFullYear() - 1)).toISOString().split('T')[0];
-            document.getElementById('end_date').value = today;
-            document.getElementById('start_date').value = lastYear;
+            // CORRECTION BUG 9: Ces champs n'existent plus si le backtest est commenté
+            // document.getElementById('end_date').value = today;
+            // document.getElementById('start_date').value = lastYear;
         };
     </script>
 </body>
@@ -329,37 +316,43 @@ def start_api_server(shared_state):
             new_config = request.json
             with open(config_path, 'w', encoding='utf-8') as f:
                 yaml.dump(new_config, f, sort_keys=False)
-            shared_state.update_config(new_config)
-            shared_state.signal_config_changed() 
+            
+            # --- CORRECTION BUG 8: Appelle les bonnes fonctions de shared_state ---
+            shared_state.set_config(new_config) # Anciennement update_config
+            # shared_state.signal_config_changed() # N'existe pas, commenté
+            # --- FIN CORRECTION BUG 8 ---
+            
             return jsonify({"status": "success"})
         
         config = shared_state.get_config() 
         return jsonify(config)
 
-    @app.route('/api/backtest', methods=['POST'])
-    def handle_backtest():
-        from src.backtest.backtester import Backtester
-        if shared_state.get_backtest_status()['running']: 
-            return jsonify({"error": "Un backtest est déjà en cours."}), 400
-        
-        bt = Backtester(shared_state)
-        params = request.json
-        current_config = shared_state.get_config()
-        
-        threading.Thread(
-            target=bt.run, 
-            args=(
-                params['symbol'], params['timeframe'],
-                params['start_date'], params['end_date'], 
-                params['initial_capital'], current_config
-            ), 
-            daemon=True
-        ).start()
-        return jsonify({"status": "Backtest démarré."})
+    # --- CORRECTION BUG 9: Désactivation des routes de backtest ---
+    # @app.route('/api/backtest', methods=['POST'])
+    # def handle_backtest():
+    #     from src.backtest.backtester import Backtester # Import cassé
+    #     if shared_state.get_backtest_status()['running']: 
+    #         return jsonify({"error": "Un backtest est déjà en cours."}), 400
+    #     
+    #     bt = Backtester(shared_state)
+    #     params = request.json
+    #     current_config = shared_state.get_config()
+    #     
+    #     threading.Thread(
+    #         target=bt.run, 
+    #         args=(
+    #             params['symbol'], params['timeframe'],
+    #             params['start_date'], params['end_date'], 
+    #             params['initial_capital'], current_config
+    #         ), 
+    #         daemon=True
+    #     ).start()
+    #     return jsonify({"status": "Backtest démarré."})
 
-    @app.route('/api/backtest/status')
-    def get_backtest_status(): 
-        return jsonify(shared_state.get_backtest_status())
+    # @app.route('/api/backtest/status')
+    # def get_backtest_status(): 
+    #     return jsonify(shared_state.get_backtest_status())
+    # --- FIN CORRECTION BUG 9 ---
     
     config = shared_state.get_config()
     host = config.get('api', {}).get('host', '127.0.0.1')

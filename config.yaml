@@ -1,4 +1,3 @@
-
 mt5:
     login: 10008432
     password: "jsne80aX!"
@@ -15,7 +14,7 @@ mt5:
       - "NZDUSD"
       - "AUDUSD"
       - "USDCAD"
-      - "USOIL" # Symbole invalide chez FTMO Demo
+      - "USOIL" 
       - "BTCUSD"
       - "ETHUSD"
     # --- FIN CORRECTION ---
@@ -46,6 +45,23 @@ strategy:
 risk:
     # 1.0 signifie que le bot risquera 1% du capital de votre compte par trade.
     risk_percent: 1.0
+    
+    # --- AJOUT (Correction Bug 6) ---
+    # Définit la taille d'un pip pour chaque symbole
+    # (Utilisé pour calculer la distance SL en pips)
+    default_pip_size: 0.0001 # Pour les paires FX par défaut
+    pip_sizes:
+        "XAUUSD": 0.01
+        "XAGUSD": 0.01
+        "EURUSD": 0.0001
+        "GBPUSD": 0.0001
+        "NZDUSD": 0.0001
+        "AUDUSD": 0.0001
+        "USDCAD": 0.0001
+        "USOIL": 0.01
+        "BTCUSD": 0.01
+        "ETHUSD": 0.01
+    # --- FIN AJOUT ---
 
 logging:
     level: "INFO" # DEBUG, INFO, WARNING, ERROR
@@ -53,6 +69,11 @@ logging:
 api:
     enabled: true
     port: 5000
+
+# --- AJOUT (Correction Bug 3) ---
+journal:
+    filepath: "logs/kasperbot_journal.csv"
+# --- FIN AJOUT ---
 
 # Intervalle en secondes entre chaque vérification du bot
 check_interval: 60

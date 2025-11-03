@@ -3,10 +3,10 @@
 Kasperbot - Bot de Trading MT5
 Fichier principal pour l'exécution du bot.
 
-Version: 1.3.0 (Correction globale - Étape 1: Nettoyage architecture)
+Version: 1.3.1-fix (Corrections Bugs 2, 5, 6, 7)
 """
 
-__version__ = "1.3.0"
+__version__ = "1.3.1-fix"
 
 import sys
 import os
@@ -113,7 +113,7 @@ class Kasperbot:
         self.htf_tf_str = self.config['strategy']['htf_timeframe']
         self.ltf_tf_str = self.config['strategy']['ltf_timeframe']
         
-        # --- Appel au Bug 2 ---
+        # --- Appel au Bug 2 --- (Ce bug est dans la boucle start(), pas ici)
         # (Cette ligne plantera jusqu'à ce que l'Étape 2 soit appliquée)
         self.htf_tf = mt5_connector.get_mt5_timeframe(self.htf_tf_str)
         self.ltf_tf = mt5_connector.get_mt5_timeframe(self.ltf_tf_str)
@@ -125,7 +125,7 @@ class Kasperbot:
         self.model_3_range_tf_str = strategy_cfg.get('model_3_range_tf', 'M30')
         self.model_3_entry_tf_str = strategy_cfg.get('model_3_entry_tf', 'M5')
         
-        # --- Appel au Bug 2 ---
+        # --- Appel au Bug 2 --- (Ce bug est dans la boucle start(), pas ici)
         self.model_3_range_tf = mt5_connector.get_mt5_timeframe(self.model_3_range_tf_str)
         self.model_3_entry_tf = mt5_connector.get_mt5_timeframe(self.model_3_entry_tf_str)
         
@@ -143,7 +143,7 @@ class Kasperbot:
     def start(self):
         """Démarre la boucle principale du bot."""
         self.running = True
-        logger.info(f"Le bot va surveiller les symboles suivants : {self.symbols}")
+        logger.info(f"Le bot va surveiller les symbolES suivants : {self.symbols}")
         shared_state.set_status("RUNNING", f"Surveillance de {len(self.symbols)} symboles.")
         
         check_interval = self.config.get('check_interval', 60)
@@ -157,10 +157,14 @@ class Kasperbot:
                 if not shared_state.is_bot_running():
                     break
                 
+                # --- CORRECTION (Bug 2) ---
                 # S'assurer que le symbole est disponible
-                if not mt5_connector.ensure_symbol(symbol):
-                    log_to_api(f"Symbole {symbol} non trouvé ou activé. Passage au suivant.")
-                    continue
+                # La fonction 'ensure_symbol' n'existe pas.
+                # La vérification est faite dans get_data() donc on supprime ce bloc.
+                # if not mt5_connector.ensure_symbol(symbol):
+                #     log_to_api(f"Symbole {symbol} non trouvé ou activé. Passage au suivant.")
+                #     continue
+                # --- FIN CORRECTION (Bug 2) ---
                     
                 self.check_symbol_logic(symbol, self.config)
             
@@ -221,7 +225,7 @@ class Kasperbot:
         """Exécute l'analyse continue M1/M2 pour un symbole."""
         logger.info(f"[{symbol}] Analyse SMC (Modèles 1 & 2)...")
         try:
-            # --- Appel au Bug 4 ---
+            # --- Appel au Bug 4 --- (Config lookup)
             htf_lookback = config['strategy']['timeframes_config'][self.htf_tf_str]
             ltf_lookback = config['strategy']['timeframes_config'][self.ltf_tf_str]
             
@@ -237,13 +241,20 @@ class Kasperbot:
                 self.ltf_tf_str: ltf_data
             }
             
-            # --- Appel au Bug 5 & 6 ---
-            signal, reason, sl_price, tp_price = smc_strategy.check_smc_signal(
+            # --- CORRECTION (Bug 6) ---
+            # Récupérer le pip_size (nécessaire pour l'appel de fonction)
+            pip_size = config['risk']['pip_sizes'].get(symbol, config['risk']['default_pip_size'])
+            # --- FIN CORRECTION (Bug 6) ---
+
+            # --- CORRECTION (Bug 5 & 6) ---
+            # Bug 5: check_smc_signal renommé en check_all_smc_signals
+            # Bug 6: Ajout de l'argument pip_size
+            signal, reason, sl_price, tp_price = smc_strategy.check_all_smc_signals(
                 mtf_data_dict, 
-                config
-                # L'erreur de pip_size (Bug 6) est DANS check_all_smc_signals
-                # L'erreur de nom (Bug 5) est ICI
+                config,
+                pip_size=pip_size
             )
+            # --- FIN CORRECTION (Bug 5 & 6) ---
             
             if not signal:
                  logger.info(f"[{symbol}] Aucun signal SMC (M1/M2) trouvé.")
@@ -280,14 +291,22 @@ class Kasperbot:
                     logger.warning(f"[{symbol} M3] Données vides, cycle M3 sauté.")
                     return None, None, None, None
 
-                # --- Appel au Bug 6 ---
+                # --- CORRECTION (Bug 6) ---
+                # Récupérer le pip_size (nécessaire pour l'appel de fonction)
+                pip_size = config['risk']['pip_sizes'].get(symbol, config['risk']['default_pip_size'])
+                # --- FIN CORRECTION (Bug 6) ---
+
+                # --- CORRECTION (Bug 6) ---
+                # Ajout de l'argument pip_size
                 return smc_strategy.check_model_3_opening_range(
                     range_data,
                     entry_data,
                     config,
                     self.model_3_range_tf_str,
-                    self.model_3_entry_tf_str
+                    self.model_3_entry_tf_str,
+                    pip_size=pip_size
                 )
+                # --- FIN CORRECTION (Bug 6) ---
                 
             except Exception as e:
                 logger.error(f"Erreur durant l'analyse Modèle 3 de {symbol}: {e}", exc_info=True)
@@ -326,15 +345,18 @@ class Kasperbot:
         entry_price = entry_data['close'].iloc[-1]
             
         # Obtenir pip_size (en prévision du Bug 7)
+        # Note: cette partie était correcte, le bug était dans l'appel ci-dessous
         pip_size = config['risk']['pip_sizes'].get(symbol, config['risk']['default_pip_size'])
-        sl_pips = abs(entry_price - sl_price) / pip_size
+        sl_pips = abs(entry_price - sl_price) / pip_size 
 
+        # --- CORRECTION (Bug 7) ---
+        # La fonction attend le PRIX du SL (sl_price), pas la distance (sl_pips)
         lot_size = risk_manager.calculate_lot_size(
             config['risk']['risk_percent'],
-            sl_pips, # <-- Appel correct (anticipation Bug 7)
+            sl_price, # <-- CORRECTION (Bug 7)
             symbol=symbol
-            # entry_price=entry_price, # <-- Appel incorrect (Bug 7)
         )
+        # --- FIN CORRECTION (Bug 7) ---
         
         if lot_size is None or lot_size <= 0:
             log_to_api(f"[{symbol}] Signal ignoré: Volume 0.")
