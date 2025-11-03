@@ -3,10 +3,10 @@
 Module pour la détection des patterns SMC (Fair Value Gaps, Order Blocks)
 et des zones de liquidité (EQH/EQL, Session Ranges).
 
-Version: 2.0
+Version: 2.2.0
 """
 
-__version__ = "2.0"
+__version__ = "2.2.0"
 
 import pandas as pd
 import numpy as np
@@ -63,6 +63,9 @@ def find_session_range(data: pd.DataFrame,
     """
     Identifie le plus haut et le plus bas d'une session de trading spécifique
     (ex: Asia Range) pour la journée la plus récente dans les données.
+    
+    --- MODIFIÉ V2.2.0 ---
+    Gère désormais correctement les sessions qui chevauchent minuit (ex: 20:00 - 00:00)
     """
     if data.empty:
         return None
@@ -79,6 +82,7 @@ def find_session_range(data: pd.DataFrame,
             # Assumons que les données MT5 sont en UTC si non spécifié
             data.index = data.index.tz_localize('Etc/UTC').tz_convert(tz)
         except Exception as e:
+            # Gérer le cas où les données sont déjà localisées (par ex. lors de re-conversions)
             data.index = data.index.tz_convert(tz)
     else:
         data.index = data.index.tz_convert(tz)
@@ -86,17 +90,34 @@ def find_session_range(data: pd.DataFrame,
     start_time = time(session_start_hour, 0)
     end_time = time(session_end_hour, 0)
     
+    # Le "dernier jour" est la date de la dernière bougie des données
     latest_date = data.index.max().date()
 
     if start_time < end_time:
+        # Cas simple: Session sur un seul jour (ex: 08:00 - 16:00)
         session_data = data.between_time(start_time, end_time)
+        # On ne prend que les données du dernier jour complet disponible
         session_data = session_data[session_data.index.date == latest_date]
     else:
-         # Gère les sessions qui chevauchent minuit (ex: 22:00 - 06:00)
-         logger.warning("Les ranges de session chevauchant minuit ne sont pas gérés (TODO).")
-         session_data = pd.DataFrame() # Retourner vide pour l'instant
+        # --- CORRECTION V2.2.0: Gère les sessions qui chevauchent minuit ---
+        # (ex: 20:00 - 00:00 ou 20:00 - 06:00)
+        # On a besoin des données de la veille (pour le début) et du jour J (pour la fin)
+        yesterday_date = latest_date - pd.Timedelta(days=1)
+        
+        # Données du jour J-1 (ex: 20:00 à 23:59:59)
+        data_yesterday = data.between_time(start_time, time(23, 59, 59))
+        data_yesterday = data_yesterday[data_yesterday.index.date == yesterday_date]
+        
+        # Données du jour J (ex: 00:00:00 à end_time)
+        data_today = data.between_time(time(0, 0, 0), end_time)
+        data_today = data_today[data_today.index.date == latest_date]
+
+        # Concaténer les deux parties pour former la session complète
+        session_data = pd.concat([data_yesterday, data_today])
+        # --- FIN CORRECTION V2.2.0 ---
 
     if session_data.empty:
+        logger.debug(f"[find_session_range] Aucune donnée trouvée pour la session {start_time}-{end_time} à la date {latest_date}")
         return None
 
     session_high = session_data['high'].max()
@@ -151,6 +172,10 @@ def find_fvgs(data: pd.DataFrame):
 def find_order_blocks(data: pd.DataFrame, swing_highs: list, swing_lows: list):
     """
     Identifie les Order Blocks (OB) basés sur les points de swing.
+    
+    --- MODIFIÉ V2.1.0 ---
+    Ajoute la vérification de la création d'un FVG (Imbalance) 
+    lors du mouvement impulsif qui suit le swing, comme vu dans la Vidéo 1.
     """
     order_blocks = []
     
@@ -162,23 +187,38 @@ def find_order_blocks(data: pd.DataFrame, swing_highs: list, swing_lows: list):
             candle = data.iloc[sh_index]
             target_candle = None # Initialisation
             
-            if candle['close'] > candle['open']: # Bougie haussière
+            if candle['close'] > candle['open']: # Bougie haussière (est l'OB)
                 target_candle = candle
             else:
                 if sh_index > 0:
                     prev_candle = data.iloc[sh_index - 1]
-                    if prev_candle['close'] > prev_candle['open']:
+                    if prev_candle['close'] > prev_candle['open']: # Bougie haussière précédente (est l'OB)
                         target_candle = prev_candle
                 else:
                     continue
                 
             if target_candle is not None:
+                
+                # --- AJOUT V2.1.0: Vérification FVG ---
+                has_fvg = False
+                # Le mouvement impulsif commence après le Swing High (sh_index)
+                if sh_index + 3 < len(data):
+                    fvg_candle_1 = data.iloc[sh_index + 1]
+                    # fvg_candle_2 = data.iloc[sh_index + 2] # Bougie du milieu
+                    fvg_candle_3 = data.iloc[sh_index + 3]
+                    
+                    # Vérifie s'il y a un FVG baissier
+                    if fvg_candle_3['high'] < fvg_candle_1['low']:
+                        has_fvg = True
+                # --- FIN AJOUT V2.1.0 ---
+                        
                 order_blocks.append({
                     "type": "BEARISH",
                     "top": target_candle['high'],
                     "bottom": target_candle['low'],
                     "timestamp": target_candle.name,
-                    "mitigated": False
+                    "mitigated": False,
+                    "has_fvg": has_fvg # Ajout du nouveau champ
                 })
         except (KeyError, IndexError):
             continue
@@ -191,23 +231,38 @@ def find_order_blocks(data: pd.DataFrame, swing_highs: list, swing_lows: list):
             candle = data.iloc[sl_index]
             target_candle = None # Initialisation
             
-            if candle['close'] < candle['open']: # Bougie baissière
+            if candle['close'] < candle['open']: # Bougie baissière (est l'OB)
                 target_candle = candle
             else:
                 if sl_index > 0:
                     prev_candle = data.iloc[sl_index - 1]
-                    if prev_candle['close'] < prev_candle['open']:
+                    if prev_candle['close'] < prev_candle['open']: # Bougie baissière précédente (est l'OB)
                         target_candle = prev_candle
                 else:
                     continue
 
             if target_candle is not None:
+
+                # --- AJOUT V2.1.0: Vérification FVG ---
+                has_fvg = False
+                # Le mouvement impulsif commence après le Swing Low (sl_index)
+                if sl_index + 3 < len(data):
+                    fvg_candle_1 = data.iloc[sl_index + 1]
+                    # fvg_candle_2 = data.iloc[sl_index + 2] # Bougie du milieu
+                    fvg_candle_3 = data.iloc[sl_index + 3]
+                    
+                    # Vérifie s'il y a un FVG haussier
+                    if fvg_candle_3['low'] > fvg_candle_1['high']:
+                        has_fvg = True
+                # --- FIN AJOUT V2.1.0 ---
+
                 order_blocks.append({
                     "type": "BULLISH",
                     "top": target_candle['high'],
                     "bottom": target_candle['low'],
                     "timestamp": target_candle.name,
-                    "mitigated": False
+                    "mitigated": False,
+                    "has_fvg": has_fvg # Ajout du nouveau champ
                 })
         except (KeyError, IndexError):
             continue

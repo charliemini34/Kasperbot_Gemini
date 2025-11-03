@@ -3,10 +3,10 @@
 Kasperbot - Bot de Trading MT5
 Fichier principal pour l'exécution du bot.
 
-Version: 2.0.4
+Version: 2.1.0
 """
 
-__version__ = "2.0.4"
+__version__ = "2.1.0"
 
 import sys
 import os
@@ -80,7 +80,7 @@ class Kasperbot:
     Classe principale du bot.
     Gère la boucle d'analyse et la logique de trading.
     """
-    __version__ = "2.0.4" # Version de l'orchestrateur
+    __version__ = "2.1.0" # Version de l'orchestrateur
     
     def __init__(self, config):
         self.config = config
@@ -118,16 +118,21 @@ class Kasperbot:
 
     def setup_model_3_config(self):
         """Configure les paramètres spécifiques au Modèle 3."""
+        # --- MODIFIÉ V2.1.0: Lecture depuis les nouvelles sections du config ---
         strategy_cfg = self.config['strategy']
-        self.model_3_enabled = strategy_cfg.get('model_3_enabled', False)
-        self.model_3_range_tf_str = strategy_cfg.get('model_3_range_tf', 'M30')
-        self.model_3_entry_tf_str = strategy_cfg.get('model_3_entry_tf', 'M5')
+        models_cfg = strategy_cfg.get('models', {})
+        sessions_cfg = strategy_cfg.get('sessions', {})
+
+        self.model_3_enabled = models_cfg.get('model_3_enabled', False)
+        self.model_3_range_tf_str = models_cfg.get('model_3_range_tf', 'M30')
+        self.model_3_entry_tf_str = models_cfg.get('model_3_entry_tf', 'M5')
         
         self.model_3_range_tf = mt5_connector.get_mt5_timeframe(self.model_3_range_tf_str)
         self.model_3_entry_tf = mt5_connector.get_mt5_timeframe(self.model_3_entry_tf_str)
         
-        self.model_3_trigger_time = datetime_time.fromisoformat(strategy_cfg.get('model_3_trigger_time', '15:30:00'))
-        self.trading_timezone_str = strategy_cfg.get('session_timezone', 'Etc/UTC')
+        self.model_3_trigger_time = datetime_time.fromisoformat(models_cfg.get('model_3_trigger_time', '15:30:00'))
+        self.trading_timezone_str = sessions_cfg.get('session_timezone', 'Etc/UTC')
+        # --- FIN MODIFICATION V2.1.0 ---
         
         try:
             self.trading_timezone = pytz.timezone(self.trading_timezone_str)
@@ -187,7 +192,7 @@ class Kasperbot:
                 return
 
             # 2. Vérifier Modèle 3 (Temporel)
-            signal_m3 = (None, None, None, None)
+            signal_m3 = (None, None, None, None) # Attend 4 valeurs
             if self.model_3_enabled:
                 signal_m3 = self._run_model_3_analysis(symbol, config)
             
@@ -196,7 +201,7 @@ class Kasperbot:
                     return # Un trade a été pris
 
             # 3. Vérifier Modèles 1 & 2 (Continu)
-            signal_m1_m2 = (None, None, None, None)
+            signal_m1_m2 = (None, None, None, None) # Attend 4 valeurs
             signal_m1_m2 = self._run_models_1_and_2_analysis(symbol, config)
             
             if signal_m1_m2[0]:
@@ -230,6 +235,7 @@ class Kasperbot:
             pip_size = config['risk']['pip_sizes'].get(symbol, config['risk']['default_pip_size'])
 
             # Appel de la fonction de stratégie
+            # smc_strategy.check_all_smc_signals retourne 4 valeurs
             signal, reason, sl_price, tp_price = smc_strategy.check_all_smc_signals(
                 mtf_data_dict, 
                 config,
@@ -261,8 +267,11 @@ class Kasperbot:
             self.last_model_3_check_date[symbol] = current_time_local.date()
             
             try:
-                range_lookback = config['strategy'].get('model_3_range_lookback', 10)
-                entry_lookback = config['strategy'].get('model_3_entry_lookback', 50)
+                # --- MODIFIÉ V2.1.0: Lecture depuis 'models' ---
+                models_cfg = config['strategy'].get('models', {})
+                range_lookback = models_cfg.get('model_3_range_lookback', 10)
+                entry_lookback = models_cfg.get('model_3_entry_lookback', 50)
+                # --- FIN MODIFICATION V2.1.0 ---
                 
                 range_data = mt5_connector.get_data(symbol, self.model_3_range_tf, range_lookback)
                 entry_data = mt5_connector.get_data(symbol, self.model_3_entry_tf, entry_lookback)
@@ -275,6 +284,7 @@ class Kasperbot:
                 pip_size = config['risk']['pip_sizes'].get(symbol, config['risk']['default_pip_size'])
 
                 # Appel de la fonction de stratégie
+                # smc_strategy.check_model_3_opening_range retourne 4 valeurs
                 return smc_strategy.check_model_3_opening_range(
                     range_data,
                     entry_data,
@@ -319,12 +329,14 @@ class Kasperbot:
             return False
         entry_price_fallback = entry_data['close'].iloc[-1]
             
-        # Appel corrigé pour le calcul de risque
+        # --- MODIFIÉ V2.1.0: Appel corrigé pour le calcul de risque ---
         lot_size = risk_manager.calculate_lot_size(
             config['risk']['risk_percent'],
-            sl_price, # Appel correct (envoi du prix SL)
+            entry_price_fallback, # Ajout du prix d'entrée
+            sl_price, 
             symbol=symbol
         )
+        # --- FIN MODIFICATION V2.1.0 ---
         
         if lot_size is None or lot_size <= 0:
             log_to_api(f"[{symbol}] Signal ignoré: Volume 0.")
@@ -362,7 +374,7 @@ class Kasperbot:
         # C. Journalisation
         if trade_id:
             entry_price_filled = mt5_executor.get_last_entry_price(trade_id)
-            if entry_price_filled is None: 
+            if entry_price_filled is None or entry_price_filled == 0.0: # Correction de la condition
                 entry_price_filled = entry_price_fallback
                 
             log_to_api(f"TRADE EXÉCUTÉ [{symbol}]: {signal} {lot_size} lots. ID: {trade_id}")
