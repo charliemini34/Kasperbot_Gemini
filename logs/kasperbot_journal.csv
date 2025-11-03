@@ -1,1 +1,2 @@
 timestamp,symbol,type,volume,entry_price,sl,tp,reason,setup_model,position_id,status,close_price,close_time,profit
+2025-11-03 13:34:08,XAGUSD,SELL,0.01,48.725,49.112544,48.462,VENTE [M1]: HTF(H4) Biais Baissier + Dans POI HTF + LTF(M15) CHOCH Baissier.,M1,12160943,OPEN,,,
