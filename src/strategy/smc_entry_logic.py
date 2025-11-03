@@ -4,10 +4,10 @@ Module de Stratégie SMC (Smart Money Concepts).
 
 Contient la logique de détection pour les Modèles M1, M2 et M3.
 
-Version: 2.1.2
+Version: 2.3.0
 """
 
-__version__ = "2.1.2"
+__version__ = "2.3.0"
 
 import logging
 import pandas as pd
@@ -137,7 +137,7 @@ def _find_valid_htf_pois(data: pd.DataFrame, swings_high: list, swings_low: list
     return valid_pois
 
 
-# --- MODÈLE 1 (MODIFIÉ V2.1.1) ---
+# --- MODÈLE 1 (MODIFIÉ V2.3.0) ---
 def _check_model_1_confirmation(
     htf_trend: str, 
     htf_data: pd.DataFrame, 
@@ -148,12 +148,21 @@ def _check_model_1_confirmation(
     ltf_swings_high: list,
     ltf_swings_low: list,
     current_price: float,
-    config: dict
+    config: dict,
+    pip_size: float # <-- AJOUTÉ V2.3.0
 ) -> Tuple[Optional[str], Optional[str], Optional[float], Optional[float]]:
     """
     Vérifie le "Modèle 1: Confirmation POI HTF + CHOCH LTF + Retour OTE" (Logique Vidéo 2)
+    
+    --- MODIFIÉ V2.3.0 ---
+    - TP (Take Profit) est maintenant basé sur un RR fixe (lu depuis config.yaml)
+    - pip_size est requis pour le calcul du TP.
     """
     strategy_params = config['strategy']
+    # --- MODIFIÉ V2.3.0: Lecture du RR fixe ---
+    models_cfg = strategy_params.get('models', {})
+    model_rr = models_cfg.get('model_1_2_rr', 2.0) # Lecture du RR
+    # --- FIN MODIFICATION V2.3.0 ---
     
     # --- Étape 1: Identifier les POI HTF valides (Filtrés P/D) ---
     valid_htf_pois = _find_valid_htf_pois(htf_data, htf_swings_high, htf_swings_low, htf_trend)
@@ -184,15 +193,13 @@ def _check_model_1_confirmation(
         return None, None, None, None
         
     last_ltf_event = ltf_events[-1]
-
-    # --- Logique de Confirmation (Le cœur du Modèle 1 - V2.1.1) ---
     
     if htf_trend == "BULLISH":
         if last_ltf_event['type'] == 'CHOCH' and last_ltf_event['trend'] == 'BULLISH':
             logger.info(f"[M1] CHOCH Haussier LTF confirmé (dans POI HTF).")
             # --- Étape 4: Attendre Retour à l'OTE du swing CHOCH ---
-            choch_swing_low = ltf_swings_low[-1] # Le plus bas avant le CHOCH
-            choch_swing_high = ltf_swings_high[-1] # Le plus haut qui a cassé
+            choch_swing_low = ltf_swings_low[-1] 
+            choch_swing_high = ltf_swings_high[-1] 
             
             fib_zones = _get_fibonacci_zones(choch_swing_low[1], choch_swing_high[1])
             if not fib_zones: return None, None, None, None
@@ -200,21 +207,27 @@ def _check_model_1_confirmation(
             ote_top = fib_zones['ote_zone_top']
             ote_bottom = fib_zones['ote_zone_bottom']
             
-            # Trouver POI (FVG) dans OTE
             ltf_pois = patterns.find_fvgs(ltf_data.loc[choch_swing_low[0]:choch_swing_high[0]])
             valid_ote_poi = None
             for poi in ltf_pois:
                 if poi['type'] == 'BULLISH' and max(poi['bottom'], ote_bottom) < min(poi['top'], ote_top):
                     valid_ote_poi = poi
-                    break # On prend le premier
+                    break 
             
             if valid_ote_poi:
                 # --- Étape 5: Vérifier si le prix entre dans le POI OTE ---
                 if (current_price <= valid_ote_poi['top']) and (current_price >= valid_ote_poi['bottom']):
                     logger.info(f"[M1] Prix entre dans le POI OTE LTF ({valid_ote_poi['top']}-{valid_ote_poi['bottom']}).")
                     reason = f"ACHAT [M1]: HTF Biais Haussier + POI HTF + CHOCH LTF + Retour OTE-POI."
-                    sl_price = choch_swing_low[1] * (1 - 0.0005) # SL sous le bas du swing CHOCH
-                    tp_price = htf_swings_high[-1][1] # Cible = High HTF
+                    sl_price = choch_swing_low[1] * (1 - 0.0005) 
+                    
+                    # --- MODIFIÉ V2.3.0: Calcul TP basé sur RR Fixe ---
+                    risk_pips = (current_price - sl_price) / pip_size
+                    if risk_pips <= 0:
+                         logger.warning(f"[M1] Signal ACHAT ignoré: Risque pips invalide ({risk_pips}).")
+                         return None, None, None, None
+                    tp_price = current_price + (risk_pips * model_rr * pip_size)
+                    # --- FIN MODIFICATION V2.3.0 ---
                     
                     if sl_price >= current_price or tp_price <= current_price:
                         logger.warning(f"[M1] Signal ACHAT ignoré: SL/TP invalide.")
@@ -236,7 +249,6 @@ def _check_model_1_confirmation(
             ote_top = fib_zones['ote_zone_top']
             ote_bottom = fib_zones['ote_zone_bottom']
             
-            # Trouver POI (FVG) dans OTE
             ltf_pois = patterns.find_fvgs(ltf_data.loc[choch_swing_high[0]:choch_swing_low[0]])
             valid_ote_poi = None
             for poi in ltf_pois:
@@ -249,8 +261,15 @@ def _check_model_1_confirmation(
                 if (current_price <= valid_ote_poi['top']) and (current_price >= valid_ote_poi['bottom']):
                     logger.info(f"[M1] Prix entre dans le POI OTE LTF ({valid_ote_poi['top']}-{valid_ote_poi['bottom']}).")
                     reason = f"VENTE [M1]: HTF Biais Baissier + POI HTF + CHOCH LTF + Retour OTE-POI."
-                    sl_price = choch_swing_high[1] * (1 + 0.0005) # SL au-dessus du swing CHOCH
-                    tp_price = htf_swings_low[-1][1] # Cible = Low HTF
+                    sl_price = choch_swing_high[1] * (1 + 0.0005) 
+                    
+                    # --- MODIFIÉ V2.3.0: Calcul TP basé sur RR Fixe ---
+                    risk_pips = (sl_price - current_price) / pip_size
+                    if risk_pips <= 0:
+                         logger.warning(f"[M1] Signal VENTE ignoré: Risque pips invalide ({risk_pips}).")
+                         return None, None, None, None
+                    tp_price = current_price - (risk_pips * model_rr * pip_size)
+                    # --- FIN MODIFICATION V2.3.0 ---
                     
                     if sl_price <= current_price or tp_price >= current_price:
                         logger.warning(f"[M1] Signal VENTE ignoré: SL/TP invalide.")
@@ -262,40 +281,44 @@ def _check_model_1_confirmation(
     logger.debug("[M1] Aucune confirmation (CHOCH + Retour OTE) trouvée pour le moment.")
     return None, None, None, None
 
-# --- MODÈLE 2 (MODIFIÉ V2.1.2) ---
+# --- MODÈLE 2 (MODIFIÉ V2.3.0) ---
 def _check_model_2_inducement(
     htf_trend: str, 
     ltf_data: pd.DataFrame, 
     ltf_events: list,
     ltf_swings_high: list,
     ltf_swings_low: list,
-    # --- AJOUT V2.1.2 ---
-    htf_swings_high: list,
-    htf_swings_low: list,
-    # --- FIN AJOUT ---
+    htf_swings_high: list, # Requis pour TP (V2.1.2) - Inchangé
+    htf_swings_low: list,  # Requis pour TP (V2.1.2) - Inchangé
     current_low: float,
     current_high: float,
     current_price: float,
     config: dict,
-    pip_size: float # Argument requis
+    pip_size: float 
 ) -> Tuple[Optional[str], Optional[str], Optional[float], Optional[float]]:
     """
     Vérifie le "Modèle 2: Inducement (Sweep) + Confirmation CHOCH" (Logique Vidéo 4)
     Biais HTF -> Sweep LTF (EQL/Asia) -> CHOCH LTF -> Entrée Marché Agressive
+    
+    --- MODIFIÉ V2.3.0 ---
+    - TP (Take Profit) est maintenant basé sur un RR fixe (lu depuis config.yaml)
     """
     strategy_params = config['strategy']
+    # --- MODIFIÉ V2.3.0: Lecture du RR fixe ---
+    models_cfg = strategy_params.get('models', {})
+    model_rr = models_cfg.get('model_1_2_rr', 2.0) # Lecture du RR
+    # --- FIN MODIFICATION V2.3.0 ---
     
     # --- Étape 1: Détecter la liquidité LTF (EQL / Session Low) ---
     ltf_liquidity_zones = []
     
     # 1a. Liquidité de Session (Asia Range)
     try:
-        # --- MODIFIÉ V2.1.1: Lecture config V2.1 ---
         sessions_cfg = strategy_params.get('sessions', {})
         asia_range = patterns.find_session_range(
             ltf_data, 
             session_start_hour=sessions_cfg.get('asia_start_hour', 0),
-            session_end_hour=sessions_cfg.get('asia_end_hour', 8),
+            session_end_hour=sessions_cfg.get('asia_end_hour', 0), # Corrigé V2.2
             timezone=sessions_cfg.get('session_timezone', 'Etc/UTC')
         )
         if asia_range:
@@ -305,13 +328,11 @@ def _check_model_2_inducement(
         logger.warning(f"[M2] Erreur lors de la détection du range de session: {e}")
 
     # 1b. Equal Highs/Lows (EQL)
-    # --- MODIFIÉ V2.1.1: Lecture config V2.1 ---
-    models_cfg = strategy_params.get('models', {})
     eql_zones = patterns.find_equal_highs_lows(
         ltf_data, 
         lookback=models_cfg.get('liquidity_lookback', 50),
         tolerance_pips=models_cfg.get('liquidity_tolerance_pips', 5),
-        pip_size=pip_size # Utilise l'argument
+        pip_size=pip_size 
     )
     for eql in eql_zones['equal_lows']:
         ltf_liquidity_zones.append({"type": "EQL", "level": eql['level']})
@@ -334,7 +355,6 @@ def _check_model_2_inducement(
         swept_zone = None
         for zone in ltf_liquidity_zones:
             if zone['type'] in ["EQL", "ASIA_LOW"]:
-                # Le "sweep" : la mèche (low) d'une bougie récente est passée SOUS la liquidité
                 if ltf_data['low'].iloc[-5:].min() < zone['level']:
                     swept_zone = zone
                     break
@@ -342,13 +362,17 @@ def _check_model_2_inducement(
         if swept_zone:
             logger.info(f"[M2] Sweep de liquidité détecté: {swept_zone['type']} @ {swept_zone['level']}")
             # --- Étape 3: Confirmation (CHOCH) ---
-            # On attend le CHOCH Haussier
             if last_ltf_event['type'] == 'CHOCH' and last_ltf_event['trend'] == 'BULLISH':
                 reason = f"ACHAT [M2]: HTF({strategy_params['htf_timeframe']}) Biais Haussier + Sweep LTF ({swept_zone['type']}) + LTF({strategy_params['ltf_timeframe']}) CHOCH Haussier."
-                # SL sous le point le plus bas du sweep (le 'wick' ou la mèche)
-                sl_price = ltf_swings_low[-1][1] * (1 - 0.0005) # Bas du swing CHOCH
-                # --- CORRIGÉ V2.1.2: Utilisation de htf_swings_high (passé en arg) ---
-                tp_price = htf_swings_high[-1][1] # Cible = High HTF
+                sl_price = ltf_swings_low[-1][1] * (1 - 0.0005) 
+                
+                # --- MODIFIÉ V2.3.0: Calcul TP basé sur RR Fixe ---
+                risk_pips = (current_price - sl_price) / pip_size
+                if risk_pips <= 0:
+                     logger.warning(f"[M2] Signal ACHAT ignoré: Risque pips invalide ({risk_pips}).")
+                     return None, None, None, None
+                tp_price = current_price + (risk_pips * model_rr * pip_size)
+                # --- FIN MODIFICATION V2.3.0 ---
                 
                 if sl_price >= current_price or tp_price <= current_price:
                     logger.warning(f"[M2] Signal ACHAT ignoré: SL/TP invalide.")
@@ -362,7 +386,6 @@ def _check_model_2_inducement(
         swept_zone = None
         for zone in ltf_liquidity_zones:
             if zone['type'] in ["EQH", "ASIA_HIGH"]:
-                # Le "sweep" : la mèche (high) d'une bougie récente est passée AU-DESSUS de la liquidité
                 if ltf_data['high'].iloc[-5:].max() > zone['level']:
                     swept_zone = zone
                     break
@@ -371,10 +394,16 @@ def _check_model_2_inducement(
             logger.info(f"[M2] Sweep de liquidité détecté: {swept_zone['type']} @ {swept_zone['level']}")
             # --- Étape 3: Confirmation (CHOCH) ---
             if last_ltf_event['type'] == 'CHOCH' and last_ltf_event['trend'] == 'BEARISH':
-                reason = f"VENTE [M2]: HTF({strategy_params['htf_timeframe']}) Biais Baissier + Sweep LTF ({swept_zone['type']}) + LTF({strategy_params['ltf_timeframe']}) CHOCH Baissier."
-                sl_price = ltf_swings_high[-1][1] * (1 + 0.0005) # Haut du swing CHOCH
-                # --- CORRIGÉ V2.1.2: Utilisation de htf_swings_low (passé en arg) ---
-                tp_price = htf_swings_low[-1][1] # Cible = Low HTF
+                reason = f"VENTE [M2]: HTF({strategy_params['htf_timeframe']}) Biais Baissier + Sweep LTF ({swept_zone['type']}) + LTF({strategy_params['ltf_timeframe']}) CHOCH Haussier."
+                sl_price = ltf_swings_high[-1][1] * (1 + 0.0005) 
+
+                # --- MODIFIÉ V2.3.0: Calcul TP basé sur RR Fixe ---
+                risk_pips = (sl_price - current_price) / pip_size
+                if risk_pips <= 0:
+                     logger.warning(f"[M2] Signal VENTE ignoré: Risque pips invalide ({risk_pips}).")
+                     return None, None, None, None
+                tp_price = current_price - (risk_pips * model_rr * pip_size)
+                # --- FIN MODIFICATION V2.3.0 ---
                 
                 if sl_price <= current_price or tp_price >= current_price:
                     logger.warning(f"[M2] Signal VENTE ignoré: SL/TP invalide.")
@@ -386,14 +415,13 @@ def _check_model_2_inducement(
     return None, None, None, None
 
 
-# --- ORCHESTRATEUR DE SIGNAUX (M1 & M2) (MODIFIÉ V2.1.2) ---
+# --- ORCHESTRATEUR DE SIGNAUX (M1 & M2) (MODIFIÉ V2.3.0) ---
 def check_all_smc_signals(mtf_data: dict, config: dict, pip_size: float): 
     """
     Orchestre la vérification de tous les modèles de signaux SMC (M1, M2).
     
-    --- MODIFIÉ V2.1.2 ---
-    - Retourne 4 valeurs (signal, reason, sl_price, tp_price) pour main.py v2.1.0
-    - Corrige l'appel à _check_model_2_inducement
+    --- MODIFIÉ V2.3.0 ---
+    - Ajout de pip_size à l'appel de _check_model_1_confirmation
     """
     
     try:
@@ -438,22 +466,23 @@ def check_all_smc_signals(mtf_data: dict, config: dict, pip_size: float):
         # --- Étape 4: Vérifier les modèles en séquence ---
 
         # 4a. Vérifier Modèle 1 (Sniper OTE - Stratégie principale)
+        # --- MODIFIÉ V2.3.0: Ajout de pip_size ---
         signal_m1 = _check_model_1_confirmation(
             htf_trend, htf_data, ltf_data, htf_swings_high, htf_swings_low,
-            ltf_events, ltf_swings_high, ltf_swings_low, current_price, config
+            ltf_events, ltf_swings_high, ltf_swings_low, current_price, config,
+            pip_size
         )
+        # --- FIN MODIFICATION V2.3.0 ---
         if signal_m1[0]:
             return signal_m1 # Signal trouvé !
 
         # 4b. Vérifier Modèle 2 (Inducement/Sweep Agressif)
-        # --- CORRIGÉ V2.1.2: Ajout des 3 arguments manquants ---
         signal_m2 = _check_model_2_inducement(
             htf_trend, ltf_data, ltf_events, ltf_swings_high, ltf_swings_low,
-            htf_swings_high, htf_swings_low, # <-- AJOUT
-            current_low, current_high, current_price, config, # <-- AJOUT current_price
+            htf_swings_high, htf_swings_low, 
+            current_low, current_high, current_price, config, 
             pip_size
         )
-        # --- FIN CORRECTION V2.1.2 ---
         if signal_m2[0]:
             return signal_m2 # Signal trouvé !
 

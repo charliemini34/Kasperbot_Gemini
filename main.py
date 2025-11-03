@@ -3,10 +3,10 @@
 Kasperbot - Bot de Trading MT5
 Fichier principal pour l'exécution du bot.
 
-Version: 2.1.0
+Version: 3.0.0
 """
 
-__version__ = "2.1.0"
+__version__ = "3.0.0"
 
 import sys
 import os
@@ -29,6 +29,8 @@ from src import shared_state # Utilise l'état partagé de l'API
 
 # --- IMPORTS MODIFIÉS POUR LA STRATÉGIE SMC ---
 from src.strategy import smc_entry_logic as smc_strategy
+# --- AJOUT V3.0.0: Import du gestionnaire de trades ---
+from src.management import trade_manager
 # --- FIN DES IMPORTS MODIFIÉS ---
 
 # Configuration du logging
@@ -80,7 +82,7 @@ class Kasperbot:
     Classe principale du bot.
     Gère la boucle d'analyse et la logique de trading.
     """
-    __version__ = "2.1.0" # Version de l'orchestrateur
+    __version__ = "3.0.0" # Version de l'orchestrateur
     
     def __init__(self, config):
         self.config = config
@@ -182,16 +184,35 @@ class Kasperbot:
     def check_symbol_logic(self, symbol, config):
         """
         Exécute la logique de trading complète pour UN SEUL symbole.
+        
+        --- MODIFIÉ V3.0.0 ---
+        - Vérifie d'abord les positions ouvertes pour les GÉRER (BE, TSL).
+        - Si AUCUNE position n'est ouverte, ALORS cherche un nouveau trade.
         """
         try:
-            # 1. Gérer les trades existants
-            open_positions = mt5_connector.check_open_positions(symbol)
-            if open_positions > 0:
-                logger.info(f"Position déjà ouverte pour {symbol}, attente...")
-                # TODO: Mettre à jour l'état partagé avec les positions
-                return
+            # --- ÉTAPE 1: Gérer les trades existants (MODIFIÉ V3.0.0) ---
+            
+            # Récupérer la liste complète des positions
+            open_positions = mt5_connector.mt5.positions_get(symbol=symbol)
+            
+            if open_positions is None:
+                logger.warning(f"[{symbol}] Échec de la récupération des positions. Cycle sauté.")
+                return # Erreur MT5, on saute ce symbole
+            
+            if len(open_positions) > 0:
+                logger.info(f"[{symbol}] {len(open_positions)} position(s) ouverte(s), passage en mode gestion...")
+                for position in open_positions:
+                    # Convertir la position (namedtuple) en dictionnaire
+                    trade_manager.manage_open_position(position._asdict(), config)
+                
+                # TODO: Mettre à jour l'état partagé (API) avec les positions
+                return # Ne pas chercher de nouveaux trades pour ce symbole
+            
+            # --- FIN MODIFICATION V3.0.0 ---
 
-            # 2. Vérifier Modèle 3 (Temporel)
+            # --- ÉTAPE 2: Chercher de nouveaux trades (si aucune position) ---
+
+            # 2a. Vérifier Modèle 3 (Temporel)
             signal_m3 = (None, None, None, None) # Attend 4 valeurs
             if self.model_3_enabled:
                 signal_m3 = self._run_model_3_analysis(symbol, config)
@@ -200,7 +221,7 @@ class Kasperbot:
                 if self._process_signal(symbol, *signal_m3, config):
                     return # Un trade a été pris
 
-            # 3. Vérifier Modèles 1 & 2 (Continu)
+            # 2b. Vérifier Modèles 1 & 2 (Continu)
             signal_m1_m2 = (None, None, None, None) # Attend 4 valeurs
             signal_m1_m2 = self._run_models_1_and_2_analysis(symbol, config)
             
@@ -234,7 +255,7 @@ class Kasperbot:
             # Récupérer le pip_size (nécessaire pour l'appel de fonction)
             pip_size = config['risk']['pip_sizes'].get(symbol, config['risk']['default_pip_size'])
 
-            # Appel de la fonction de stratégie
+            # Appel de la fonction de stratégie (v2.3.0)
             # smc_strategy.check_all_smc_signals retourne 4 valeurs
             signal, reason, sl_price, tp_price = smc_strategy.check_all_smc_signals(
                 mtf_data_dict, 
@@ -283,7 +304,7 @@ class Kasperbot:
                 # Récupérer le pip_size (nécessaire pour l'appel de fonction)
                 pip_size = config['risk']['pip_sizes'].get(symbol, config['risk']['default_pip_size'])
 
-                # Appel de la fonction de stratégie
+                # Appel de la fonction de stratégie (v2.3.0)
                 # smc_strategy.check_model_3_opening_range retourne 4 valeurs
                 return smc_strategy.check_model_3_opening_range(
                     range_data,
@@ -347,19 +368,17 @@ class Kasperbot:
         # B. Exécution de l'ordre
 
         # --- MODIFICATION (Version 2.0.4) ---
-        # Formatage du commentaire sans espaces, basé sur le script v15.1.0 et v3
+        # Formatage du commentaire sans espaces
         
         # 1. Nettoyer la 'reason' pour en faire un identifiant court
-        # Remplace tout ce qui n'est pas une lettre/chiffre par un '_'
         reason_simple = re.sub(r'[^a-zA-Z0-9]', '_', reason)
-        # Remplace les '_' multiples par un seul
         reason_simple = re.sub(r'__+', '_', reason_simple)
         
         # 2. Créer le commentaire sans espaces
-        trade_comment = f"KasperBot-{model_id}-{reason_simple}"
+        trade_comment = f"KasperBot_{model_id}_{reason_simple}"
         
         # 3. Tronquer à 31 caractères
-        trade_comment = trade_comment[:31]
+        trade_comment = trade_comment[:20]
         # --- FIN MODIFICATION ---
 
         trade_id = mt5_executor.place_order(
@@ -374,23 +393,20 @@ class Kasperbot:
         # C. Journalisation
         if trade_id:
             entry_price_filled = mt5_executor.get_last_entry_price(trade_id)
-            if entry_price_filled is None or entry_price_filled == 0.0: # Correction de la condition
+            if entry_price_filled is None or entry_price_filled == 0.0: 
                 entry_price_filled = entry_price_fallback
                 
             log_to_api(f"TRADE EXÉCUTÉ [{symbol}]: {signal} {lot_size} lots. ID: {trade_id}")
             
-            # Log la raison complète dans le journal (pas de limite de taille ici)
-            # --- CORRECTION ---
-            # 1. Créer le dictionnaire attendu par le journal
-            # 2. Appeler self.journal.record_trade
+            # Log la raison complète dans le journal
             trade_data = {
                 'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
                 'symbol': symbol,
-                'type': signal,  # Le journal attend 'type' (pas 'order_type')
+                'type': signal,  
                 'volume': lot_size,
                 'entry_price': entry_price_filled,
-                'sl': sl_price,  # Le journal attend 'sl' (pas 'sl_price')
-                'tp': tp_price,  # Le journal attend 'tp' (pas 'tp_price')
+                'sl': sl_price,  
+                'tp': tp_price,  
                 'reason': reason,
                 'setup_model': model_id,
                 'status': "OPEN",
@@ -398,7 +414,6 @@ class Kasperbot:
             }
             
             self.journal.record_trade(trade_data)
-            # --- FIN CORRECTION ---
             
             return True
         else:

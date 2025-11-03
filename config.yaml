@@ -1,5 +1,5 @@
 # Fichier: config.yaml
-# Version: 2.2
+# Version: 3.0.0
 #
 # Fichier de configuration principal pour Kasperbot.
 # Modifiez ces valeurs pour ajuster la connexion, 
@@ -56,8 +56,11 @@ strategy:
         # --- CORRIGÉ V2.2: 24 est une heure invalide, remplacé par 0 (minuit) ---
         asia_end_hour: 0   # 00:00 (minuit)
 
-    # --- Configuration des Modèles (V2.1) ---
+    # --- Configuration des Modèles (V2.3) ---
     models:
+        # RR Fixe pour M1 et M2 (Corrigé V2.3)
+        model_1_2_rr: 2.0              # Risk/Reward pour le TP des Modèles 1 et 2
+
         # Paramètres Modèle 2 (Inducement/Sweep)
         liquidity_lookback: 50  # Nbr bougies LTF pour chercher EQH/EQL
         liquidity_tolerance_pips: 5 # Nbr pips de tolérance pour définir un EQH/EQL
@@ -74,6 +77,23 @@ strategy:
 risk:
     # Risque en pourcentage du capital par trade
     risk_percent: 1.0
+    
+    # --- AJOUT V3.0.0: Gestion des Trades (BreakEven et Trailing SL) ---
+    trade_management:
+        # Mettre à 'true' pour activer le Break-Even automatique
+        breakeven_enabled: true
+        # Le profit (en R:R) nécessaire pour déclencher le Break-Even
+        # 1.0 = 1R (le SL sera mis à 0, c'est-à-dire le prix d'entrée)
+        breakeven_trigger_rr: 1.0
+
+        # Mettre à 'true' pour activer le Trailing Stop Loss
+        trailing_sl_enabled: true
+        # Le profit (en R:R) nécessaire pour COMMENCER à suivre le prix
+        trailing_sl_trigger_rr: 2.0
+        # L'écart (en R:R) que le SL maintiendra derrière le prix
+        # 1.0 = Le SL sera toujours à 1R derrière le prix actuel (une fois déclenché)
+        trailing_sl_distance_rr: 1.0
+    # --- FIN AJOUT V3.0.0 ---
     
     # Définition de la taille d'un pip pour chaque symbole
     # (Crucial pour le calcul de la taille de lot)

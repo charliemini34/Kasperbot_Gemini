@@ -1,13 +1,16 @@
 """
 Fichier: src/execution/mt5_executor.py
-Version: 2.0.13
+Version: 3.0.0
 
 Module pour l'exécution des ordres MT5.
 
 Ce module gère :
 - L'initialisation avec la connexion MT5.
 - Le placement d'ordres (Achat/Vente) avec SL/TP.
+- La modification d'ordres (mise à jour SL/TP pour BE et TSL).
 """
+
+__version__ = "3.0.0"
 
 import MetaTrader5 as mt5
 import logging
@@ -63,8 +66,6 @@ def place_order(symbol, order_type, volume, sl_price, tp_price, comment="Kasperb
     
     # --- MODIFICATION (Version 2.0.13) ---
     # Implémentation de la logique de remplissage dynamique
-    # Copiée du script mt5_auto_bot_CLAUDE_V3.py qui fonctionne.
-    # C'est la cause finale de l'erreur (-2).
     
     filling_type = mt5.ORDER_FILLING_IOC # Défaut = 1
     
@@ -89,7 +90,7 @@ def place_order(symbol, order_type, volume, sl_price, tp_price, comment="Kasperb
         "tp": float(tp),       # Utilise le prix arrondi dynamiquement
         "deviation": 20, 
         "magic": 13579,
-        "comment": "Kasperbot SMC Entry", 
+        "comment": comment, # Utilise le commentaire dynamique (de main.py)
         "type_time": mt5.ORDER_TIME_GTC,
         "type_filling": filling_type, # Utilise le type de remplissage dynamique
     }
@@ -120,6 +121,55 @@ def place_order(symbol, order_type, volume, sl_price, tp_price, comment="Kasperb
     except Exception as e:
         logger.critical(f"Exception lors de l'envoi de l'ordre : {e}", exc_info=True)
         return None
+
+# --- NOUVELLE FONCTION (V3.0.0) ---
+def modify_position_sl(position_id, symbol, new_sl_price):
+    """
+    Modifie le Stop Loss d'une position ouverte.
+    Utilisé pour le Break-Even et le Trailing Stop.
+    """
+    if not _mt5_connector:
+        logger.error(f"Impossible de modifier {position_id} : Executor non initialisé.")
+        return False
+
+    # Récupérer les infos du symbole pour l'arrondi
+    symbol_info = _mt5_connector.mt5.symbol_info(symbol)
+    if symbol_info is None:
+        logger.error(f"Impossible de récupérer les infos {symbol} pour l'arrondi (Modify SL).")
+        return False
+        
+    digits = symbol_info.digits
+    
+    # Arrondir le nouveau SL
+    new_sl = round(float(new_sl_price), digits)
+
+    request = {
+        "action": mt5.TRADE_ACTION_SLTP,
+        "position": position_id,
+        "sl": new_sl,
+        # "tp" n'est pas inclus, donc il n'est pas modifié
+    }
+
+    try:
+        logger.info(f"Tentative de modification SL pour {position_id}: Nouveau SL = {new_sl}")
+        result = _mt5_connector.mt5.order_send(request)
+        
+        if result is None:
+            logger.error(f"order_send(Modify SL) a échoué. Code MT5: {mt5.last_error()}")
+            return False
+            
+        if result.retcode == mt5.TRADE_RETCODE_DONE:
+            logger.info(f"SL modifié avec succès pour {position_id}. Nouveau SL: {result.sl}")
+            return True
+        else:
+            logger.error(f"Échec modification SL pour {position_id}: retcode={result.retcode}, comment={result.comment}")
+            logger.error(f"Détails de l'erreur MT5 : {mt5.last_error()}")
+            return False
+            
+    except Exception as e:
+        logger.critical(f"Exception lors de la modification du SL pour {position_id}: {e}", exc_info=True)
+        return False
+# --- FIN NOUVELLE FONCTION ---
 
 def get_last_entry_price(order_id):
     """
