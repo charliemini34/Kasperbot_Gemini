@@ -170,7 +170,8 @@ def _check_model_1_confirmation(
         return None, None, None, None
         
     last_ltf_event = ltf_events[-1]
-    
+
+
     # --- Logique de Confirmation (Le cœur du Modèle 1) ---
     
     if htf_trend == "BULLISH":
@@ -178,6 +179,13 @@ def _check_model_1_confirmation(
             reason = f"ACHAT [M1]: HTF({strategy_params['htf_timeframe']}) Biais Haussier + Dans POI HTF + LTF({strategy_params['ltf_timeframe']}) CHOCH Haussier."
             sl_price = ltf_swings_low[-1][1] * (1 - 0.0005) 
             tp_price = htf_swings_high[-1][1] 
+            
+            # --- AJOUT: Vérification de sécurité SL/TP ---
+            if sl_price >= current_price or tp_price <= current_price:
+                logger.warning(f"[M1] Signal ACHAT ignoré: SL/TP invalide. (SL: {sl_price}, TP: {tp_price}, Px: {current_price})")
+                return None, None, None, None
+            # --- FIN AJOUT ---
+                
             logger.warning(f"SIGNAL TROUVÉ: {reason}")
             return "BUY", reason, sl_price, tp_price
 
@@ -186,13 +194,18 @@ def _check_model_1_confirmation(
             reason = f"VENTE [M1]: HTF({strategy_params['htf_timeframe']}) Biais Baissier + Dans POI HTF + LTF({strategy_params['ltf_timeframe']}) CHOCH Baissier."
             sl_price = ltf_swings_high[-1][1] * (1 + 0.0005)
             tp_price = ltf_swings_low[-1][1]
+            
+            # --- AJOUT: Vérification de sécurité SL/TP ---
+            if sl_price <= current_price or tp_price >= current_price:
+                logger.warning(f"[M1] Signal VENTE ignoré: SL/TP invalide. (SL: {sl_price}, TP: {tp_price}, Px: {current_price})")
+                return None, None, None, None
+            # --- FIN AJOUT ---
+                
             logger.warning(f"SIGNAL TROUVÉ: {reason}")
             return "SELL", reason, sl_price, tp_price
             
     logger.debug("[M1] Aucune confirmation LTF CHOCH trouvée pour le moment.")
     return None, None, None, None
-
-
 # --- MODÈLE 2 ---
 def _check_model_2_inducement(
     htf_trend: str, 

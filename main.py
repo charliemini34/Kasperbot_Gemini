@@ -368,19 +368,26 @@ class Kasperbot:
             log_to_api(f"TRADE EXÉCUTÉ [{symbol}]: {signal} {lot_size} lots. ID: {trade_id}")
             
             # Log la raison complète dans le journal (pas de limite de taille ici)
-            journal.log_trade(
-                timestamp=time.strftime('%Y-%m-%d %H:%M:%S'),
-                symbol=symbol,
-                order_type=signal,
-                volume=lot_size,
-                entry_price=entry_price_filled,
-                sl_price=sl_price,
-                tp_price=tp_price,
-                reason=reason, # <-- Utilise la raison complète
-                setup_model=model_id,
-                status="OPEN",
-                position_id=trade_id
-            )
+            # --- CORRECTION ---
+            # 1. Créer le dictionnaire attendu par le journal
+            # 2. Appeler self.journal.record_trade
+            trade_data = {
+                'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
+                'symbol': symbol,
+                'type': signal,  # Le journal attend 'type' (pas 'order_type')
+                'volume': lot_size,
+                'entry_price': entry_price_filled,
+                'sl': sl_price,  # Le journal attend 'sl' (pas 'sl_price')
+                'tp': tp_price,  # Le journal attend 'tp' (pas 'tp_price')
+                'reason': reason,
+                'setup_model': model_id,
+                'status': "OPEN",
+                'position_id': trade_id
+            }
+            
+            self.journal.record_trade(trade_data)
+            # --- FIN CORRECTION ---
+            
             return True
         else:
             log_to_api(f"[{symbol}] Échec exécution MT5.")

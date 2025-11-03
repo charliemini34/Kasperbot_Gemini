@@ -89,7 +89,7 @@ def place_order(symbol, order_type, volume, sl_price, tp_price, comment="Kasperb
         "tp": float(tp),       # Utilise le prix arrondi dynamiquement
         "deviation": 20, 
         "magic": 13579,
-        "comment": comment, 
+        "comment": "Kasperbot SMC Entry", 
         "type_time": mt5.ORDER_TIME_GTC,
         "type_filling": filling_type, # Utilise le type de remplissage dynamique
     }
