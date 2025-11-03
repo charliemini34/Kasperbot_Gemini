@@ -1,6 +1,6 @@
 """
 Fichier: src/execution/mt5_executor.py
-Version: 2.0.12
+Version: 2.0.13
 
 Module pour l'exécution des ordres MT5.
 
@@ -38,15 +38,13 @@ def place_order(symbol, order_type, volume, sl_price, tp_price, comment="Kasperb
         logger.error("Impossible de passer l'ordre : Executor non initialisé.")
         return None
 
-    # --- MODIFICATION (Version 2.0.12) ---
-    # Récupérer les infos du symbole pour l'arrondi dynamique
+    # Récupérer les infos du symbole pour l'arrondi ET le type de remplissage
     symbol_info = _mt5_connector.mt5.symbol_info(symbol)
     if symbol_info is None:
         logger.error(f"Impossible de récupérer les infos du symbole {symbol} pour l'arrondi.")
         return None
         
     digits = symbol_info.digits
-    # --- FIN MODIFICATION ---
 
     # Conversion du string 'BUY'/'SELL' en variable 'mt5_order_type'
     if order_type.upper() == "BUY":
@@ -59,15 +57,28 @@ def place_order(symbol, order_type, volume, sl_price, tp_price, comment="Kasperb
         logger.error(f"Type d'ordre non reconnu : {order_type}")
         return None
         
-    # --- MODIFICATION (Version 2.0.12) ---
     # ARRONDIR le SL et le TP en utilisant le nombre de décimales ('digits') du symbole
     sl = round(float(sl_price), digits) if sl_price is not None and sl_price > 0 else 0.0
     tp = round(float(tp_price), digits) if tp_price is not None and tp_price > 0 else 0.0
+    
+    # --- MODIFICATION (Version 2.0.13) ---
+    # Implémentation de la logique de remplissage dynamique
+    # Copiée du script mt5_auto_bot_CLAUDE_V3.py qui fonctionne.
+    # C'est la cause finale de l'erreur (-2).
+    
+    filling_type = mt5.ORDER_FILLING_IOC # Défaut = 1
+    
+    # Vérifie les modes de remplissage autorisés par le courtier pour ce symbole
+    filling_modes = symbol_info.filling_mode
+    
+    if filling_modes & mt5.ORDER_FILLING_FOK:
+        filling_type = mt5.ORDER_FILLING_FOK # (Valeur 0)
+    elif filling_modes & mt5.ORDER_FILLING_IOC:
+         filling_type = mt5.ORDER_FILLING_IOC # (Valeur 1)
+    # Si aucun des deux n'est explicitement listé, on garde IOC par défaut
+    
     # --- FIN MODIFICATION ---
-    
-    # Utilisation de ORDER_FILLING_FOK (basé sur le script mt5_auto_bot_CLAUDE_V3.py)
-    filling_type = mt5.ORDER_FILLING_FOK
-    
+
     request = {
         "action": mt5.TRADE_ACTION_DEAL,
         "symbol": symbol,
@@ -80,7 +91,7 @@ def place_order(symbol, order_type, volume, sl_price, tp_price, comment="Kasperb
         "magic": 13579,
         "comment": comment, 
         "type_time": mt5.ORDER_TIME_GTC,
-        "type_filling": filling_type, 
+        "type_filling": filling_type, # Utilise le type de remplissage dynamique
     }
 
     try:
