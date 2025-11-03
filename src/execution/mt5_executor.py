@@ -1,6 +1,6 @@
 """
 Fichier: src/execution/mt5_executor.py
-Version: 2.0.3
+Version: 2.0.12
 
 Module pour l'exécution des ordres MT5.
 
@@ -38,7 +38,17 @@ def place_order(symbol, order_type, volume, sl_price, tp_price, comment="Kasperb
         logger.error("Impossible de passer l'ordre : Executor non initialisé.")
         return None
 
-    # Mapping du type d'ordre
+    # --- MODIFICATION (Version 2.0.12) ---
+    # Récupérer les infos du symbole pour l'arrondi dynamique
+    symbol_info = _mt5_connector.mt5.symbol_info(symbol)
+    if symbol_info is None:
+        logger.error(f"Impossible de récupérer les infos du symbole {symbol} pour l'arrondi.")
+        return None
+        
+    digits = symbol_info.digits
+    # --- FIN MODIFICATION ---
+
+    # Conversion du string 'BUY'/'SELL' en variable 'mt5_order_type'
     if order_type.upper() == "BUY":
         mt5_order_type = mt5.ORDER_TYPE_BUY
         price = _mt5_connector.mt5.symbol_info_tick(symbol).ask
@@ -49,42 +59,33 @@ def place_order(symbol, order_type, volume, sl_price, tp_price, comment="Kasperb
         logger.error(f"Type d'ordre non reconnu : {order_type}")
         return None
         
-    # S'assurer que les SL/TP ne sont pas nuls (MT5 n'aime pas 0.0)
-    sl = float(sl_price) if sl_price is not None and sl_price > 0 else 0.0
-    tp = float(tp_price) if tp_price is not None and tp_price > 0 else 0.0
-
-    # --- MODIFICATION (Version 2.0.3) ---
-    # Conversion forcée du commentaire en 'bytes' (ascii)
-    # C'est la cause la plus probable de l'erreur MT5 (-2)
-    try:
-        # 'b' préfixe la chaîne pour la convertir en bytes
-        comment_bytes = comment.encode('ascii')
-    except UnicodeEncodeError:
-        # Au cas où, si le nettoyage de main.py a échoué
-        comment_bytes = b"Kasperbot Trade" 
+    # --- MODIFICATION (Version 2.0.12) ---
+    # ARRONDIR le SL et le TP en utilisant le nombre de décimales ('digits') du symbole
+    sl = round(float(sl_price), digits) if sl_price is not None and sl_price > 0 else 0.0
+    tp = round(float(tp_price), digits) if tp_price is not None and tp_price > 0 else 0.0
     # --- FIN MODIFICATION ---
-
+    
+    # Utilisation de ORDER_FILLING_FOK (basé sur le script mt5_auto_bot_CLAUDE_V3.py)
+    filling_type = mt5.ORDER_FILLING_FOK
+    
     request = {
         "action": mt5.TRADE_ACTION_DEAL,
         "symbol": symbol,
         "volume": float(volume),
-        "type": mt5_order_type,
-        "price": price,
-        "sl": sl,
-        "tp": tp,
-        "deviation": 20, # 20 points de déviation max
-        "magic": 13579, # (Devrait être dans config)
-        
-        # --- MODIFICATION (Version 2.0.3) ---
-        "comment": comment_bytes, # Envoi des bytes au lieu d'un string
-        # --- FIN MODIFICATION ---
-        
+        "type": mt5_order_type, # Utilise l'entier (0 ou 1)
+        "price": float(price), 
+        "sl": float(sl),       # Utilise le prix arrondi dynamiquement
+        "tp": float(tp),       # Utilise le prix arrondi dynamiquement
+        "deviation": 20, 
+        "magic": 13579,
+        "comment": comment, 
         "type_time": mt5.ORDER_TIME_GTC,
-        "type_filling": mt5.ORDER_FILLING_IOC, # ou FOK
+        "type_filling": filling_type, 
     }
 
     try:
-        logger.info(f"Envoi de l'ordre : {request['type']} {request['symbol']} {request['volume']} @ {request['price']} SL={request['sl']} TP={request['tp']}")
+        # Log de la requête COMPLÈTE avant l'envoi
+        logger.info(f"Envoi de la requête MT5 : {request}")
         
         # S'assurer que le symbole est visible
         if not _mt5_connector.mt5.symbol_select(symbol, True):

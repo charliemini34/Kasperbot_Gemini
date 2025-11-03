@@ -3,10 +3,10 @@
 Kasperbot - Bot de Trading MT5
 Fichier principal pour l'exécution du bot.
 
-Version: 2.0.3
+Version: 2.0.4
 """
 
-__version__ = "2.0.3"
+__version__ = "2.0.4"
 
 import sys
 import os
@@ -80,7 +80,7 @@ class Kasperbot:
     Classe principale du bot.
     Gère la boucle d'analyse et la logique de trading.
     """
-    __version__ = "2.0.3" # Version de l'orchestrateur
+    __version__ = "2.0.4" # Version de l'orchestrateur
     
     def __init__(self, config):
         self.config = config
@@ -334,15 +334,20 @@ class Kasperbot:
 
         # B. Exécution de l'ordre
 
-        # --- MODIFICATION (Version 2.0.3) ---
-        # Préparer le commentaire pour MT5 :
-        # 1. Garder uniquement les caractères alphanumériques et les espaces
-        # 2. Remplacer les espaces multiples par un seul
+        # --- MODIFICATION (Version 2.0.4) ---
+        # Formatage du commentaire sans espaces, basé sur le script v15.1.0 et v3
+        
+        # 1. Nettoyer la 'reason' pour en faire un identifiant court
+        # Remplace tout ce qui n'est pas une lettre/chiffre par un '_'
+        reason_simple = re.sub(r'[^a-zA-Z0-9]', '_', reason)
+        # Remplace les '_' multiples par un seul
+        reason_simple = re.sub(r'__+', '_', reason_simple)
+        
+        # 2. Créer le commentaire sans espaces
+        trade_comment = f"KasperBot-{model_id}-{reason_simple}"
+        
         # 3. Tronquer à 31 caractères
-        raw_comment = f"[{model_id}] {reason}"
-        safe_comment = re.sub(r'[^a-zA-Z0-9 ]', '', raw_comment) # Garde lettres, chiffres, espaces
-        safe_comment = re.sub(r'\s+', ' ', safe_comment).strip() # Remplace espaces multiples
-        trade_comment = safe_comment[:31] # Tronque
+        trade_comment = trade_comment[:31]
         # --- FIN MODIFICATION ---
 
         trade_id = mt5_executor.place_order(
@@ -351,7 +356,7 @@ class Kasperbot:
             volume=lot_size,
             sl_price=sl_price,
             tp_price=tp_price,
-            comment=trade_comment # Utilise le commentaire nettoyé et tronqué
+            comment=trade_comment # Utilise le commentaire nettoyé
         )
         
         # C. Journalisation
