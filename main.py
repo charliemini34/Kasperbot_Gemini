@@ -3,10 +3,10 @@
 Kasperbot - Bot de Trading MT5
 Fichier principal pour l'exécution du bot.
 
-Version: 1.3.1-fix (Corrections Bugs 2, 5, 6, 7)
+Version: 2.0
 """
 
-__version__ = "1.3.1-fix"
+__version__ = "2.0"
 
 import sys
 import os
@@ -80,7 +80,7 @@ class Kasperbot:
     Classe principale du bot.
     Gère la boucle d'analyse et la logique de trading.
     """
-    __version__ = "1.3.0" # Version de l'orchestrateur
+    __version__ = "2.0" # Version de l'orchestrateur
     
     def __init__(self, config):
         self.config = config
@@ -113,8 +113,6 @@ class Kasperbot:
         self.htf_tf_str = self.config['strategy']['htf_timeframe']
         self.ltf_tf_str = self.config['strategy']['ltf_timeframe']
         
-        # --- Appel au Bug 2 --- (Ce bug est dans la boucle start(), pas ici)
-        # (Cette ligne plantera jusqu'à ce que l'Étape 2 soit appliquée)
         self.htf_tf = mt5_connector.get_mt5_timeframe(self.htf_tf_str)
         self.ltf_tf = mt5_connector.get_mt5_timeframe(self.ltf_tf_str)
 
@@ -125,7 +123,6 @@ class Kasperbot:
         self.model_3_range_tf_str = strategy_cfg.get('model_3_range_tf', 'M30')
         self.model_3_entry_tf_str = strategy_cfg.get('model_3_entry_tf', 'M5')
         
-        # --- Appel au Bug 2 --- (Ce bug est dans la boucle start(), pas ici)
         self.model_3_range_tf = mt5_connector.get_mt5_timeframe(self.model_3_range_tf_str)
         self.model_3_entry_tf = mt5_connector.get_mt5_timeframe(self.model_3_entry_tf_str)
         
@@ -143,7 +140,7 @@ class Kasperbot:
     def start(self):
         """Démarre la boucle principale du bot."""
         self.running = True
-        logger.info(f"Le bot va surveiller les symbolES suivants : {self.symbols}")
+        logger.info(f"Le bot va surveiller les symboles suivants : {self.symbols}")
         shared_state.set_status("RUNNING", f"Surveillance de {len(self.symbols)} symboles.")
         
         check_interval = self.config.get('check_interval', 60)
@@ -157,15 +154,7 @@ class Kasperbot:
                 if not shared_state.is_bot_running():
                     break
                 
-                # --- CORRECTION (Bug 2) ---
-                # S'assurer que le symbole est disponible
-                # La fonction 'ensure_symbol' n'existe pas.
-                # La vérification est faite dans get_data() donc on supprime ce bloc.
-                # if not mt5_connector.ensure_symbol(symbol):
-                #     log_to_api(f"Symbole {symbol} non trouvé ou activé. Passage au suivant.")
-                #     continue
-                # --- FIN CORRECTION (Bug 2) ---
-                    
+                # La vérification du symbole est gérée dans mt5_connector.get_data()
                 self.check_symbol_logic(symbol, self.config)
             
             if not shared_state.is_bot_running():
@@ -208,12 +197,9 @@ class Kasperbot:
 
             # 3. Vérifier Modèles 1 & 2 (Continu)
             signal_m1_m2 = (None, None, None, None)
-            
-            # --- Appel au Bug 5 & 6 ---
             signal_m1_m2 = self._run_models_1_and_2_analysis(symbol, config)
             
             if signal_m1_m2[0]:
-                # --- Appel au Bug 7 ---
                 if self._process_signal(symbol, *signal_m1_m2, config):
                     return
 
@@ -225,7 +211,6 @@ class Kasperbot:
         """Exécute l'analyse continue M1/M2 pour un symbole."""
         logger.info(f"[{symbol}] Analyse SMC (Modèles 1 & 2)...")
         try:
-            # --- Appel au Bug 4 --- (Config lookup)
             htf_lookback = config['strategy']['timeframes_config'][self.htf_tf_str]
             ltf_lookback = config['strategy']['timeframes_config'][self.ltf_tf_str]
             
@@ -241,20 +226,15 @@ class Kasperbot:
                 self.ltf_tf_str: ltf_data
             }
             
-            # --- CORRECTION (Bug 6) ---
             # Récupérer le pip_size (nécessaire pour l'appel de fonction)
             pip_size = config['risk']['pip_sizes'].get(symbol, config['risk']['default_pip_size'])
-            # --- FIN CORRECTION (Bug 6) ---
 
-            # --- CORRECTION (Bug 5 & 6) ---
-            # Bug 5: check_smc_signal renommé en check_all_smc_signals
-            # Bug 6: Ajout de l'argument pip_size
+            # Appel de la fonction de stratégie
             signal, reason, sl_price, tp_price = smc_strategy.check_all_smc_signals(
                 mtf_data_dict, 
                 config,
                 pip_size=pip_size
             )
-            # --- FIN CORRECTION (Bug 5 & 6) ---
             
             if not signal:
                  logger.info(f"[{symbol}] Aucun signal SMC (M1/M2) trouvé.")
@@ -291,13 +271,10 @@ class Kasperbot:
                     logger.warning(f"[{symbol} M3] Données vides, cycle M3 sauté.")
                     return None, None, None, None
 
-                # --- CORRECTION (Bug 6) ---
                 # Récupérer le pip_size (nécessaire pour l'appel de fonction)
                 pip_size = config['risk']['pip_sizes'].get(symbol, config['risk']['default_pip_size'])
-                # --- FIN CORRECTION (Bug 6) ---
 
-                # --- CORRECTION (Bug 6) ---
-                # Ajout de l'argument pip_size
+                # Appel de la fonction de stratégie
                 return smc_strategy.check_model_3_opening_range(
                     range_data,
                     entry_data,
@@ -306,7 +283,6 @@ class Kasperbot:
                     self.model_3_entry_tf_str,
                     pip_size=pip_size
                 )
-                # --- FIN CORRECTION (Bug 6) ---
                 
             except Exception as e:
                 logger.error(f"Erreur durant l'analyse Modèle 3 de {symbol}: {e}", exc_info=True)
@@ -330,10 +306,9 @@ class Kasperbot:
              log_to_api(f"[{symbol}] Signal ignoré: SL/TP invalide.")
              return False
 
-        # --- Appel au Bug 7 ---
         # A. Calcul du risque
         
-        # Récupérer le prix d'entrée
+        # Récupérer le prix d'entrée (nécessaire si le trade_id échoue)
         data_tf_str = self.ltf_tf_str
         if model_id == "M3":
             data_tf_str = self.model_3_entry_tf_str
@@ -342,21 +317,14 @@ class Kasperbot:
         if entry_data is None or entry_data.empty:
             log_to_api(f"[{symbol}] Erreur: Prix d'entrée (pour SL) indisponible.")
             return False
-        entry_price = entry_data['close'].iloc[-1]
+        entry_price_fallback = entry_data['close'].iloc[-1]
             
-        # Obtenir pip_size (en prévision du Bug 7)
-        # Note: cette partie était correcte, le bug était dans l'appel ci-dessous
-        pip_size = config['risk']['pip_sizes'].get(symbol, config['risk']['default_pip_size'])
-        sl_pips = abs(entry_price - sl_price) / pip_size 
-
-        # --- CORRECTION (Bug 7) ---
-        # La fonction attend le PRIX du SL (sl_price), pas la distance (sl_pips)
+        # Appel corrigé pour le calcul de risque
         lot_size = risk_manager.calculate_lot_size(
             config['risk']['risk_percent'],
-            sl_price, # <-- CORRECTION (Bug 7)
+            sl_price, # Appel correct (envoi du prix SL)
             symbol=symbol
         )
-        # --- FIN CORRECTION (Bug 7) ---
         
         if lot_size is None or lot_size <= 0:
             log_to_api(f"[{symbol}] Signal ignoré: Volume 0.")
@@ -377,7 +345,8 @@ class Kasperbot:
         # C. Journalisation
         if trade_id:
             entry_price_filled = mt5_executor.get_last_entry_price(trade_id)
-            if entry_price_filled is None: entry_price_filled = entry_price
+            if entry_price_filled is None: 
+                entry_price_filled = entry_price_fallback
                 
             log_to_api(f"TRADE EXÉCUTÉ [{symbol}]: {signal} {lot_size} lots. ID: {trade_id}")
             
@@ -439,11 +408,10 @@ if __name__ == "__main__":
         start_api_server_thread(config)
         
         # Démarrer le Bot
-        # (Nous n'initialisons plus ici, le thread du bot le fait)
         bot_thread = threading.Thread(target=run_bot_thread, args=(config,), daemon=True)
         bot_thread.start()
         
-        # Boucle principale pour garder le programme en vie (remplace Tkinter)
+        # Boucle principale pour garder le programme en vie
         try:
             while bot_thread.is_alive():
                 bot_thread.join(timeout=1.0)

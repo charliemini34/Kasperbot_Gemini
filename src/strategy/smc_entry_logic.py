@@ -2,10 +2,12 @@
 """
 Module de Stratégie SMC (Smart Money Concepts).
 
-Version: 1.3.1 (Correction KeyError: 'pip_size' devient un argument)
+Contient la logique de détection pour les Modèles M1, M2 et M3.
+
+Version: 2.0
 """
 
-__version__ = "1.3.1"
+__version__ = "2.0"
 
 import logging
 import pandas as pd
@@ -18,7 +20,7 @@ from src.patterns import pattern_detector as patterns
 
 logger = logging.getLogger(__name__)
 
-# --- Fonction v1.0.1 (Conservée) ---
+# --- Logique de base SMC (Fibonacci) ---
 def _get_fibonacci_zones(start_price: float, end_price: float) -> Optional[Dict[str, float]]:
     """
     Calcule les niveaux clés de Fibonacci (Discount, Premium, OTE) pour un swing.
@@ -58,10 +60,8 @@ def _get_fibonacci_zones(start_price: float, end_price: float) -> Optional[Dict[
         zones['ote_zone_top'], zones['ote_zone_bottom'] = zones['ote_zone_bottom'], zones['ote_zone_top']
 
     return zones
-# --- Fin Fonction v1.0.1 ---
 
 
-# --- Fonction v1.1.0 (Conservée) ---
 def _find_valid_htf_pois(data: pd.DataFrame, swings_high: list, swings_low: list, trend: str) -> List[Dict[str, Any]]:
     """
     Trouve les POI HTF (OBs, FVGs) qui sont valides pour un setup.
@@ -123,10 +123,9 @@ def _find_valid_htf_pois(data: pd.DataFrame, swings_high: list, swings_low: list
                 
     logger.info(f"Trouvé {len(valid_pois)} POIs HTF valides dans la zone {target_zone}.")
     return valid_pois
-# --- Fin Fonction v1.1.0 ---
 
 
-# --- MODÈLE 1 (Conservé) v1.2.0 ---
+# --- MODÈLE 1 ---
 def _check_model_1_confirmation(
     htf_trend: str, 
     htf_data: pd.DataFrame, 
@@ -192,10 +191,9 @@ def _check_model_1_confirmation(
             
     logger.debug("[M1] Aucune confirmation LTF CHOCH trouvée pour le moment.")
     return None, None, None, None
-# --- Fin Modèle 1 ---
 
 
-# --- MODÈLE 2 (MODIFIÉ) v1.3.1 ---
+# --- MODÈLE 2 ---
 def _check_model_2_inducement(
     htf_trend: str, 
     ltf_data: pd.DataFrame, 
@@ -205,18 +203,12 @@ def _check_model_2_inducement(
     current_low: float,
     current_high: float,
     config: dict,
-    pip_size: float # <-- MODIFICATION v1.3.1: Ajout de l'argument
+    pip_size: float # Argument requis
 ) -> Tuple[Optional[str], Optional[str], Optional[float], Optional[float]]:
     """
     Vérifie le "Modèle 2: Inducement (Sweep) + Confirmation CHOCH".
     """
     strategy_params = config['strategy']
-    
-    # --- CORRECTION v1.3.1 (KeyError: 'trading') ---
-    # pip_size est maintenant passé en argument
-    # LIGNE SUPPRIMÉE: pip_size = config['risk']['pip_size']
-    # --- FIN CORRECTION ---
-    
     
     # --- Étape 1 (M2): Détecter la liquidité LTF (EQL / Session Low) ---
     ltf_liquidity_zones = []
@@ -301,11 +293,10 @@ def _check_model_2_inducement(
                 return "SELL", reason, sl_price, tp_price
 
     return None, None, None, None
-# --- Fin Modèle 2 ---
 
 
-# --- ORCHESTRATEUR (MODIFIÉ) v1.3.1 ---
-def check_all_smc_signals(mtf_data: dict, config: dict, pip_size: float): # <-- MODIFICATION v1.3.1: Ajout de pip_size
+# --- ORCHESTRATEUR DE SIGNAUX (M1 & M2) ---
+def check_all_smc_signals(mtf_data: dict, config: dict, pip_size: float): 
     """
     Orchestre la vérification de tous les modèles de signaux SMC (M1, M2).
     Elle appelle chaque modèle en séquence jusqu'à ce qu'un signal soit trouvé.
@@ -330,7 +321,7 @@ def check_all_smc_signals(mtf_data: dict, config: dict, pip_size: float): # <-- 
         
         # --- Étape 2: Analyse HTF (Commune à tous les modèles) ---
         htf_swings_high, htf_swings_low = structure.find_swing_highs_lows(
-            htf_data, order=strategy_params.get('htf_swing_order', 10) # Ajout de .get() pour la robustesse
+            htf_data, order=strategy_params.get('htf_swing_order', 10) 
         )
         _htf_events, htf_trend = structure.identify_structure(htf_swings_high, htf_swings_low)
         
@@ -342,7 +333,7 @@ def check_all_smc_signals(mtf_data: dict, config: dict, pip_size: float): # <-- 
 
         # --- Étape 3: Analyse LTF (Commune à tous les modèles) ---
         ltf_swings_high, ltf_swings_low = structure.find_swing_highs_lows(
-            ltf_data, order=strategy_params.get('ltf_swing_order', 5) # Ajout de .get() pour la robustesse
+            ltf_data, order=strategy_params.get('ltf_swing_order', 5) 
         )
         ltf_events, ltf_trend = structure.identify_structure(ltf_swings_high, ltf_swings_low)
 
@@ -364,43 +355,35 @@ def check_all_smc_signals(mtf_data: dict, config: dict, pip_size: float): # <-- 
         signal_m2 = _check_model_2_inducement(
             htf_trend, ltf_data, ltf_events, ltf_swings_high, ltf_swings_low,
             current_low, current_high, config,
-            pip_size # <-- MODIFICATION v1.3.1: Passage de l'argument
+            pip_size # Passage de l'argument
         )
         if signal_m2[0]:
             return signal_m2 # Signal trouvé !
 
     except Exception as e:
-        logger.error(f"Erreur majeure dans l'orchestrateur de signaux (v1.3.1): {e}", exc_info=True)
+        logger.error(f"Erreur majeure dans l'orchestrateur de signaux: {e}", exc_info=True)
         return None, None, None, None
     
     # Si aucun modèle n'a trouvé de signal
     logger.debug("Aucun modèle SMC (M1/M2) n'a trouvé de signal valide pour le moment.")
     return None, None, None, None
-# --- Fin de la Logique v1.3.1 ---
 
 
-# --- MODÈLE 3 (MODIFIÉ) v1.3.1 ---
+# --- MODÈLE 3 ---
 def check_model_3_opening_range(
     opening_range_data: pd.DataFrame,
     entry_tf_data: pd.DataFrame,
     config: dict,
     opening_range_tf_str: str,
     entry_tf_str: str,
-    pip_size: float # <-- MODIFICATION v1.3.1: Ajout de l'argument
+    pip_size: float # Argument requis
 ) -> Tuple[Optional[str], Optional[str], Optional[float], Optional[float]]:
     """
     Vérifie le "Modèle 3: Opening Range Breakout" (ex: M30/M5 ou M5/M1)
-    Basé sur les vidéos 7M9Dv9dZQNM et WxaeF8l5_2M.
     """
     
     try:
         strategy_params = config['strategy']
-        
-        # --- CORRECTION v1.3.1 (KeyError: 'trading') ---
-        # pip_size est maintenant passé en argument
-        # LIGNE SUPPRIMÉE: pip_size = config['risk']['pip_size']
-        # --- FIN CORRECTION ---
-        
         model_3_rr = strategy_params.get('model_3_rr', 2.0)
         
         if opening_range_data.empty or entry_tf_data.empty:
@@ -478,4 +461,3 @@ def check_model_3_opening_range(
 
     logger.debug("[M3] Aucune condition de breakout valide trouvée.")
     return None, None, None, None
-# --- Fin Modèle 3 ---

@@ -1,9 +1,9 @@
-
 """
 Fichier: src/shared_state.py
-Version: SMC (Compatible API v13)
+Version: 2.0
 
-État partagé global pour le bot, accessible par tous les threads.
+État partagé global pour le bot, accessible par tous les threads
+(API Flask, Boucle principale du bot).
 """
 
 import threading
@@ -29,7 +29,6 @@ def stop_bot():
         _BOT_RUNNING = False
     set_status("STOPPED", "Bot stopped by user.")
 
-# --- AJOUTÉ POUR CORRIGER L'ERREUR DE L'API ---
 def set_config(config_data):
     """Met à jour la configuration globale."""
     global _CONFIG
@@ -41,7 +40,6 @@ def get_config():
     with _lock:
         # Renvoyer une copie pour éviter les modifications concurrentes
         return copy.deepcopy(_CONFIG)
-# --- FIN DE L'AJOUT ---
 
 def set_status(status, message):
     """Met à jour le statut du bot pour l'API."""

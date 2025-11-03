@@ -1,22 +1,23 @@
 # Fichier: src/constants.py
-# Version: 1.2.0 (Sugg 4.2)
-# MODIFIÉ: Ajout des constantes d'exécution MT5
-# MODIFICATION : Ajout de la constante manquante pour l'interface
+# Version: 2.0
+#
+# Définit les constantes globales utilisées à travers l'application.
 
 import logging
 
 # Niveaux de logging
 LOG_LEVEL = logging.INFO
 MAX_LOG_ENTRIES = 200
-# --- Noms des Patterns ---
+
+# --- Noms des Patterns SMC ---
 PATTERN_ORDER_BLOCK = "ORDER_BLOCK"
 PATTERN_INBALANCE = "INBALANCE" # FVG (Fair Value Gap)
 PATTERN_LIQUIDITY_GRAB = "LIQUIDITY_GRAB"
 PATTERN_AMD = "SMC_AMD_SESSION"
 
-# --- (Sugg 4.2) Terminologie Structurelle ---
-PATTERN_BOS = "BREAK_OF_STRUCTURE" # Continuation (Anciennement CHOCH dans le code)
-PATTERN_CHOCH = "CHANGE_OF_CHARACTER" # Renversement (Nouveau)
+# --- Terminologie Structurelle ---
+PATTERN_BOS = "BREAK_OF_STRUCTURE" # Continuation
+PATTERN_CHOCH = "CHANGE_OF_CHARACTER" # Renversement
 
 # --- Directions de Trade (Analyse) ---
 BUY = "BUY"
@@ -26,7 +27,6 @@ NEUTRAL = "NEUTRAL"
 # Constante pour les zones Premium/Discount (SMC)
 PREMIUM_THRESHOLD = 0.5
 
-# ### MODIFICATION ICI ###
 # --- Types d'Ordres MT5 (Exécution) ---
 # Nous importons MetaTrader5 ici pour obtenir les valeurs numériques officielles
 # et les stocker dans nos constantes.
@@ -52,4 +52,3 @@ except ImportError:
     ORDER_TYPE_SELL_LIMIT = 3
     ORDER_TYPE_BUY_STOP = 4
     ORDER_TYPE_SELL_STOP = 5
-# ### FIN MODIFICATION ###

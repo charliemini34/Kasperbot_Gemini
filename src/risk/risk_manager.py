@@ -1,6 +1,8 @@
-
 """
-Module pour la gestion des risques (Version compatible SMC procédurale).
+Fichier: src/risk/risk_manager.py
+Version: 2.0
+
+Module pour la gestion des risques.
 
 Ce module fournit des fonctions pour :
 - Initialiser le module avec une connexion MT5.
@@ -12,13 +14,12 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# Variable globale pour stocker la connexion MT5 (simplifié)
+# Variable globale pour stocker la connexion MT5
 _mt5_connector = None
 
 def initialize_risk_manager(connector):
     """
     Initialise le gestionnaire de risques avec le connecteur MT5.
-    (C'est la fonction que main.py essaye d'appeler)
     """
     global _mt5_connector
     _mt5_connector = connector
@@ -63,18 +64,15 @@ def get_symbol_tick(symbol):
 
 def calculate_lot_size(risk_percent, sl_price, symbol=None):
     """
-    Calcule la taille de lot en fonction du risque en pourcentage et du SL.
-    (C'est la fonction que main.py essaye d'appeler)
+    Calcule la taille de lot en fonction du risque en pourcentage et du SL (prix).
     """
     if not _mt5_connector:
         logger.error("Impossible de calculer le lot : Risk Manager non initialisé.")
         return None
     
     if symbol is None:
-        # Si aucun symbole n'est fourni, essayez de le deviner (mauvaise pratique, mais pour la compatibilité)
-        # Dans un vrai scénario, main.py devrait le fournir.
-        logger.warning("Calcul de lot sans symbole explicite. (Ceci devrait être corrigé)")
-        return None # Correction : Nous devons savoir le symbole.
+        logger.warning("Calcul de lot sans symbole explicite. Le calcul est impossible.")
+        return None
         
     # --- Récupération des informations ---
     account_balance = get_account_balance()

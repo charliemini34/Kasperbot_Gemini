@@ -1,13 +1,14 @@
 """
+Fichier: src/analysis/market_structure.py
 Module pour l'analyse de la structure de marché (SMC).
 
 Ce module contient les fonctions nécessaires pour identifier les points pivots (swing highs/lows)
 et pour détecter la structure du marché (BOS, CHOCH) basée sur ces points.
 
-Version: 1.0.1
+Version: 2.0
 """
 
-__version__ = "1.0.1"
+__version__ = "2.0"
 
 import pandas as pd
 import numpy as np
@@ -29,18 +30,17 @@ def find_swing_highs_lows(data: pd.DataFrame, order: int = 5):
                Chaque élément dans les listes est un tuple (index, prix).
     """
     
-    # --- Ajout Robustesse v1.0.1 ---
+    # Ajout Robustesse:
     # Vérifie si les données sont suffisantes pour l'analyse, évite un crash de scipy
     if len(data) < (2 * order + 1):
         # Pas assez de données pour trouver des extrema avec l'ordre donné
         return [], []
-    # --- Fin Ajout ---
 
     # Utilise scipy pour trouver les indices des extrema locaux
     high_indices = argrelextrema(data['high'].values, np.greater_equal, order=order)[0]
     low_indices = argrelextrema(data['low'].values, np.less_equal, order=order)[0]
 
-    # --- Commentaire de Validation (v1.0.1) ---
+    # --- Commentaire de Validation ---
     # Le filtre ci-dessous est crucial pour une stratégie non-repainting.
     # 'i >= order' : Assure qu'on a 'order' bougies *avant* le point.
     # 'i < len(data) - order' : Assure qu'on a 'order' bougies *après* le point.

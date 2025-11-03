@@ -1,6 +1,8 @@
-
 """
-Module pour l'exécution des ordres MT5 (Version compatible SMC procédurale).
+Fichier: src/execution/mt5_executor.py
+Version: 2.0.1
+
+Module pour l'exécution des ordres MT5.
 
 Ce module gère :
 - L'initialisation avec la connexion MT5.
@@ -13,13 +15,12 @@ import time
 
 logger = logging.getLogger(__name__)
 
-# Variable globale pour stocker la connexion MT5 (simplifié)
+# Variable globale pour stocker la connexion MT5
 _mt5_connector = None
 
 def initialize_executor(connector):
     """
     Initialise l'exécuteur d'ordres avec le connecteur MT5.
-    (C'est la fonction que main.py essaye d'appeler)
     """
     global _mt5_connector
     _mt5_connector = connector
@@ -28,7 +29,10 @@ def initialize_executor(connector):
     else:
         logger.error("Échec de l'initialisation de l'Executor : connecteur non valide.")
 
-def place_order(symbol, order_type, volume, sl_price, tp_price):
+# --- MODIFICATION (Version 2.0.1) ---
+# Ajout de l'argument 'comment' pour qu'il soit accepté depuis main.py
+def place_order(symbol, order_type, volume, sl_price, tp_price, comment="Kasperbot SMC Entry"):
+# --- FIN MODIFICATION ---
     """
     Place un ordre de marché (BUY ou SELL) avec SL et TP.
     """
@@ -61,7 +65,12 @@ def place_order(symbol, order_type, volume, sl_price, tp_price):
         "tp": tp,
         "deviation": 20, # 20 points de déviation max
         "magic": 13579, # (Devrait être dans config)
-        "comment": "Kasperbot SMC Entry",
+        
+        # --- MODIFICATION (Version 2.0.1) ---
+        # Utilise le commentaire dynamique passé en argument
+        "comment": comment,
+        # --- FIN MODIFICATION ---
+        
         "type_time": mt5.ORDER_TIME_GTC,
         "type_filling": mt5.ORDER_FILLING_IOC, # ou FOK
     }

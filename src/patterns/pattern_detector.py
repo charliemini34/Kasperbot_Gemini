@@ -3,22 +3,22 @@
 Module pour la détection des patterns SMC (Fair Value Gaps, Order Blocks)
 et des zones de liquidité (EQH/EQL, Session Ranges).
 
-Version: 1.1.1 (Correction AttributeError en supprimant la détection FVG vectorisée)
+Version: 2.0
 """
 
-__version__ = "1.1.1"
+__version__ = "2.0"
 
 import pandas as pd
 import numpy as np
 from typing import List, Dict, Any, Optional
 from datetime import time, datetime
 import pytz
-import logging # Ajout d'un logger
+import logging 
 
 # Ajout d'un logger pour ce module
 logger = logging.getLogger(__name__)
 
-# --- FONCTIONS DE LIQUIDITÉ (v1.0.1) ---
+# --- FONCTIONS DE LIQUIDITÉ ---
 
 def find_equal_highs_lows(data: pd.DataFrame, lookback: int = 20, tolerance_pips: float = 5.0, pip_size: float = 0.0001) -> Dict[str, List[Dict[str, Any]]]:
     """
@@ -110,19 +110,13 @@ def find_session_range(data: pd.DataFrame,
     }
 
 
-# --- CODE ORIGINAL (MODIFIÉ v1.1.1) ---
+# --- DÉTECTION FVG / OB ---
 
 def find_fvgs(data: pd.DataFrame):
     """
     Identifie les Fair Value Gaps (FVG) / Imbalances dans les données.
     (Version itérative robuste)
     """
-    
-    # --- SUPPRESSION v1.1.1 ---
-    # Suppression de l'implémentation vectorisée (lignes 177-228 approx.)
-    # qui contenait le bug "AttributeError: 'Timestamp' object has no attribute 'shift'".
-    # --- FIN SUPPRESSION ---
-            
     fvgs = [] 
     
     for i in range(1, len(data) - 1):

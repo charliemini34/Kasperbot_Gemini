@@ -5,25 +5,23 @@ Module pour la connexion et l'extraction de données depuis MetaTrader 5.
 Ce module gère la connexion, la déconnexion, et la récupération
 des données de marché (bougies) ainsi que la vérification des positions ouvertes.
 
-Version: 1.1.0 (Correction ImportError et ajout de get_mt5_timeframe)
+Version: 2.0
 """
 
-__version__ = "1.1.0"
+__version__ = "2.0"
 
 import MetaTrader5 as mt5
 import pandas as pd
 from datetime import datetime
 import time
 import logging
-from typing import Dict, Optional, Any # Ajout pour propreté
+from typing import Dict, Optional, Any 
 
 # Configuration du logging
-# (Supposé géré par main.py, mais ajout d'un logger local)
 logger = logging.getLogger(__name__)
 
-# --- AJOUT v1.1.0 ---
 # Définition de TIMEFRAME_MAP au niveau du module
-# Cela corrige l'ImportError et centralise la logique.
+# Centralise la conversion des chaînes de timeframe
 TIMEFRAME_MAP = {
     "M1": mt5.TIMEFRAME_M1,
     "M5": mt5.TIMEFRAME_M5,
@@ -35,7 +33,6 @@ TIMEFRAME_MAP = {
     "W1": mt5.TIMEFRAME_W1,
     "MN1": mt5.TIMEFRAME_MN1
 }
-# --- FIN AJOUT v1.1.0 ---
 
 
 def connect(login, password, server):
@@ -117,7 +114,6 @@ def get_data(symbol, timeframe, num_candles):
         logger.error(f"Exception lors de la récupération des données pour {symbol}: {e}")
         return None
 
-# --- FONCTION MODIFIÉE v1.1.0 ---
 def get_mtf_data(symbol: str, timeframes_config: dict):
     """
     Récupère les données de marché pour plusieurs timeframes en un seul appel.
@@ -133,9 +129,6 @@ def get_mtf_data(symbol: str, timeframes_config: dict):
               les valeurs sont les DataFrames de données.
               Ex: {'H4': pd.DataFrame(...), 'M15': pd.DataFrame(...)}
     """
-    # Dictionnaire de mapping (MAINTENANT GLOBAL)
-    # (Supprimé d'ici car défini au niveau du module)
-
     mtf_data = {}
     logger.info(f"Récupération des données multi-timeframe pour {symbol}...")
 
@@ -165,7 +158,6 @@ def get_mtf_data(symbol: str, timeframes_config: dict):
             mtf_data[tf_str] = None # Important de le mettre à None
 
     return mtf_data
-# --- FIN DE LA FONCTION MODIFIÉE ---
 
 def check_open_positions(symbol):
     """
@@ -185,7 +177,6 @@ def check_open_positions(symbol):
     
     return len(positions)
 
-# --- NOUVELLE FONCTION v1.1.0 (Corrige l'AttributeError) ---
 def get_mt5_timeframe(timeframe_str: str) -> Optional[int]:
     """
     Convertit une chaîne de caractères (ex: "H4") en constante MT5 (ex: mt5.TIMEFRAME_H4).
@@ -202,4 +193,3 @@ def get_mt5_timeframe(timeframe_str: str) -> Optional[int]:
     else:
         logger.error(f"Timeframe '{timeframe_str}' non reconnue dans TIMEFRAME_MAP.")
         return None
-# --- FIN NOUVELLE FONCTION ---

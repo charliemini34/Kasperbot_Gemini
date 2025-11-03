@@ -1,11 +1,17 @@
+# Fichier: config.yaml
+# Version: 2.0
+#
+# Fichier de configuration principal pour Kasperbot.
+# Modifiez ces valeurs pour ajuster la connexion, 
+# la stratégie et la gestion des risques.
+# ----------------------------------------------------
+
 mt5:
     login: 10008432
     password: "jsne80aX!"
     server: "Axi-US50-Demo"
     
-    
-    # --- CORRECTION ---
-    # Nous utilisons maintenant une liste, comme votre version originale
+    # Liste des symboles à surveiller par le bot
     symbols: 
       - "XAUUSD"
       - "XAGUSD"
@@ -17,38 +23,34 @@ mt5:
       - "USOIL" 
       - "BTCUSD"
       - "ETHUSD"
-    # --- FIN CORRECTION ---
 
-    # Le trade_volume sera calculé dynamiquement par le risk_manager.
-    # Cette valeur sert de fallback si le risk_manager est désactivé.
+    # Volume par défaut (utilisé en fallback si le risk_manager échoue)
     trade_volume: 0.01
 
 strategy:
-    # On active notre nouvelle stratégie SMC
+    # Nom de la stratégie (informatif)
     name: "SMC_OTE"
     
     # Configuration pour l'analyse multi-timeframe
-    # Le bot récupérera les données pour toutes les timeframes listées ici.
+    # Le bot récupère ce nombre de bougies pour chaque timeframe
     timeframes_config:
-        "H4": 200  # Tendance de fond (HTF) - 200 bougies
-        "M15": 300 # Structure de retracement (LTF) - 300 bougies
-        # "M1": 100 # (Vous pouvez l'ajouter plus tard pour des confirmations M1)
+        "H4": 200  # Tendance de fond (HTF)
+        "M15": 300 # Structure de retracement (LTF)
     
-    # Indique à la stratégie quelles timeframes utiliser pour quelle analyse
+    # Timeframes utilisées pour l'analyse SMC
     htf_timeframe: "H4"  # Timeframe pour la tendance (Bias)
     ltf_timeframe: "M15" # Timeframe pour les entrées (POI, OTE)
     
     # Paramètres pour la détection de structure (find_swing_highs_lows)
-    htf_swing_order: 10 # 10 bougies de chaque côté pour un swing H4
-    ltf_swing_order: 5  # 5 bougies de chaque côté pour un swing M15
+    htf_swing_order: 10 # Nbr de bougies de chaque côté pour un swing HTF
+    ltf_swing_order: 5  # Nbr de bougies de chaque côté pour un swing LTF
 
 risk:
-    # 1.0 signifie que le bot risquera 1% du capital de votre compte par trade.
+    # Risque en pourcentage du capital par trade
     risk_percent: 1.0
     
-    # --- AJOUT (Correction Bug 6) ---
-    # Définit la taille d'un pip pour chaque symbole
-    # (Utilisé pour calculer la distance SL en pips)
+    # Définition de la taille d'un pip pour chaque symbole
+    # (Crucial pour le calcul de la taille de lot)
     default_pip_size: 0.0001 # Pour les paires FX par défaut
     pip_sizes:
         "XAUUSD": 0.01
@@ -61,19 +63,19 @@ risk:
         "USOIL": 0.01
         "BTCUSD": 0.01
         "ETHUSD": 0.01
-    # --- FIN AJOUT ---
 
 logging:
-    level: "INFO" # DEBUG, INFO, WARNING, ERROR
+    # Niveau de détail des logs: DEBUG, INFO, WARNING, ERROR
+    level: "INFO" 
 
 api:
+    # Activer/Désactiver le dashboard web
     enabled: true
     port: 5000
 
-# --- AJOUT (Correction Bug 3) ---
 journal:
+    # Fichier CSV où les trades seront enregistrés
     filepath: "logs/kasperbot_journal.csv"
-# --- FIN AJOUT ---
 
-# Intervalle en secondes entre chaque vérification du bot
+# Intervalle en secondes entre chaque cycle d'analyse
 check_interval: 60

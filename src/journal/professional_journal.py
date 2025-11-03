@@ -5,10 +5,10 @@ Module pour la gestion du journal de trading professionnel.
 Ce module gère la création et l'écriture des enregistrements de trades
 dans un fichier CSV structuré pour une analyse ultérieure.
 
-Version: 1.1.0
+Version: 2.0
 """
 
-__version__ = "1.1.0"
+__version__ = "2.0"
 
 import logging
 import csv
@@ -26,13 +26,11 @@ class ProfessionalJournal:
     def __init__(self, filepath: str):
         self.filepath = filepath
         
-        # --- MODIFICATION v1.1.0: Ajout de 'setup_model' ---
         self.csv_headers = [
             'timestamp', 'symbol', 'type', 'volume', 'entry_price', 'sl', 'tp',
             'reason', 'setup_model', 'position_id', 'status', 
             'close_price', 'close_time', 'profit'
         ]
-        # --- FIN MODIFICATION ---
         
         self._initialize_file()
 
@@ -54,7 +52,6 @@ class ProfessionalJournal:
                         if existing_headers != self.csv_headers:
                             logger.warning(f"Les en-têtes du journal {self.filepath} sont obsolètes. Une sauvegarde de l'ancien fichier sera créée si possible.")
                             # Idéalement, gérer une migration, mais pour l'instant on signale
-                            # On pourrait renommer l'ancien et en créer un nouveau
                     except StopIteration:
                         needs_header = True # Fichier vide
             
@@ -82,7 +79,6 @@ class ProfessionalJournal:
             with open(self.filepath, 'a', newline='', encoding='utf-8') as f:
                 writer = csv.writer(f)
                 
-                # --- MODIFICATION v1.1.0: Ajout de 'setup_model' ---
                 writer.writerow([
                     trade_info.get('timestamp', datetime.now().isoformat()),
                     trade_info.get('symbol', 'N/A'),
@@ -99,7 +95,6 @@ class ProfessionalJournal:
                     trade_info.get('close_time', None),
                     trade_info.get('profit', None)
                 ])
-                # --- FIN MODIFICATION ---
                 
         except IOError as e:
             logger.error(f"Erreur lors de l'écriture dans le fichier journal: {e}", exc_info=True)
@@ -115,7 +110,7 @@ class ProfessionalJournal:
         une base de données (ex: SQLite) ou de gérer les clôtures différemment.
         """
         # Implémentation simpliste pour l'instant
-        logger.info(f"Mise à jour de la clôture du trade {position_id} (Non implémenté dans v1.0.0)")
+        logger.info(f"Mise à jour de la clôture du trade {position_id} (Non implémenté dans v2.0)")
         # TODO: Implémenter la mise à jour du CSV, ce qui est complexe.
         # Pour l'instant, le journal enregistre surtout l'ouverture.
         # L'analyse de performance devra se baser sur l'historique MT5 via l'ID.
