@@ -3,10 +3,10 @@
 Kasperbot - Bot de Trading MT5
 Fichier principal pour l'exécution du bot.
 
-Version: 2.0.2
+Version: 2.0.3
 """
 
-__version__ = "2.0.2"
+__version__ = "2.0.3"
 
 import sys
 import os
@@ -80,7 +80,7 @@ class Kasperbot:
     Classe principale du bot.
     Gère la boucle d'analyse et la logique de trading.
     """
-    __version__ = "2.0" # Version de l'orchestrateur
+    __version__ = "2.0.3" # Version de l'orchestrateur
     
     def __init__(self, config):
         self.config = config
@@ -334,9 +334,15 @@ class Kasperbot:
 
         # B. Exécution de l'ordre
 
-        # --- MODIFICATION (Version 2.0.2) ---
-        # Préparer le commentaire et le tronquer à 31 caractères max pour MT5
-        trade_comment = f"[{model_id}] {reason}"[:31]
+        # --- MODIFICATION (Version 2.0.3) ---
+        # Préparer le commentaire pour MT5 :
+        # 1. Garder uniquement les caractères alphanumériques et les espaces
+        # 2. Remplacer les espaces multiples par un seul
+        # 3. Tronquer à 31 caractères
+        raw_comment = f"[{model_id}] {reason}"
+        safe_comment = re.sub(r'[^a-zA-Z0-9 ]', '', raw_comment) # Garde lettres, chiffres, espaces
+        safe_comment = re.sub(r'\s+', ' ', safe_comment).strip() # Remplace espaces multiples
+        trade_comment = safe_comment[:31] # Tronque
         # --- FIN MODIFICATION ---
 
         trade_id = mt5_executor.place_order(
@@ -345,7 +351,7 @@ class Kasperbot:
             volume=lot_size,
             sl_price=sl_price,
             tp_price=tp_price,
-            comment=trade_comment # Utilise le commentaire tronqué
+            comment=trade_comment # Utilise le commentaire nettoyé et tronqué
         )
         
         # C. Journalisation

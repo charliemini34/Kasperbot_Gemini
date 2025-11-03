@@ -1,6 +1,6 @@
 """
 Fichier: src/execution/mt5_executor.py
-Version: 2.0.1
+Version: 2.0.3
 
 Module pour l'exécution des ordres MT5.
 
@@ -29,10 +29,8 @@ def initialize_executor(connector):
     else:
         logger.error("Échec de l'initialisation de l'Executor : connecteur non valide.")
 
-# --- MODIFICATION (Correction de l'erreur TypeError) ---
-# Ajout de l'argument 'comment' pour qu'il soit accepté depuis main.py
+
 def place_order(symbol, order_type, volume, sl_price, tp_price, comment="Kasperbot SMC Entry"):
-# --- FIN MODIFICATION ---
     """
     Place un ordre de marché (BUY ou SELL) avec SL et TP.
     """
@@ -55,6 +53,17 @@ def place_order(symbol, order_type, volume, sl_price, tp_price, comment="Kasperb
     sl = float(sl_price) if sl_price is not None and sl_price > 0 else 0.0
     tp = float(tp_price) if tp_price is not None and tp_price > 0 else 0.0
 
+    # --- MODIFICATION (Version 2.0.3) ---
+    # Conversion forcée du commentaire en 'bytes' (ascii)
+    # C'est la cause la plus probable de l'erreur MT5 (-2)
+    try:
+        # 'b' préfixe la chaîne pour la convertir en bytes
+        comment_bytes = comment.encode('ascii')
+    except UnicodeEncodeError:
+        # Au cas où, si le nettoyage de main.py a échoué
+        comment_bytes = b"Kasperbot Trade" 
+    # --- FIN MODIFICATION ---
+
     request = {
         "action": mt5.TRADE_ACTION_DEAL,
         "symbol": symbol,
@@ -66,8 +75,8 @@ def place_order(symbol, order_type, volume, sl_price, tp_price, comment="Kasperb
         "deviation": 20, # 20 points de déviation max
         "magic": 13579, # (Devrait être dans config)
         
-        # --- MODIFICATION (Utilise le 'comment' reçu) ---
-        "comment": comment,
+        # --- MODIFICATION (Version 2.0.3) ---
+        "comment": comment_bytes, # Envoi des bytes au lieu d'un string
         # --- FIN MODIFICATION ---
         
         "type_time": mt5.ORDER_TIME_GTC,
