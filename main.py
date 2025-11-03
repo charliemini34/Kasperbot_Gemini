@@ -3,10 +3,10 @@
 Kasperbot - Bot de Trading MT5
 Fichier principal pour l'exécution du bot.
 
-Version: 2.0
+Version: 2.0.2
 """
 
-__version__ = "2.0"
+__version__ = "2.0.2"
 
 import sys
 import os
@@ -333,13 +333,19 @@ class Kasperbot:
         logger.info(f"Taille de lot calculée ({symbol}) : {lot_size} (pour {config['risk']['risk_percent']}% de risque)")
 
         # B. Exécution de l'ordre
+
+        # --- MODIFICATION (Version 2.0.2) ---
+        # Préparer le commentaire et le tronquer à 31 caractères max pour MT5
+        trade_comment = f"[{model_id}] {reason}"[:31]
+        # --- FIN MODIFICATION ---
+
         trade_id = mt5_executor.place_order(
             symbol=symbol,
             order_type=signal,
             volume=lot_size,
             sl_price=sl_price,
             tp_price=tp_price,
-            comment=f"[{model_id}] {reason}"
+            comment=trade_comment # Utilise le commentaire tronqué
         )
         
         # C. Journalisation
@@ -350,6 +356,7 @@ class Kasperbot:
                 
             log_to_api(f"TRADE EXÉCUTÉ [{symbol}]: {signal} {lot_size} lots. ID: {trade_id}")
             
+            # Log la raison complète dans le journal (pas de limite de taille ici)
             journal.log_trade(
                 timestamp=time.strftime('%Y-%m-%d %H:%M:%S'),
                 symbol=symbol,
@@ -358,7 +365,7 @@ class Kasperbot:
                 entry_price=entry_price_filled,
                 sl_price=sl_price,
                 tp_price=tp_price,
-                reason=reason,
+                reason=reason, # <-- Utilise la raison complète
                 setup_model=model_id,
                 status="OPEN",
                 position_id=trade_id

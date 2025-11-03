@@ -29,7 +29,7 @@ def initialize_executor(connector):
     else:
         logger.error("Échec de l'initialisation de l'Executor : connecteur non valide.")
 
-# --- MODIFICATION (Version 2.0.1) ---
+# --- MODIFICATION (Correction de l'erreur TypeError) ---
 # Ajout de l'argument 'comment' pour qu'il soit accepté depuis main.py
 def place_order(symbol, order_type, volume, sl_price, tp_price, comment="Kasperbot SMC Entry"):
 # --- FIN MODIFICATION ---
@@ -66,8 +66,7 @@ def place_order(symbol, order_type, volume, sl_price, tp_price, comment="Kasperb
         "deviation": 20, # 20 points de déviation max
         "magic": 13579, # (Devrait être dans config)
         
-        # --- MODIFICATION (Version 2.0.1) ---
-        # Utilise le commentaire dynamique passé en argument
+        # --- MODIFICATION (Utilise le 'comment' reçu) ---
         "comment": comment,
         # --- FIN MODIFICATION ---
         
