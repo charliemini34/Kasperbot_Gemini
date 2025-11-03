@@ -3,10 +3,10 @@
 Kasperbot - Bot de Trading MT5
 Fichier principal pour l'exécution du bot.
 
-Version: 3.0.0
+Version: 2.0
 """
 
-__version__ = "3.0.0"
+__version__ = "2.0"
 
 import sys
 import os
@@ -29,8 +29,6 @@ from src import shared_state # Utilise l'état partagé de l'API
 
 # --- IMPORTS MODIFIÉS POUR LA STRATÉGIE SMC ---
 from src.strategy import smc_entry_logic as smc_strategy
-# --- AJOUT V3.0.0: Import du gestionnaire de trades ---
-from src.management import trade_manager
 # --- FIN DES IMPORTS MODIFIÉS ---
 
 # Configuration du logging
@@ -82,7 +80,7 @@ class Kasperbot:
     Classe principale du bot.
     Gère la boucle d'analyse et la logique de trading.
     """
-    __version__ = "3.0.0" # Version de l'orchestrateur
+    __version__ = "2.0" # Version de l'orchestrateur
     
     def __init__(self, config):
         self.config = config
@@ -120,21 +118,16 @@ class Kasperbot:
 
     def setup_model_3_config(self):
         """Configure les paramètres spécifiques au Modèle 3."""
-        # --- MODIFIÉ V2.1.0: Lecture depuis les nouvelles sections du config ---
         strategy_cfg = self.config['strategy']
-        models_cfg = strategy_cfg.get('models', {})
-        sessions_cfg = strategy_cfg.get('sessions', {})
-
-        self.model_3_enabled = models_cfg.get('model_3_enabled', False)
-        self.model_3_range_tf_str = models_cfg.get('model_3_range_tf', 'M30')
-        self.model_3_entry_tf_str = models_cfg.get('model_3_entry_tf', 'M5')
+        self.model_3_enabled = strategy_cfg.get('model_3_enabled', False)
+        self.model_3_range_tf_str = strategy_cfg.get('model_3_range_tf', 'M30')
+        self.model_3_entry_tf_str = strategy_cfg.get('model_3_entry_tf', 'M5')
         
         self.model_3_range_tf = mt5_connector.get_mt5_timeframe(self.model_3_range_tf_str)
         self.model_3_entry_tf = mt5_connector.get_mt5_timeframe(self.model_3_entry_tf_str)
         
-        self.model_3_trigger_time = datetime_time.fromisoformat(models_cfg.get('model_3_trigger_time', '15:30:00'))
-        self.trading_timezone_str = sessions_cfg.get('session_timezone', 'Etc/UTC')
-        # --- FIN MODIFICATION V2.1.0 ---
+        self.model_3_trigger_time = datetime_time.fromisoformat(strategy_cfg.get('model_3_trigger_time', '15:30:00'))
+        self.trading_timezone_str = strategy_cfg.get('session_timezone', 'Etc/UTC')
         
         try:
             self.trading_timezone = pytz.timezone(self.trading_timezone_str)
@@ -184,36 +177,17 @@ class Kasperbot:
     def check_symbol_logic(self, symbol, config):
         """
         Exécute la logique de trading complète pour UN SEUL symbole.
-        
-        --- MODIFIÉ V3.0.0 ---
-        - Vérifie d'abord les positions ouvertes pour les GÉRER (BE, TSL).
-        - Si AUCUNE position n'est ouverte, ALORS cherche un nouveau trade.
         """
         try:
-            # --- ÉTAPE 1: Gérer les trades existants (MODIFIÉ V3.0.0) ---
-            
-            # Récupérer la liste complète des positions
-            open_positions = mt5_connector.mt5.positions_get(symbol=symbol)
-            
-            if open_positions is None:
-                logger.warning(f"[{symbol}] Échec de la récupération des positions. Cycle sauté.")
-                return # Erreur MT5, on saute ce symbole
-            
-            if len(open_positions) > 0:
-                logger.info(f"[{symbol}] {len(open_positions)} position(s) ouverte(s), passage en mode gestion...")
-                for position in open_positions:
-                    # Convertir la position (namedtuple) en dictionnaire
-                    trade_manager.manage_open_position(position._asdict(), config)
-                
-                # TODO: Mettre à jour l'état partagé (API) avec les positions
-                return # Ne pas chercher de nouveaux trades pour ce symbole
-            
-            # --- FIN MODIFICATION V3.0.0 ---
+            # 1. Gérer les trades existants
+            open_positions = mt5_connector.check_open_positions(symbol)
+            if open_positions > 0:
+                logger.info(f"Position déjà ouverte pour {symbol}, attente...")
+                # TODO: Mettre à jour l'état partagé avec les positions
+                return
 
-            # --- ÉTAPE 2: Chercher de nouveaux trades (si aucune position) ---
-
-            # 2a. Vérifier Modèle 3 (Temporel)
-            signal_m3 = (None, None, None, None) # Attend 4 valeurs
+            # 2. Vérifier Modèle 3 (Temporel)
+            signal_m3 = (None, None, None, None)
             if self.model_3_enabled:
                 signal_m3 = self._run_model_3_analysis(symbol, config)
             
@@ -221,8 +195,8 @@ class Kasperbot:
                 if self._process_signal(symbol, *signal_m3, config):
                     return # Un trade a été pris
 
-            # 2b. Vérifier Modèles 1 & 2 (Continu)
-            signal_m1_m2 = (None, None, None, None) # Attend 4 valeurs
+            # 3. Vérifier Modèles 1 & 2 (Continu)
+            signal_m1_m2 = (None, None, None, None)
             signal_m1_m2 = self._run_models_1_and_2_analysis(symbol, config)
             
             if signal_m1_m2[0]:
@@ -255,8 +229,7 @@ class Kasperbot:
             # Récupérer le pip_size (nécessaire pour l'appel de fonction)
             pip_size = config['risk']['pip_sizes'].get(symbol, config['risk']['default_pip_size'])
 
-            # Appel de la fonction de stratégie (v2.3.0)
-            # smc_strategy.check_all_smc_signals retourne 4 valeurs
+            # Appel de la fonction de stratégie
             signal, reason, sl_price, tp_price = smc_strategy.check_all_smc_signals(
                 mtf_data_dict, 
                 config,
@@ -288,11 +261,8 @@ class Kasperbot:
             self.last_model_3_check_date[symbol] = current_time_local.date()
             
             try:
-                # --- MODIFIÉ V2.1.0: Lecture depuis 'models' ---
-                models_cfg = config['strategy'].get('models', {})
-                range_lookback = models_cfg.get('model_3_range_lookback', 10)
-                entry_lookback = models_cfg.get('model_3_entry_lookback', 50)
-                # --- FIN MODIFICATION V2.1.0 ---
+                range_lookback = config['strategy'].get('model_3_range_lookback', 10)
+                entry_lookback = config['strategy'].get('model_3_entry_lookback', 50)
                 
                 range_data = mt5_connector.get_data(symbol, self.model_3_range_tf, range_lookback)
                 entry_data = mt5_connector.get_data(symbol, self.model_3_entry_tf, entry_lookback)
@@ -304,8 +274,7 @@ class Kasperbot:
                 # Récupérer le pip_size (nécessaire pour l'appel de fonction)
                 pip_size = config['risk']['pip_sizes'].get(symbol, config['risk']['default_pip_size'])
 
-                # Appel de la fonction de stratégie (v2.3.0)
-                # smc_strategy.check_model_3_opening_range retourne 4 valeurs
+                # Appel de la fonction de stratégie
                 return smc_strategy.check_model_3_opening_range(
                     range_data,
                     entry_data,
@@ -350,14 +319,12 @@ class Kasperbot:
             return False
         entry_price_fallback = entry_data['close'].iloc[-1]
             
-        # --- MODIFIÉ V2.1.0: Appel corrigé pour le calcul de risque ---
+        # Appel corrigé pour le calcul de risque
         lot_size = risk_manager.calculate_lot_size(
             config['risk']['risk_percent'],
-            entry_price_fallback, # Ajout du prix d'entrée
-            sl_price, 
+            sl_price, # Appel correct (envoi du prix SL)
             symbol=symbol
         )
-        # --- FIN MODIFICATION V2.1.0 ---
         
         if lot_size is None or lot_size <= 0:
             log_to_api(f"[{symbol}] Signal ignoré: Volume 0.")
@@ -366,55 +333,36 @@ class Kasperbot:
         logger.info(f"Taille de lot calculée ({symbol}) : {lot_size} (pour {config['risk']['risk_percent']}% de risque)")
 
         # B. Exécution de l'ordre
-
-        # --- MODIFICATION (Version 2.0.4) ---
-        # Formatage du commentaire sans espaces
-        
-        # 1. Nettoyer la 'reason' pour en faire un identifiant court
-        reason_simple = re.sub(r'[^a-zA-Z0-9]', '_', reason)
-        reason_simple = re.sub(r'__+', '_', reason_simple)
-        
-        # 2. Créer le commentaire sans espaces
-        trade_comment = f"KasperBot_{model_id}_{reason_simple}"
-        
-        # 3. Tronquer à 31 caractères
-        trade_comment = trade_comment[:20]
-        # --- FIN MODIFICATION ---
-
         trade_id = mt5_executor.place_order(
             symbol=symbol,
             order_type=signal,
             volume=lot_size,
             sl_price=sl_price,
             tp_price=tp_price,
-            comment=trade_comment # Utilise le commentaire nettoyé
+            comment=f"[{model_id}] {reason}"
         )
         
         # C. Journalisation
         if trade_id:
             entry_price_filled = mt5_executor.get_last_entry_price(trade_id)
-            if entry_price_filled is None or entry_price_filled == 0.0: 
+            if entry_price_filled is None: 
                 entry_price_filled = entry_price_fallback
                 
             log_to_api(f"TRADE EXÉCUTÉ [{symbol}]: {signal} {lot_size} lots. ID: {trade_id}")
             
-            # Log la raison complète dans le journal
-            trade_data = {
-                'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
-                'symbol': symbol,
-                'type': signal,  
-                'volume': lot_size,
-                'entry_price': entry_price_filled,
-                'sl': sl_price,  
-                'tp': tp_price,  
-                'reason': reason,
-                'setup_model': model_id,
-                'status': "OPEN",
-                'position_id': trade_id
-            }
-            
-            self.journal.record_trade(trade_data)
-            
+            journal.log_trade(
+                timestamp=time.strftime('%Y-%m-%d %H:%M:%S'),
+                symbol=symbol,
+                order_type=signal,
+                volume=lot_size,
+                entry_price=entry_price_filled,
+                sl_price=sl_price,
+                tp_price=tp_price,
+                reason=reason,
+                setup_model=model_id,
+                status="OPEN",
+                position_id=trade_id
+            )
             return True
         else:
             log_to_api(f"[{symbol}] Échec exécution MT5.")

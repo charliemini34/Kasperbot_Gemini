@@ -114,4 +114,3 @@ class ProfessionalJournal:
         # TODO: Implémenter la mise à jour du CSV, ce qui est complexe.
         # Pour l'instant, le journal enregistre surtout l'ouverture.
         # L'analyse de performance devra se baser sur l'historique MT5 via l'ID.
-        pass

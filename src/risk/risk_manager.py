@@ -1,6 +1,6 @@
 """
 Fichier: src/risk/risk_manager.py
-Version: 2.1.0
+Version: 2.0
 
 Module pour la gestion des risques.
 
@@ -62,10 +62,9 @@ def get_symbol_tick(symbol):
         logger.error(f"Erreur lors de la récupération du tick pour {symbol}: {e}")
         return None
 
-def calculate_lot_size(risk_percent, entry_price, sl_price, symbol=None):
+def calculate_lot_size(risk_percent, sl_price, symbol=None):
     """
-    Calcule la taille de lot en fonction du risque en pourcentage, 
-    du prix d'ENTRÉE et du SL (prix).
+    Calcule la taille de lot en fonction du risque en pourcentage et du SL (prix).
     """
     if not _mt5_connector:
         logger.error("Impossible de calculer le lot : Risk Manager non initialisé.")
@@ -75,15 +74,6 @@ def calculate_lot_size(risk_percent, entry_price, sl_price, symbol=None):
         logger.warning("Calcul de lot sans symbole explicite. Le calcul est impossible.")
         return None
         
-    # --- AJOUT V2.1.0: Validation des prix d'entrée ---
-    if not entry_price or entry_price <= 0:
-        logger.error(f"Prix d'entrée invalide fourni : {entry_price}")
-        return None
-    if not sl_price or sl_price <= 0:
-        logger.error(f"Prix SL invalide fourni : {sl_price}")
-        return None
-    # --- FIN AJOUT ---
-
     # --- Récupération des informations ---
     account_balance = get_account_balance()
     if account_balance is None or account_balance <= 0:
@@ -109,16 +99,17 @@ def calculate_lot_size(risk_percent, entry_price, sl_price, symbol=None):
     # --- Calcul ---
     risk_amount = account_balance * (risk_percent / 100.0)
     
-    # --- MODIFICATION V2.1.0: Utilisation du prix d'entrée exact ---
-    # Calcul de la distance du SL en points
-    if entry_price > sl_price: # Achat
+    # Déterminer le prix d'entrée (approximatif pour le calcul)
+    # Pour un achat (sl < prix), entrée = ask. Pour une vente (sl > prix), entrée = bid.
+    if sl_price < tick.bid: # Achat probable
+        entry_price = tick.ask
         sl_points = entry_price - sl_price
-    else: # Vente
+    else: # Vente probable
+        entry_price = tick.bid
         sl_points = sl_price - entry_price
-    # --- FIN MODIFICATION ---
 
     if sl_points <= 0:
-        logger.error(f"Distance SL invalide ou nulle (Points: {sl_points}). Entrée: {entry_price}, SL: {sl_price}")
+        logger.error(f"Distance SL invalide ou nulle (Points: {sl_points}). SL: {sl_price}, Entrée: {entry_price}")
         return None
 
     # Valeur d'un lot dans la devise de profit

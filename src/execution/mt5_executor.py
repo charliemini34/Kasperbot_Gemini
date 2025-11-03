@@ -1,16 +1,13 @@
 """
 Fichier: src/execution/mt5_executor.py
-Version: 3.0.0
+Version: 2.0.1
 
 Module pour l'exécution des ordres MT5.
 
 Ce module gère :
 - L'initialisation avec la connexion MT5.
 - Le placement d'ordres (Achat/Vente) avec SL/TP.
-- La modification d'ordres (mise à jour SL/TP pour BE et TSL).
 """
-
-__version__ = "3.0.0"
 
 import MetaTrader5 as mt5
 import logging
@@ -32,8 +29,10 @@ def initialize_executor(connector):
     else:
         logger.error("Échec de l'initialisation de l'Executor : connecteur non valide.")
 
-
+# --- MODIFICATION (Version 2.0.1) ---
+# Ajout de l'argument 'comment' pour qu'il soit accepté depuis main.py
 def place_order(symbol, order_type, volume, sl_price, tp_price, comment="Kasperbot SMC Entry"):
+# --- FIN MODIFICATION ---
     """
     Place un ordre de marché (BUY ou SELL) avec SL et TP.
     """
@@ -41,15 +40,7 @@ def place_order(symbol, order_type, volume, sl_price, tp_price, comment="Kasperb
         logger.error("Impossible de passer l'ordre : Executor non initialisé.")
         return None
 
-    # Récupérer les infos du symbole pour l'arrondi ET le type de remplissage
-    symbol_info = _mt5_connector.mt5.symbol_info(symbol)
-    if symbol_info is None:
-        logger.error(f"Impossible de récupérer les infos du symbole {symbol} pour l'arrondi.")
-        return None
-        
-    digits = symbol_info.digits
-
-    # Conversion du string 'BUY'/'SELL' en variable 'mt5_order_type'
+    # Mapping du type d'ordre
     if order_type.upper() == "BUY":
         mt5_order_type = mt5.ORDER_TYPE_BUY
         price = _mt5_connector.mt5.symbol_info_tick(symbol).ask
@@ -60,44 +51,32 @@ def place_order(symbol, order_type, volume, sl_price, tp_price, comment="Kasperb
         logger.error(f"Type d'ordre non reconnu : {order_type}")
         return None
         
-    # ARRONDIR le SL et le TP en utilisant le nombre de décimales ('digits') du symbole
-    sl = round(float(sl_price), digits) if sl_price is not None and sl_price > 0 else 0.0
-    tp = round(float(tp_price), digits) if tp_price is not None and tp_price > 0 else 0.0
-    
-    # --- MODIFICATION (Version 2.0.13) ---
-    # Implémentation de la logique de remplissage dynamique
-    
-    filling_type = mt5.ORDER_FILLING_IOC # Défaut = 1
-    
-    # Vérifie les modes de remplissage autorisés par le courtier pour ce symbole
-    filling_modes = symbol_info.filling_mode
-    
-    if filling_modes & mt5.ORDER_FILLING_FOK:
-        filling_type = mt5.ORDER_FILLING_FOK # (Valeur 0)
-    elif filling_modes & mt5.ORDER_FILLING_IOC:
-         filling_type = mt5.ORDER_FILLING_IOC # (Valeur 1)
-    # Si aucun des deux n'est explicitement listé, on garde IOC par défaut
-    
-    # --- FIN MODIFICATION ---
+    # S'assurer que les SL/TP ne sont pas nuls (MT5 n'aime pas 0.0)
+    sl = float(sl_price) if sl_price is not None and sl_price > 0 else 0.0
+    tp = float(tp_price) if tp_price is not None and tp_price > 0 else 0.0
 
     request = {
         "action": mt5.TRADE_ACTION_DEAL,
         "symbol": symbol,
         "volume": float(volume),
-        "type": mt5_order_type, # Utilise l'entier (0 ou 1)
-        "price": float(price), 
-        "sl": float(sl),       # Utilise le prix arrondi dynamiquement
-        "tp": float(tp),       # Utilise le prix arrondi dynamiquement
-        "deviation": 20, 
-        "magic": 13579,
-        "comment": comment, # Utilise le commentaire dynamique (de main.py)
+        "type": mt5_order_type,
+        "price": price,
+        "sl": sl,
+        "tp": tp,
+        "deviation": 20, # 20 points de déviation max
+        "magic": 13579, # (Devrait être dans config)
+        
+        # --- MODIFICATION (Version 2.0.1) ---
+        # Utilise le commentaire dynamique passé en argument
+        "comment": comment,
+        # --- FIN MODIFICATION ---
+        
         "type_time": mt5.ORDER_TIME_GTC,
-        "type_filling": filling_type, # Utilise le type de remplissage dynamique
+        "type_filling": mt5.ORDER_FILLING_IOC, # ou FOK
     }
 
     try:
-        # Log de la requête COMPLÈTE avant l'envoi
-        logger.info(f"Envoi de la requête MT5 : {request}")
+        logger.info(f"Envoi de l'ordre : {request['type']} {request['symbol']} {request['volume']} @ {request['price']} SL={request['sl']} TP={request['tp']}")
         
         # S'assurer que le symbole est visible
         if not _mt5_connector.mt5.symbol_select(symbol, True):
@@ -121,55 +100,6 @@ def place_order(symbol, order_type, volume, sl_price, tp_price, comment="Kasperb
     except Exception as e:
         logger.critical(f"Exception lors de l'envoi de l'ordre : {e}", exc_info=True)
         return None
-
-# --- NOUVELLE FONCTION (V3.0.0) ---
-def modify_position_sl(position_id, symbol, new_sl_price):
-    """
-    Modifie le Stop Loss d'une position ouverte.
-    Utilisé pour le Break-Even et le Trailing Stop.
-    """
-    if not _mt5_connector:
-        logger.error(f"Impossible de modifier {position_id} : Executor non initialisé.")
-        return False
-
-    # Récupérer les infos du symbole pour l'arrondi
-    symbol_info = _mt5_connector.mt5.symbol_info(symbol)
-    if symbol_info is None:
-        logger.error(f"Impossible de récupérer les infos {symbol} pour l'arrondi (Modify SL).")
-        return False
-        
-    digits = symbol_info.digits
-    
-    # Arrondir le nouveau SL
-    new_sl = round(float(new_sl_price), digits)
-
-    request = {
-        "action": mt5.TRADE_ACTION_SLTP,
-        "position": position_id,
-        "sl": new_sl,
-        # "tp" n'est pas inclus, donc il n'est pas modifié
-    }
-
-    try:
-        logger.info(f"Tentative de modification SL pour {position_id}: Nouveau SL = {new_sl}")
-        result = _mt5_connector.mt5.order_send(request)
-        
-        if result is None:
-            logger.error(f"order_send(Modify SL) a échoué. Code MT5: {mt5.last_error()}")
-            return False
-            
-        if result.retcode == mt5.TRADE_RETCODE_DONE:
-            logger.info(f"SL modifié avec succès pour {position_id}. Nouveau SL: {result.sl}")
-            return True
-        else:
-            logger.error(f"Échec modification SL pour {position_id}: retcode={result.retcode}, comment={result.comment}")
-            logger.error(f"Détails de l'erreur MT5 : {mt5.last_error()}")
-            return False
-            
-    except Exception as e:
-        logger.critical(f"Exception lors de la modification du SL pour {position_id}: {e}", exc_info=True)
-        return False
-# --- FIN NOUVELLE FONCTION ---
 
 def get_last_entry_price(order_id):
     """

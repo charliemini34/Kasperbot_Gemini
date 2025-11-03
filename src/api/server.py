@@ -273,4 +273,3 @@ def start_api_server(shared_state):
         
         app.run(host=host, port=port, debug=False, use_reloader=False)
     except Exception as e:
-        log.critical(f"ÉCHEC CRITIQUE DU SERVEUR API: {e}", exc_info=True)

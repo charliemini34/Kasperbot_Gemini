@@ -1,9 +1,9 @@
-# Version 2.0
-# Dépendances Python pour Kasperbot
-
-MetaTrader5
-pandas
+# __version__ = "1.9"
+# Nom du fichier : requirements.txt
 numpy
+pandas
+MetaTrader5
 PyYAML
-flask
+Flask
 scipy
+schedule

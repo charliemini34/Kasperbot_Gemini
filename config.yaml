@@ -1,5 +1,5 @@
 # Fichier: config.yaml
-# Version: 3.0.0
+# Version: 2.0
 #
 # Fichier de configuration principal pour Kasperbot.
 # Modifiez ces valeurs pour ajuster la connexion, 
@@ -45,55 +45,9 @@ strategy:
     htf_swing_order: 10 # Nbr de bougies de chaque côté pour un swing HTF
     ltf_swing_order: 5  # Nbr de bougies de chaque côté pour un swing LTF
 
-    # --- Configuration des Sessions (V2.1) ---
-    sessions:
-        # Fuseau horaire pour les sessions (ex: "America/New_York", "Europe/London", "Asia/Tokyo", "Etc/UTC")
-        session_timezone: "America/New_York"
-        
-        # Heures de début et de fin pour le range de la session Asiatique (Modèle 2)
-        # Basé sur le fuseau horaire 'session_timezone'
-        asia_start_hour: 20 # 20:00
-        # --- CORRIGÉ V2.2: 24 est une heure invalide, remplacé par 0 (minuit) ---
-        asia_end_hour: 0   # 00:00 (minuit)
-
-    # --- Configuration des Modèles (V2.3) ---
-    models:
-        # RR Fixe pour M1 et M2 (Corrigé V2.3)
-        model_1_2_rr: 2.0              # Risk/Reward pour le TP des Modèles 1 et 2
-
-        # Paramètres Modèle 2 (Inducement/Sweep)
-        liquidity_lookback: 50  # Nbr bougies LTF pour chercher EQH/EQL
-        liquidity_tolerance_pips: 5 # Nbr pips de tolérance pour définir un EQH/EQL
-        
-        # Paramètres Modèle 3 (Opening Range Breakout)
-        model_3_enabled: true
-        model_3_range_tf: "M30"      # Timeframe pour définir le range (ex: M30 ou M5)
-        model_3_entry_tf: "M5"       # Timeframe pour chercher le breakout (ex: M5 ou M1)
-        model_3_range_lookback: 10   # Nbr bougies M30 à charger
-        model_3_entry_lookback: 50   # Nbr bougies M5 à charger
-        model_3_trigger_time: "15:30:00" # Heure (dans 'session_timezone') pour lancer l'analyse M3
-        model_3_rr: 2.0              # Risk/Reward pour le TP du Modèle 3
-
 risk:
     # Risque en pourcentage du capital par trade
     risk_percent: 1.0
-    
-    # --- AJOUT V3.0.0: Gestion des Trades (BreakEven et Trailing SL) ---
-    trade_management:
-        # Mettre à 'true' pour activer le Break-Even automatique
-        breakeven_enabled: true
-        # Le profit (en R:R) nécessaire pour déclencher le Break-Even
-        # 1.0 = 1R (le SL sera mis à 0, c'est-à-dire le prix d'entrée)
-        breakeven_trigger_rr: 1.0
-
-        # Mettre à 'true' pour activer le Trailing Stop Loss
-        trailing_sl_enabled: true
-        # Le profit (en R:R) nécessaire pour COMMENCER à suivre le prix
-        trailing_sl_trigger_rr: 2.0
-        # L'écart (en R:R) que le SL maintiendra derrière le prix
-        # 1.0 = Le SL sera toujours à 1R derrière le prix actuel (une fois déclenché)
-        trailing_sl_distance_rr: 1.0
-    # --- FIN AJOUT V3.0.0 ---
     
     # Définition de la taille d'un pip pour chaque symbole
     # (Crucial pour le calcul de la taille de lot)
