@@ -1,77 +1,157 @@
-"""
-Fichier: src/shared_state.py
-Version: 2.0
-
-État partagé global pour le bot, accessible par tous les threads
-(API Flask, Boucle principale du bot).
-"""
+# Fichier: src/shared_state.py
+# Version: 3.0
+#
+# Module pour gérer l'état partagé (shared state) du bot.
+# Stocke les informations sur les symboles, les trades et l'état de l'interface
+# de manière thread-safe (sécurisée).
+# --------------------------------------------------------------------------
 
 import threading
-import copy
+import logging
+from typing import Dict, Any, List
 
-_BOT_RUNNING = True
-_CONFIG = {}
-_STATUS = {"status": "INITIALIZING", "message": "Bot starting..."}
-_LOGS = []
-_POSITIONS = []
-_SYMBOL_DATA = {}
-_lock = threading.Lock()
+# Configuration du Logger
+logger = logging.getLogger(__name__)
 
-def is_bot_running():
-    """Vérifie si le bot est censé être en cours d'exécution."""
-    with _lock:
-        return _BOT_RUNNING
+# Le dictionnaire 'state' contiendra l'état en temps réel de tous les symboles
+# pour le monitoring.
+state: Dict[str, Dict[str, Any]] = {}
 
-def stop_bot():
-    """Signale au bot de s'arrêter."""
-    global _BOT_RUNNING
-    with _lock:
-        _BOT_RUNNING = False
-    set_status("STOPPED", "Bot stopped by user.")
+# Le 'trade_log' est une liste simple des trades passés (pour l'historique)
+trade_log: List[Dict[str, Any]] = []
 
-def set_config(config_data):
-    """Met à jour la configuration globale."""
-    global _CONFIG
-    with _lock:
-        _CONFIG = config_data
+# Un verrou (lock) est essentiel pour empêcher les conflits
+# si plusieurs threads (ex: API et bot) accèdent à 'state' en même temps.
+lock = threading.Lock()
 
-def get_config():
-    """Récupère la configuration globale."""
-    with _lock:
-        # Renvoyer une copie pour éviter les modifications concurrentes
-        return copy.deepcopy(_CONFIG)
+__version__ = "3.0"
 
-def set_status(status, message):
-    """Met à jour le statut du bot pour l'API."""
-    global _STATUS
-    with _lock:
-        _STATUS = {"status": status, "message": message}
+# --- NOUVELLES FONCTIONS (V3.0) POUR LE DASHBOARD ---
 
-def add_log(log_message):
-    """Ajoute un log pour l'API."""
-    with _lock:
-        _LOGS.append(log_message)
-        if len(_LOGS) > 100: # Limiter à 100 logs
-            _LOGS.pop(0)
+def initialize_symbols(symbols: List[str]):
+    """
+    Initialise la structure d'état détaillée pour tous les symboles surveillés.
+    Ceci est la structure principale pour le nouveau dashboard.
+    """
+    with lock:
+        for symbol in symbols:
+            if symbol not in state:
+                state[symbol] = {
+                    "symbol": symbol,
+                    "last_analysis": {}, # Pour les données existantes (htf_trend, etc.)
+                    "checks": {
+                        # Critères de notation (5 étoiles)
+                        "trend": {"status": "pending", "label": "Tendance HTF"},
+                        "zone": {"status": "pending", "label": "Zone OTE/Discount"},
+                        "confirmation": {"status": "pending", "label": "Confirmation LTF (CHOCH)"},
+                        "session": {"status": "pending", "label": "Session Active (Volatilité)"},
+                        "risk_rr": {"status": "pending", "label": "RRR Valide (>= Config)"},
+                        
+                        # Checks supplémentaires pour le debug
+                        "poi": {"status": "pending", "label": "POI (OB/FVG) Détecté"},
+                        "risk_sl": {"status": "pending", "label": "SL Sécurisé"},
+                    },
+                    "active_signal": {
+                        "is_valid": False,
+                        "rating": 0,
+                        "stars": "☆☆☆☆☆",
+                        "copy_string": ""
+                    }
+                }
+    logger.info(f"État partagé initialisé pour {len(symbols)} symboles.")
 
-def update_positions(positions_list):
-    """Met à jour la liste des positions ouvertes pour l'API."""
-    global _POSITIONS
-    with _lock:
-        _POSITIONS = positions_list
+def update_symbol_check(symbol: str, check_name: str, status: str):
+    """
+    Met à jour le statut d'un check spécifique pour le dashboard.
+    (ex: 'pending', 'valid', 'invalid').
+    """
+    with lock:
+        if symbol in state and check_name in state[symbol]["checks"]:
+            state[symbol]["checks"][check_name]["status"] = status
+        elif symbol not in state:
+            logger.warning(f"[shared_state] Tentative de mise à jour de '{check_name}' pour le symbole inconnu '{symbol}'")
 
-def update_symbol_data(symbol, data):
-     """Met à jour les données d'analyse par symbole pour l'API."""
-     global _SYMBOL_DATA
-     with _lock:
-         _SYMBOL_DATA[symbol] = data
+def update_symbol_signal(symbol: str, signal_data: Dict[str, Any]):
+    """
+    Publie ou efface un signal actif pour le dashboard (la grosse boîte).
+    """
+    with lock:
+        if symbol in state:
+            state[symbol]["active_signal"].update(signal_data)
 
-def get_all_data():
-    """Point d'entrée unique pour l'API pour récupérer toutes les données."""
-    with _lock:
-        return {
-            "status": _STATUS,
-            "logs": _LOGS,
-            "positions": _POSITIONS,
-            "symbol_data": _SYMBOL_DATA
+def reset_all_checks():
+    """
+    Réinitialise tous les statuts des checks à 'pending' au début de chaque cycle
+    et efface les signaux actifs.
+    """
+    with lock:
+        for symbol in state:
+            state[symbol]["active_signal"] = {
+                "is_valid": False,
+                "rating": 0,
+                "stars": "☆☆☆☆☆",
+                "copy_string": ""
+            }
+            for check_name in state[symbol]["checks"]:
+                state[symbol]["checks"][check_name]["status"] = "pending"
+
+def get_full_state() -> Dict[str, Dict[str, Any]]:
+    """
+    Retourne une copie thread-safe de l'état complet pour l'API.
+    """
+    with lock:
+        # Renvoie une copie pour éviter les modifications concurrentes
+        return state.copy()
+
+def get_trade_log() -> List[Dict[str, Any]]:
+    """
+    Retourne une copie thread-safe du journal de trades pour l'API.
+    """
+    with lock:
+        return trade_log.copy()
+
+# --- FONCTIONS EXISTANTES (CONSERVÉES POUR COMPATIBILITÉ V1.X/V2.X) ---
+
+def update_symbol_state(symbol: str, data: Dict[str, Any]):
+    """
+    Met à jour l'état d'analyse d'un symbole (utilisé par l'orchestrateur).
+    Fonction conservée pour la compatibilité.
+    """
+    with lock:
+        if symbol in state:
+            # Fusionne les nouvelles données (ex: htf_trend) dans la clé 'last_analysis'
+            state[symbol]["last_analysis"].update(data)
+        else:
+            # Sécurité: si le symbole n'est pas initialisé (ne devrait pas arriver)
+            # On le crée à la volée, mais sans la structure complète du dashboard
+            state[symbol] = {"symbol": symbol, "last_analysis": data}
+            logger.warning(f"[shared_state] Symbole '{symbol}' mis à jour sans initialisation préalable.")
+
+def log_trade(trade_result: Dict[str, Any], trade_params: Dict[str, Any]):
+    """
+    Enregistre un trade dans le journal de l'état partagé (utilisé par l'orchestrateur).
+    Fonction conservée pour la compatibilité.
+    
+    NOTE: Cette fonction ajoute au log mémoire. L'écriture dans le CSV
+    est gérée par le module 'journal' (si vous en avez un).
+    """
+    try:
+        log_entry = {
+            "timestamp": trade_result.get('time', 'N/A'),
+            "order_id": trade_result.get('order', 'N/A'),
+            "symbol": trade_params.get('symbol', 'N/A'),
+            "type": trade_params.get('type_str', 'N/A'),
+            "volume": trade_params.get('volume', 'N/A'),
+            "price": trade_params.get('price', 'N/A'),
+            "sl": trade_params.get('sl', 'N/A'),
+            "tp": trade_params.get('tp', 'N/A'),
+            "reason": trade_params.get('reason', 'N/A'),
+            "status": "OPENED" # Statut initial
         }
+        with lock:
+            trade_log.append(log_entry)
+        
+        logger.info(f"[shared_state] Trade {log_entry['order_id']} enregistré dans le journal mémoire.")
+        
+    except Exception as e:
+        logger.error(f"[shared_state] Erreur lors de l'enregistrement du trade dans le log: {e}")

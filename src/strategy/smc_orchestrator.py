@@ -1,8 +1,27 @@
-# __version__ = "1.6"
+# __version__ = "1.6" <- Ancienne version
 # Nom du fichier : src/strategy/smc_orchestrator.py
+# Version: 3.0
+#
+# Ce module est le "cœur" du bot. Il orchestre le cycle d'analyse :
+# 1. Récupérer les données
+# 2. Analyser la tendance HTF
+# 3. Analyser la structure LTF
+# 4. Détecter les patterns (POI, Liquidité)
+# 5. Appeler la logique d'entrée
+# 6. Valider le risque
+# 7. Exécuter le trade
+# 8. Gérer les trades ouverts
+#
+# V3.0: Ajout du reporting en temps réel vers le shared_state pour le dashboard.
+# --------------------------------------------------------------------------
+
 import logging
 import time
 from typing import Dict, Any, Optional
+
+# NOUVEAUX IMPORTS (V3.0)
+import pytz
+from datetime import datetime
 
 # Imports des modules du projet
 from src.data_ingest import mt5_connector
@@ -12,11 +31,15 @@ from src.strategy import smc_entry_logic
 from src.risk import risk_manager
 from src.execution import mt5_executor
 from src.management import trade_manager
-from src.shared_state import shared_state
+
+# NOUVEAUX IMPORTS (V3.0) pour le reporting d'état
+from src.shared_state import shared_state, update_symbol_check, update_symbol_signal
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+__version__ = "3.0"
 
 def run_analysis_cycle(connector: mt5_connector.MT5Connector, symbol: str, config: Dict[str, Any]):
     """
@@ -24,11 +47,36 @@ def run_analysis_cycle(connector: mt5_connector.MT5Connector, symbol: str, confi
     Cette fonction est le "cœur" du bot.
     """
     try:
+        # --- DÉBUT MODIFICATIONS V3.0 (Reporting) ---
+        
+        # Dictionnaire pour suivre les checks de notation de ce cycle
+        checks_status = {
+            "trend": "pending",
+            "zone": "pending",
+            "confirmation": "pending",
+            "session": "pending",
+            "risk_sl": "pending",
+            "risk_rr": "pending",
+            "poi": "pending" # Check supplémentaire
+        }
+        
         # 0. Récupérer les informations de base
         symbol_info = connector.get_symbol_info(symbol)
         if not symbol_info:
             logger.error(f"Orchestrateur : Impossible de récupérer les infos pour {symbol}.")
             return
+
+        # Récupérer le pip_size de la config (nécessaire pour le check RRR)
+        pip_size = config.get('risk', {}).get('pip_sizes', {}).get(symbol, 
+                   config.get('risk', {}).get('default_pip_size', 0.0001))
+
+        # Check 5 (Session / Volatilité)
+        is_active_session, session_name = _is_in_killzone(config)
+        checks_status["session"] = "valid" if is_active_session else "invalid"
+        update_symbol_check(symbol, "session", checks_status["session"])
+        
+        # --- FIN MODIFICATIONS V3.0 ---
+
 
         # 1. Analyse de Tendance (HTF - Higher Timeframe)
         htf_timeframe = config['analysis']['htf_timeframe']
@@ -41,6 +89,16 @@ def run_analysis_cycle(connector: mt5_connector.MT5Connector, symbol: str, confi
         htf_trend = market_structure.get_market_trend(htf_data, window=config['analysis']['htf_trend_window'])
         shared_state.update_symbol_state(symbol, {"htf_trend": htf_trend})
         logger.info(f"Orchestrateur : Tendance HTF ({htf_timeframe}) pour {symbol} est {htf_trend}")
+
+        # --- DÉBUT MODIFICATIONS V3.0 (Reporting) ---
+        # Check 1 (Tendance HTF)
+        if htf_trend in ["BULLISH", "BEARISH"]:
+            checks_status["trend"] = "valid"
+        else:
+            checks_status["trend"] = "invalid" # Ex: SIDEWAYS
+        update_symbol_check(symbol, "trend", checks_status["trend"])
+        # --- FIN MODIFICATIONS V3.0 ---
+
 
         # 2. Analyse de Structure (LTF - Lower Timeframe)
         ltf_timeframe = config['analysis']['ltf_timeframe']
@@ -64,11 +122,23 @@ def run_analysis_cycle(connector: mt5_connector.MT5Connector, symbol: str, confi
         shared_state.update_symbol_state(symbol, {"ltf_patterns": patterns_ltf})
         
         # 4. Logique d'Entrée (Étape 3)
+        # NOTE V3.0: Pour le moment, check_entry_conditions ne retourne pas les checks intermédiaires.
+        # Nous mettrons à jour les checks "zone", "poi", "confirmation" seulement si un signal est trouvé.
         entry_signal = smc_entry_logic.check_entry_conditions(ltf_data, structure_ltf, patterns_ltf, htf_trend)
         
         if entry_signal:
             logger.info(f"Orchestrateur : Signal d'entrée {entry_signal['signal']} trouvé pour {symbol}.")
             
+            # --- DÉBUT MODIFICATIONS V3.0 (Reporting) ---
+            # Un signal a été trouvé, donc les checks logiques sont implicitement valides
+            checks_status["zone"] = "valid"
+            checks_status["confirmation"] = "valid"
+            checks_status["poi"] = "valid"
+            update_symbol_check(symbol, "zone", "valid")
+            update_symbol_check(symbol, "confirmation", "valid")
+            update_symbol_check(symbol, "poi", "valid")
+            # --- FIN MODIFICATIONS V3.0 ---
+
             # 5. Validation du Risque (Étape 4)
             account_info = connector.get_account_info()
             if not account_info:
@@ -85,6 +155,17 @@ def run_analysis_cycle(connector: mt5_connector.MT5Connector, symbol: str, confi
             
             # 6. Exécution du Trade (si le risque est valide)
             if trade_params:
+                # --- DÉBUT MODIFICATIONS V3.0 (Reporting) ---
+                # Le risque est valide !
+                checks_status["risk_sl"] = "valid"
+                checks_status["risk_rr"] = "valid"
+                update_symbol_check(symbol, "risk_sl", "valid")
+                update_symbol_check(symbol, "risk_rr", "valid")
+                
+                # Publier le signal complet sur le dashboard
+                _rate_and_publish_signal(symbol, trade_params, checks_status, config, pip_size)
+                # --- FIN MODIFICATIONS V3.0 ---
+
                 # Vérifier si on a déjà un trade ouvert sur ce symbole
                 open_positions = connector.get_open_positions(symbol)
                 if not open_positions: # TODO: Permettre plusieurs trades si configuré
@@ -100,7 +181,19 @@ def run_analysis_cycle(connector: mt5_connector.MT5Connector, symbol: str, confi
                 else:
                     logger.info(f"Orchestrateur : Signal trouvé, mais un trade est déjà ouvert pour {symbol}. Ordre non-passé.")
 
+            else:
+                # --- DÉBUT MODIFICATIONS V3.0 (Reporting) ---
+                # Le risque a été rejeté (ex: RRR trop faible, SL trop large)
+                logger.warning(f"Orchestrateur: Signal pour {symbol} REJETÉ par le risk_manager.")
+                checks_status["risk_sl"] = "invalid"
+                checks_status["risk_rr"] = "invalid"
+                update_symbol_check(symbol, "risk_sl", "invalid")
+                update_symbol_check(symbol, "risk_rr", "invalid")
+                # --- FIN MODIFICATIONS V3.0 ---
+
+
         # 7. Gestion des Trades Ouverts (Étape 5)
+        # (Cette section est inchangée)
         open_positions = connector.get_open_positions(symbol)
         if open_positions:
             logger.info(f"Orchestrateur : {len(open_positions)} trade(s) ouvert(s) pour {symbol}. Vérification de la gestion...")
@@ -132,12 +225,110 @@ def run_analysis_cycle(connector: mt5_connector.MT5Connector, symbol: str, confi
     except Exception as e:
         logger.error(f"Erreur inattendue dans le cycle d'analyse (Orchestrateur) : {e}", exc_info=True)
 
+
+# --- NOUVELLE FONCTION (V3.0) ---
+def _is_in_killzone(config: Dict[str, Any]) -> (bool, str):
+    """
+    Vérifie si l'heure UTC actuelle se trouve dans une des Killzones
+    définies dans le config.yaml.
+    """
+    try:
+        killzones = config.get('killzones', {})
+        if not killzones:
+            return True, "N/A" # Si non configuré, on considère toujours comme valide
+
+        now_utc = datetime.now(pytz.utc).time()
+
+        for zone_name, times in killzones.items():
+            try:
+                start_time = datetime.strptime(times['start_utc'], '%H:%M').time()
+                end_time = datetime.strptime(times['end_utc'], '%H:%M').time()
+                
+                if start_time <= now_utc <= end_time:
+                    return True, zone_name.upper()
+            except Exception as e:
+                logger.warning(f"[Orchestrateur] Format de Killzone incorrect pour '{zone_name}': {e}")
+                
+        return False, "NONE"
+        
+    except Exception as e:
+        logger.error(f"Erreur lors de la vérification de la Killzone: {e}")
+        return False, "ERROR"
+
+
+# --- NOUVELLE FONCTION (V3.0) ---
+def _rate_and_publish_signal(symbol: str, 
+                             trade_params: Dict[str, Any], 
+                             checks_status: Dict[str, str], 
+                             config: Dict[str, Any],
+                             pip_size: float):
+    """
+    Calcule la note (5 étoiles) du signal et le publie dans le shared_state.
+    """
+    try:
+        rating = 0
+        
+        # 1. Tendance (Biais HTF)
+        if checks_status.get("trend") == "valid":
+            rating += 1
+            
+        # 2. Point d'entrée (Zone OTE/Discount)
+        # Note: 'zone' est implicitement validé si un signal est trouvé (simplification V3.0)
+        if checks_status.get("zone") == "valid":
+            rating += 1
+            
+        # 3. SL (Risque/Bruit)
+        # Note: 'risk_sl' est validé par le risk_manager
+        if checks_status.get("risk_sl") == "valid":
+            rating += 1
+            
+        # 4. RRR (Risk/Reward Ratio)
+        if checks_status.get("risk_rr") == "valid":
+            rating += 1
+            
+        # 5. Session (Volatilité idéale)
+        if checks_status.get("session") == "valid":
+            rating += 1
+
+        # Formatage de la chaîne "Copier/Coller"
+        signal_type = trade_params.get('type_str', 'N/A').upper()
+        price = trade_params.get('price', 0.0)
+        sl = trade_params.get('sl', 0.0)
+        tp = trade_params.get('tp', 0.0)
+        
+        # Arrondir à un nombre de décimales raisonnable (basé sur le pip_size)
+        decimals = 5 if pip_size < 0.001 else 2
+        
+        copy_string = f"{signal_type} {symbol} {price:.{decimals}f}, SL {sl:.{decimals}f}, TP {tp:.{decimals}f}"
+
+        # Création du payload pour le shared_state
+        signal_data = {
+            "is_valid": True,
+            "rating": rating,
+            "stars": "★" * rating + "☆" * (5 - rating), # ex: ★★★☆☆
+            "copy_string": copy_string
+        }
+        
+        # Publication
+        update_symbol_signal(symbol, signal_data)
+        logger.info(f"Signal pour {symbol} publié sur le dashboard (Note: {rating}/5)")
+
+    except Exception as e:
+        logger.error(f"Erreur lors de la notation et publication du signal: {e}", exc_info=True)
+
+
 if __name__ == "__main__":
     # Bloc de test pour l'orchestrateur
     logger.info("Démarrage du test de l'orchestrateur SMC (simulation)...")
     
     # Simuler la configuration
     test_config = {
+        # --- V3.0 ---
+        "killzones": {
+            "london": {"start_utc": "07:00", "end_utc": "10:00"},
+            "ny": {"start_utc": "13:00", "end_utc": "16:00"}
+        },
+        # --- Fin V3.0 ---
         "mt5": { "path": "C:\\Program Files\\MetaTrader 5\\mt5.exe" }, # Mettre un chemin valide si nécessaire
         "analysis": {
             "htf_timeframe": "H1", "htf_data_points": 200, "htf_trend_window": 50,
@@ -152,7 +343,13 @@ if __name__ == "__main__":
             "be_trigger_rrr": 1.0,
             "enable_trailing_stop": True,
             "enable_partials": False
+        },
+        # --- V3.0 ---
+        "risk": {
+            "pip_sizes": {"EURUSD": 0.0001},
+            "default_pip_size": 0.0001
         }
+        # --- Fin V3.0 ---
     }
     
     # Simuler un connecteur (pour éviter une connexion réelle lors du test)
@@ -195,6 +392,11 @@ if __name__ == "__main__":
     # Exécuter le cycle avec le faux connecteur
     mock_conn = MockConnector(test_config)
     try:
+        # --- V3.0 ---
+        # Initialiser le shared_state pour le test
+        shared_state.initialize_symbols(test_config['trading']['symbols'])
+        # --- Fin V3.0 ---
+        
         run_analysis_cycle(mock_conn, "EURUSD", test_config)
     except Exception as e:
         logger.error(f"Test de l'orchestrateur échoué : {e}")

@@ -1,5 +1,5 @@
 # Fichier: config.yaml
-# Version: 2.0
+# Version: 3.0
 #
 # Fichier de configuration principal pour Kasperbot.
 # Modifiez ces valeurs pour ajuster la connexion, 
@@ -79,3 +79,14 @@ journal:
 
 # Intervalle en secondes entre chaque cycle d'analyse
 check_interval: 60
+
+# NOUVELLE SECTION V3.0
+# Définition des sessions de trading (Killzones) pour le critère de notation
+# Les heures doivent être en UTC pour éviter les problèmes de fuseau horaire
+killzones:
+    london:
+        start_utc: "07:00"
+        end_utc: "10:00"
+    ny:
+        start_utc: "13:00"
+        end_utc: "16:00"

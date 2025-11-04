@@ -61,7 +61,7 @@ def load_config():
         logging.getLogger().setLevel(log_level)
         logger.info(f"Niveau de logging réglé sur {log_level}")
         
-        shared_state.set_config(config)
+        #shared_state.set_config(config)
         
         return config
     except Exception as e:
