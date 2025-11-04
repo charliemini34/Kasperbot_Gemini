@@ -347,7 +347,7 @@ class Kasperbot:
         trade_comment = f"KasperBot_{model_id}_{reason_simple}"
         
         # 3. Tronquer à 31 caractères
-        trade_comment = trade_comment[:31]
+        trade_comment = trade_comment[:20]
         # --- FIN MODIFICATION ---
 
         trade_id = mt5_executor.place_order(
