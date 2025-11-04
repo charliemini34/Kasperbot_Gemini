@@ -61,7 +61,7 @@ def load_config():
         logging.getLogger().setLevel(log_level)
         logger.info(f"Niveau de logging réglé sur {log_level}")
         
-        #shared_state.set_config(config)
+        shared_state.set_config(config)
         
         return config
     except Exception as e:
@@ -347,7 +347,7 @@ class Kasperbot:
         trade_comment = f"KasperBot_{model_id}_{reason_simple}"
         
         # 3. Tronquer à 31 caractères
-        trade_comment = trade_comment[:20]
+        trade_comment = trade_comment[:31]
         # --- FIN MODIFICATION ---
 
         trade_id = mt5_executor.place_order(
